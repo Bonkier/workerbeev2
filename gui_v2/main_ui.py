@@ -170,8 +170,6 @@ class MainUI(QWidget):
         self._pages["mirror_dungeon"] = mirror
 
         lux = LuxcavationPage(self._stack)
-        lux.start_exp_requested.connect(self.start_requested.emit)
-        lux.start_thread_requested.connect(self.start_requested.emit)
         lux.stop_requested.connect(self.stop_requested.emit)
         self._pages["luxcavation"] = lux
 
