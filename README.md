@@ -3,7 +3,9 @@
 Automated assistant for LC.
 
 Download page: https://bonkier.github.io/workerbeev2/
+
 Latest release: https://github.com/Bonkier/workerbeev2/releases/latest
+
 Community: Discord, DM `@bnkir` for an invite.
 
 ---
