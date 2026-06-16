@@ -2,7 +2,7 @@ from .utils.utils import *
 from .battle import fight
 
 def is_full(shift):
-    # Green-pixel count in the convertible-enkephalin bar (bottom-left).
+    # Green-pixel count in the convertible-enkephalin bar
     # The old single-pixel probe at (530,1003) sat in a dark gap and always read dark.
     region = (460 - shift, 1004, 28, 16)
     image = screenshot(region=region)
