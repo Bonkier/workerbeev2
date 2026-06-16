@@ -1,7 +1,6 @@
 # WorkerBee v2
 
-Automated assistant for **Limbus Company**. Runs Mirror Dungeon, EXP & Thread
-Luxcavation, plus a task scheduler that strings them together.
+Automated assistant for LC.
 
 Download page: https://bonkier.github.io/workerbeev2/
 Latest release: https://github.com/Bonkier/workerbeev2/releases/latest
