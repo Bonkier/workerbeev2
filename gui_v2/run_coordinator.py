@@ -70,13 +70,28 @@ class RunCoordinator(QObject):
         self._wait_timer.setSingleShot(True)
         self._wait_timer.timeout.connect(self._sched_advance)
 
+        # Button-start countdown: gives the user time to tab into Limbus
+        # before the bot grabs input. Hotkeys skip this since the user is
+        # already in the game when they trigger them.
+        self._countdown_timer = _QTimer(self)
+        self._countdown_timer.setInterval(1000)
+        self._countdown_timer.timeout.connect(self._on_countdown_tick)
+        self._countdown_remaining = 0
+        self._countdown_action = None
+        self._countdown_page = None
+        self._BUTTON_START_DELAY_S = 5
+
         # Page -> controller.
-        main_ui.start_requested.connect(self._start_md)
+        main_ui.start_requested.connect(
+            lambda: self._arm_button_start(self._start_md, self._md))
         main_ui.stop_requested.connect(self._stop)
         if self._lux is not None:
-            self._lux.start_exp_requested.connect(lambda: self._start_lux("exp"))
+            self._lux.start_exp_requested.connect(
+                lambda: self._arm_button_start(
+                    lambda: self._start_lux("exp"), self._lux))
             self._lux.start_thread_requested.connect(
-                lambda: self._start_lux("thread"))
+                lambda: self._arm_button_start(
+                    lambda: self._start_lux("thread"), self._lux))
             self._lux.stop_requested.connect(self._stop)
         if self._scheduler is not None:
             self._scheduler.run_requested.connect(self._scheduler_start)
@@ -153,12 +168,18 @@ class RunCoordinator(QObject):
                                    count=0, count_exp=ce, count_thd=ct)
 
     def _stop(self):
+        if self._countdown_timer.isActive():
+            self._cancel_countdown()
+            return
         if self._controller.is_running():
             logging.info("Stop requested by user")
         self._controller.stop()
 
     def _toggle_md(self):
         """Hotkey: start Mirror Dungeon, or stop if a run is already active."""
+        if self._countdown_timer.isActive():
+            self._cancel_countdown()
+            return
         if self._controller.is_running():
             self._stop()
         else:
@@ -166,10 +187,54 @@ class RunCoordinator(QObject):
 
     def _toggle_lux(self, mode: str):
         """Hotkey: start the given Lux mode, or stop if a run is active."""
+        if self._countdown_timer.isActive():
+            self._cancel_countdown()
+            return
         if self._controller.is_running():
             self._stop()
         else:
             self._start_lux(mode)
+
+    # --- button-start countdown ------------------------------------------
+    def _arm_button_start(self, start_callable, page):
+        """Arm a delayed start so the user can tab into Limbus first."""
+        if self._controller.is_running() or self._countdown_timer.isActive():
+            return
+        self._countdown_action = start_callable
+        self._countdown_page = page
+        self._countdown_remaining = self._BUTTON_START_DELAY_S
+        self._apply_arming(self._countdown_remaining)
+        self._countdown_timer.start()
+
+    def _on_countdown_tick(self):
+        self._countdown_remaining -= 1
+        if self._countdown_remaining <= 0:
+            self._fire_pending_start()
+        else:
+            self._apply_arming(self._countdown_remaining)
+
+    def _fire_pending_start(self):
+        self._countdown_timer.stop()
+        action = self._countdown_action
+        self._apply_arming(0)
+        self._countdown_action = None
+        self._countdown_page = None
+        if action:
+            action()
+
+    def _cancel_countdown(self):
+        if not self._countdown_timer.isActive():
+            return
+        self._countdown_timer.stop()
+        self._apply_arming(0)
+        self._countdown_action = None
+        self._countdown_page = None
+        logging.info("Pending start cancelled")
+
+    def _apply_arming(self, seconds: int):
+        page = self._countdown_page
+        if page is not None and hasattr(page, "set_arming"):
+            page.set_arming(seconds)
 
     # --- scheduler ------------------------------------------------------
     # The scheduler page emits `run_requested(list)` with the full task

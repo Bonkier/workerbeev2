@@ -240,7 +240,25 @@ class LuxcavationPage(QWidget):
     def set_running(self, running: bool):
         self._exp_start.setEnabled(not running)
         self._thd_start.setEnabled(not running)
+        self._exp_start.setText("Start EXP")
+        self._thd_start.setText("Start Thread")
         self._stop_btn.setEnabled(running)
+
+    def set_arming(self, seconds: int):
+        if seconds > 0:
+            primary = (self._exp_start
+                       if self._mode.selected() == "EXP"
+                       else self._thd_start)
+            primary.setText(f"Tab into game... {seconds}s")
+            self._exp_start.setEnabled(False)
+            self._thd_start.setEnabled(False)
+            self._stop_btn.setEnabled(True)
+        else:
+            self._exp_start.setText("Start EXP")
+            self._thd_start.setText("Start Thread")
+            self._exp_start.setEnabled(True)
+            self._thd_start.setEnabled(True)
+            self._stop_btn.setEnabled(False)
 
     def _on_lux_start(self):
         """No-op hook so the start signal still has a slot to connect to."""

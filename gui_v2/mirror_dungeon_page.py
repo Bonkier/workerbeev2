@@ -1332,4 +1332,15 @@ class MirrorDungeonPage(QWidget):
     # --- Public state hooks --------------------------------------
     def set_running(self, running: bool):
         self._start_btn.setEnabled(not running)
+        self._start_btn.setText("Start Mirror Dungeon")
         self._stop_btn.setEnabled(running)
+
+    def set_arming(self, seconds: int):
+        if seconds > 0:
+            self._start_btn.setEnabled(False)
+            self._start_btn.setText(f"Tab into game... {seconds}s")
+            self._stop_btn.setEnabled(True)
+        else:
+            self._start_btn.setEnabled(True)
+            self._start_btn.setText("Start Mirror Dungeon")
+            self._stop_btn.setEnabled(False)
