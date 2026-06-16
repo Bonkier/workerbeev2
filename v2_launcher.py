@@ -112,15 +112,10 @@ def main() -> int:
     from gui_v2.style import build_global_qss
     app.setStyleSheet(build_global_qss())
 
-    # `--update` is the production trigger; the env var is the simulation
-    # back-channel - the helper relaunches with no args, so an inherited
-    # env var is the only way to carry the mode through the chain.
-    mode = (
-        "update"
-        if ("--update" in sys.argv
-            or os.environ.get("WORKERBEE_FORCE_UPDATE_CHECK"))
-        else "init"
-    )
+    # Every launch checks GitHub for a newer release; if already current
+    # the splash rolls into normal init silently. Pass --no-update-check
+    # to skip the network call (offline dev / source-tree runs).
+    mode = "init" if "--no-update-check" in sys.argv else "update"
     from gui_v2.main_window import MainWindow
     win = MainWindow(mode=mode)
     win.show()
