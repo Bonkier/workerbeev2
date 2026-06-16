@@ -1,0 +1,36 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+*.spec.bak
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test artefacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime state
+game.log
+*.log
+config/v2_ui.json
+config/v2_stats.json
+config/macro_state_*.png
+
+# Local-only tooling output
+preview_skill_replace.png

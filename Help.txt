@@ -1,0 +1,34 @@
+General Usage:
+Select the tab for the activity you want to automate (Mirror Dungeon, Exp, Threads).
+Configure your team and settings, then click Start.
+Use the Dashboard for quick access to common tasks.
+Press F2 to stop all running automations immediately.
+
+Mirror Dungeon:
+Automates Mirror Dungeon runs.
+- Select your team in the Settings tab.
+- 'Hard Mode': Toggles hard mode dungeon logic.
+- 'Claim Rewards on Defeat': If enabled, claims rewards even if the run is lost.
+- 'Skip Rest Shop': Skips interaction with the shop to save time.
+
+Luxcavation:
+Automates EXP and Thread Luxcavations.
+- EXP: Select the stage and number of runs.
+- Threads: Select difficulty and number of runs.
+- Ensure you have enough Enkephalin modules.
+
+Scheduler:
+Allows scheduling tasks to run automatically at specific times.
+- Add tasks with time (HH:MM), type, and run count.
+- Ensure the application is left open for the scheduler to work.
+
+Settings & Profiles:
+- Profiles: Save and load different configurations for different teams or activities.
+- Mouse Offsets: Adjust X/Y offsets if the bot clicks slightly off-target.
+- Display: Select the monitor where the game is running.
+
+Troubleshooting:
+- If clicks are offset, try adjusting X/Y offsets in Settings.
+- Ensure the game resolution matches your monitor or is set to 1920x1080.
+- Run the application as Administrator if input is not registering.
+- Check the Logs tab for detailed error messages.
