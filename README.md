@@ -56,7 +56,7 @@ not, must preserve the same license.
 
 ## Disclaimer
 
-WorkerBee automates input against the live Limbus Company client. Project
+WorkerBee automates input against the live LC client. Project
 Moon has not endorsed it. The license imposes no warranty; use of any game
 automation tool may violate the game's Terms of Service. Use it on accounts
 you accept the risk of losing.
