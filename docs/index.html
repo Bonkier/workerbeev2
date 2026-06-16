@@ -358,12 +358,11 @@
         var ver=(rel.tag_name||rel.name||"").replace(/^v/i,"");
         var zip=(rel.assets||[]).filter(function(a){return /\.zip$/i.test(a.name);})
           .sort(function(a,b){return (/workerbee/i.test(b.name)?1:0)-(/workerbee/i.test(a.name)?1:0);})[0];
-        var dls=(rel.assets||[]).reduce(function(s,a){return s+(a.download_count||0);},0);
         var mb=zip?(zip.size/1048576).toFixed(0)+" MB":"168 MB";
         var url=(zip&&zip.browser_download_url)||LATEST;
         ["dl-hero","dl-top"].forEach(function(id){var e=document.getElementById(id); if(e) e.setAttribute("href",url);});
         if(ver){ set("side-ver",ver);
-          set("hero-meta","version <b>"+ver+"</b> &middot; "+mb+" &middot; "+dls.toLocaleString()+" downloads"); }
+          set("hero-meta","version <b>"+ver+"</b> &middot; "+mb+" &middot; free &amp; open source"); }
       })
       .catch(function(){
         ["dl-hero","dl-top"].forEach(function(id){var e=document.getElementById(id); if(e) e.setAttribute("href",LATEST);});
