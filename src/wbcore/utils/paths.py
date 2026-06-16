@@ -1,6 +1,33 @@
 import os, sys, platform
 
 
+def _patch_cv2_imread() -> None:
+    # cv2.imread on Windows uses the legacy ANSI fopen and silently returns
+    # None for paths with non-ASCII characters (Cyrillic, CJK, accented Latin
+    # outside the active code page). Read bytes via Python's open() instead,
+    # then hand them to cv2.imdecode.
+    try:
+        import cv2, numpy as np
+    except ImportError:
+        return
+    if getattr(cv2.imread, "_unicode_patched", False):
+        return
+    def _safe(filename, flags=cv2.IMREAD_COLOR):
+        try:
+            with open(str(filename), "rb") as fh:
+                buf = np.frombuffer(fh.read(), dtype=np.uint8)
+        except (OSError, TypeError, ValueError):
+            return None
+        if buf.size == 0:
+            return None
+        return cv2.imdecode(buf, flags)
+    _safe._unicode_patched = True
+    cv2.imread = _safe
+
+
+_patch_cv2_imread()
+
+
 def _runtime_base_path():
     # PyInstaller: __file__ is bundle-relative, so use _MEIPASS for assets.
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
