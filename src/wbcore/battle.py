@@ -998,6 +998,11 @@ def fight(lux=False):
         if now_rgb.button("event"):
             ck = True
             event()
+            # Re-evaluate from the top: an event's reward/transition frame can
+            # match a post-battle proxy in exit_if (Move/encounterreward/...),
+            # which would end the fight while the battle is still going. Looping
+            # back lets the battle resume (or reach a real victory) first.
+            continue
 
         if now.button("ego_warning"): # skip corrosion
             ck = True

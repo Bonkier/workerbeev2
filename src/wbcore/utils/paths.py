@@ -81,14 +81,10 @@ PTH = collect_png_paths(ASSETS_DIR)
 import logging as _logging
 _logging.getLogger(__name__).info("PTH loaded: %d templates from %s", len(PTH), ASSETS_DIR)
 
-# app.py assets
-APP_DIR = os.path.join(BASE_PATH,"ImageAssets/AppUI")
-APP_PTH = collect_png_paths(APP_DIR)
-
 if platform.system() == "Windows":
-    ICON = os.path.join(BASE_PATH,"ImageAssets","app_icon.ico")
+    ICON = os.path.join(BASE_PATH, "app_icon.ico")
 else:
-    ICON = os.path.join(BASE_PATH,"ImageAssets","app.png")
+    ICON = os.path.join(BASE_PATH, "ImageAssets", "app.png")
 
 # regions for some buttons
 REG = {

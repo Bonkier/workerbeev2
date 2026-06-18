@@ -1006,8 +1006,10 @@ def buy_some(rerolls=1, priority=False):
             win_click(1489, 177, tsize=(180, 53))
             connection()
             time.sleep(0.1)
-            if p.RUN_SCRIPT == "saikai_ryoshu": saikai_skill_replace()
-            do_skill_replace()
+            if p.RUN_SCRIPT == "saikai_ryoshu":
+                saikai_skill_replace()          # Ryoshu only; never the generic path
+            else:
+                do_skill_replace()
         elif balance() < 120: return
 
 def buy(missing):
@@ -1051,8 +1053,10 @@ def buy_loop(missing, floor1=False, keyword_ref=True):
                     action=confirm_affinity
                 )
                 connection()
-                if p.RUN_SCRIPT == "saikai_ryoshu": saikai_skill_replace()
-                do_skill_replace()
+                if p.RUN_SCRIPT == "saikai_ryoshu":
+                    saikai_skill_replace()      # Ryoshu only; never the generic path
+                else:
+                    do_skill_replace()
                 if p.EXTREME:
                     time.sleep(0.2)
                     for _ in range(1 + int(p.SUPER == "supershop")):
@@ -1064,8 +1068,10 @@ def buy_loop(missing, floor1=False, keyword_ref=True):
                 win_click(1489, 177, tsize=(180, 53))
                 connection()
                 time.sleep(0.1)
-                if p.RUN_SCRIPT == "saikai_ryoshu": saikai_skill_replace()
-                do_skill_replace()
+                if p.RUN_SCRIPT == "saikai_ryoshu":
+                    saikai_skill_replace()      # Ryoshu only; never the generic path
+                else:
+                    do_skill_replace()
                 if p.EXTREME:
                     time.sleep(0.2)
                     for _ in range(1 + int(p.SUPER == "supershop")):
@@ -1388,26 +1394,63 @@ def do_skill_replace():
     return swaps_taken
 
 
+def _close_skill_replace_menu():
+    """ESC the swap menu shut if it's still up, so a half-finished swap can't
+    leave it open and brick the next shop step."""
+    if _SKILL_REPLACE_MENU not in PTH:
+        return
+    for _ in range(2):
+        if not (LocateGray.check(PTH[_SKILL_REPLACE_MENU], wait=False, conf=0.85)
+                or LocateRGB.check(PTH[_SKILL_REPLACE_MENU], wait=False, conf=0.85)):
+            return
+        gui.press("escape")
+        time.sleep(0.4)
+
+
 def saikai_skill_replace():
-    """SAIKAI: take Ryoshu's S1 -> S3 swap once per run when offered."""
-    if "ryoshuskillreplace" not in PTH:
-        return False
+    """SAIKAI: take Ryoshu's S1 -> S3 swap once per run when her offer is on the
+    shelf. Hard-coded to Ryoshu - the generic do_skill_replace never runs for
+    SAIKAI, so no other (possibly skill-locked) sinner is ever attempted.
+
+    Detection uses the proven srep_ryoshu offer card; the swap uses Ryoshu's own
+    ryoshus1s3 button. Any failure after the menu opens ESCs it shut."""
     if getattr(p, "SAIKAI_S3_DONE", False):
         return False
-    if not tap_center("ryoshuskillreplace", tsize=(46, 22), wait=0):
+    if "ryoshus1s3" not in PTH or "srep_ryoshu" not in PTH:
         return False
-    logging.info("SAIKAI: skill-replace offer present - swapping Ryoshu S1 -> S3.")
+
+    # Find Ryoshu's offer (LABEL strip; the clickable button sits ~110px above).
+    box = (LocateGray.locate(PTH["srep_ryoshu"], conf=0.80)
+           or LocateRGB.locate(PTH["srep_ryoshu"], conf=0.80))
+    if box is None:
+        return False
+
+    cx, cy = gui.center(box)
+    logging.info("SAIKAI: Ryoshu skill-replace offer found - opening swap menu.")
+    win_click(cx, cy - _SKILL_REPLACE_BUTTON_Y_OFFSET, tsize=(10, 10))
     time.sleep(0.6)
-    if not tap_center("ryoshus1s3", tsize=(46, 22), wait=3):
-        logging.warning("SAIKAI: S1->S3 option not found after opening the replace UI.")
+    if not _wait_for_skill_replace_menu(timeout_s=3.0):
+        logging.warning("SAIKAI: opened Ryoshu offer but the swap menu did not appear.")
         return False
-    p.SAIKAI_S3_DONE = True
+
+    if not tap_center("ryoshus1s3", tsize=(46, 22), wait=3):
+        logging.warning("SAIKAI: S1->S3 option not found; closing menu.")
+        _close_skill_replace_menu()
+        return False
+
     time.sleep(0.5)
+    confirms = 0
     for n in range(2):                      # packconfirm shows up twice
         if not tap_center("packconfirm", tsize=(60, 22), wait=3):
             logging.warning("SAIKAI: skill-replace confirm %d/2 not found.", n + 1)
             break
+        confirms += 1
         time.sleep(0.6)
+
+    _close_skill_replace_menu()             # fail-safe: never leave it open
+    if confirms == 0:
+        return False
+    p.SAIKAI_S3_DONE = True
     logging.info("SAIKAI: Ryoshu S1 -> S3 skill replace complete.")
     return True
 
@@ -1452,8 +1495,9 @@ def shop():
                  p.SUPER, p.RUN_SHOP_VISITS)
     saikai = p.RUN_SCRIPT == "saikai_ryoshu"
     if saikai:
-        saikai_skill_replace()
-    do_skill_replace()
+        saikai_skill_replace()                  # Ryoshu only; never the generic path
+    else:
+        do_skill_replace()
 
     if now.button("Confirm"):
         if not input_with_fallback(
