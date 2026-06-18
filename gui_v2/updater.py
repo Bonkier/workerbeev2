@@ -233,10 +233,10 @@ def _helper_script(zip_path: str, dest_dir: str, exe_to_launch: str) -> str:
     # because this is a normal Python str literal, not raw.
     return (
         "@echo off\r\n"
-        "REM Wait for the parent exe to release file locks. PySide6 +\r\n"
-        "REM the Qt event loop can hold handles a moment after the\r\n"
-        "REM main window closes, so we give them 5s rather than 2s.\r\n"
-        "timeout /t 5 /nobreak >NUL\r\n"
+        "REM Brief initial wait; the mirror below then RETRIES until the\r\n"
+        "REM parent exe has released its file locks, so a slow Qt shutdown\r\n"
+        "REM can never wedge the swap.\r\n"
+        "timeout /t 3 /nobreak >NUL\r\n"
         "\r\n"
         f'set "ZIP={zip_path}"\r\n'
         f'set "INSTALL={dest_dir}"\r\n'
@@ -263,11 +263,18 @@ def _helper_script(zip_path: str, dest_dir: str, exe_to_launch: str) -> str:
         '\r\n'
         'REM Mirror new contents into the install dir. Configs live under\r\n'
         'REM %LOCALAPPDATA%\\WorkerBee\\config\\ which is outside the install\r\n'
-        'REM dir, so /MIR does NOT touch them.\r\n'
-        'REM /R:10 /W:3 gives 30s of retry budget so a slow parent exit\r\n'
-        'REM never wedges the swap. The version file mirror itself is\r\n'
-        'REM 5 bytes; retries cost nothing if the lock clears fast.\r\n'
-        'robocopy "%SRC%" "%INSTALL%" /MIR /R:10 /W:3 /NFL /NDL /NJH /NJS /nc /ns >NUL\r\n'
+        'REM dir, so /MIR does NOT touch them. Retry the whole mirror until\r\n'
+        'REM robocopy reports success (exit < 8); a locked exe from a slow\r\n'
+        'REM parent exit just means a couple of extra passes.\r\n'
+        'set "TRIES=0"\r\n'
+        ':wbcopy\r\n'
+        'robocopy "%SRC%" "%INSTALL%" /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /nc /ns >NUL\r\n'
+        'if not errorlevel 8 goto wbcopied\r\n'
+        'set /a TRIES+=1\r\n'
+        'if %TRIES% geq 25 goto wbcopied\r\n'
+        'timeout /t 2 /nobreak >NUL\r\n'
+        'goto wbcopy\r\n'
+        ':wbcopied\r\n'
         '\r\n'
         'rmdir /S /Q "%STAGE%" 2>NUL\r\n'
         'del "%ZIP%" 2>NUL\r\n'

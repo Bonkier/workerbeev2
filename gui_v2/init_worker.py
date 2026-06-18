@@ -109,40 +109,20 @@ class UpdateApplyWorker(QObject):
             self.progress.emit("Connecting to GitHub", 2)
             updater.download_release(self._url, zip_path, on_progress)
 
-            self.progress.emit("Preparing installer", 86)
+            self.progress.emit("Preparing installer", 90)
             updater.apply_update_and_restart(zip_path)
 
-            # Keep the splash alive through extract so the user doesn't
-            # relaunch and race the install swap. Robocopy /R:10 /W:3
-            # absorbs any small overlap if the parent quit lands mid-copy.
-            extract_total = 20.0
-            extract_start = 86
-            extract_end = 99
-            t = time.monotonic()
-            deadline = t + extract_total
-            tick = 0
-            while time.monotonic() < deadline:
-                elapsed = time.monotonic() - t
-                frac = min(1.0, elapsed / extract_total)
-                pct = extract_start + int((extract_end - extract_start) * frac)
-                dots = "." * ((tick % 3) + 1)
-                if elapsed < 4.0:
-                    msg = f"Preparing installer{dots}"
-                elif elapsed < 14.0:
-                    msg = f"Extracting update files{dots}"
-                else:
-                    msg = "Installing new version"
-                self.progress.emit(msg, pct)
-                tick += 1
-                time.sleep(0.8)
-
+            # The helper batch now owns the swap and waits for THIS process to
+            # release its file locks. We must exit promptly - keeping the
+            # parent alive while the helper copies is exactly what raced the
+            # swap before. The update lock + the launcher's in-progress guard
+            # block any relaunch during the brief window with no window.
             self.progress.emit(
                 f"Restarting to v{self._version}  -  "
-                f"don't reopen WorkerBee yet",
+                f"WorkerBee will reopen itself",
                 100,
             )
-            time.sleep(0.6)
-
+            time.sleep(1.0)
             self.finished.emit(True, "")
 
         except updater.UpdateError as exc:

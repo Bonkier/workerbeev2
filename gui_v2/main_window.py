@@ -384,8 +384,10 @@ class MainWindow(QMainWindow):
 
     def _on_check_done(self, ok: bool, err: str):
         if not ok:
-            self._splash.set_status(
-                err.splitlines()[0] if err else "Update check failed")
+            # A failed/blocked/timed-out update check must never strand the
+            # splash - fall through to a normal launch.
+            self._splash.set_status("Update check skipped")
+            self._run_normal_init()
             return
         current = _read_version().lstrip("v")
         info = self._pending_update or {}
@@ -406,6 +408,11 @@ class MainWindow(QMainWindow):
         )
         self._splash.update_now.connect(self._on_update_yes)
         self._splash.update_skip.connect(self._on_update_no)
+        # Test hook (unset in production): auto-accept so the update chain can
+        # be exercised end-to-end headlessly by tools/simulate_update_chain.py.
+        if os.environ.get("WORKERBEE_TEST_AUTO_ACCEPT"):
+            from PySide6.QtCore import QTimer as _QTimer
+            _QTimer.singleShot(800, self._on_update_yes)
 
     def _on_update_yes(self):
         # Disconnect so the buttons can't double-fire if the user mashes

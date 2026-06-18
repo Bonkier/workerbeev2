@@ -180,6 +180,16 @@ class HelpPage(QWidget):
             if not ok:
                 progress.cancel()
                 QMessageBox.warning(self, "Update failed", err)
+                return
+            # Success: the helper batch is waiting for THIS process to exit so
+            # it can take the file locks and swap the install dir. We MUST quit
+            # (the splash auto-update path does the same). Without this the exe
+            # stays locked, robocopy can't replace it, and nothing restarts.
+            progress.setLabelText("Restarting to apply update...")
+            from PySide6.QtCore import QTimer
+            from PySide6.QtWidgets import QApplication
+            QTimer.singleShot(300, lambda: (
+                QApplication.instance() and QApplication.instance().quit()))
 
         thread.progress.connect(_on_progress)
         thread.finished_init.connect(_on_done)
