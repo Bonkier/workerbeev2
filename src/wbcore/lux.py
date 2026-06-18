@@ -2,7 +2,7 @@ from .utils.utils import *
 from .battle import fight
 
 def is_full(shift):
-    # Green-pixel count in the convertible-enkephalin bar
+    # Green-pixel count in the convertible-enkephalin bar (bottom-left).
     # The old single-pixel probe at (530,1003) sat in a dark gap and always read dark.
     region = (460 - shift, 1004, 28, 16)
     image = screenshot(region=region)
@@ -61,11 +61,13 @@ _THD_LEVEL_TEMPLATES = {
 _EXP_STAGE_TEMPLATES = {n: f"lux_stage{n}" for n in range(1, 10)}
 
 
-def _setup_lux_consecutive_batch(remaining: int) -> int:
+def _setup_lux_consecutive_batch(remaining: int, anchor_box=None) -> int:
     """Configure the consecutive-battle popup; returns the batch size (1..10).
 
     Popup starts at 1. Cheapest path: add (T-1) times for small T, or add10
-    then reduce (10-T) for large T. Break-even at T=6.
+    then reduce (10-T) for large T. Break-even at T=6. When `anchor_box` is
+    given (EXP), the chevron is matched within that card's x-band so an
+    adjacent card never gets the count.
     """
     if remaining <= 1:
         return 1
@@ -79,8 +81,17 @@ def _setup_lux_consecutive_batch(remaining: int) -> int:
                         "cannot batch; running 1 at a time.")
         return 1
 
-    # Probe ALL candidates per poll tick so one variant's wait doesn't delay another.
-    matched = _tap_first_match(candidates, conf=0.85, wait=3.0)
+    matched = None
+    if anchor_box is not None:
+        for name in candidates:
+            box = _locate_in_band(name, anchor_box, conf=0.85, wait=3.0)
+            if box is not None:
+                win_click(*gui.center(box))
+                matched = name
+                break
+    # No anchor, or the anchored probe missed: fall back to first-on-screen.
+    if matched is None:
+        matched = _tap_first_match(candidates, conf=0.85, wait=3.0)
     if matched is None:
         logging.warning("Lux: consecutive-battle button not found via any "
                         "registered template (%s); running 1 at a time.",
@@ -157,6 +168,25 @@ def _tap_first_match(names: list, conf: float, wait: float):
             if box:
                 win_click(*gui.center(box))
                 return name
+        time.sleep(0.2)
+    return None
+
+
+def _locate_in_band(name: str, anchor_box, conf: float, wait: float = 2.0):
+    """Match `name` but keep only a hit inside anchor_box's card x-band, so a
+    per-card control resolves to the intended stage when several cards show."""
+    if name not in PTH:
+        return None
+    left = anchor_box[0]
+    band_left, band_right = left, left + _EXP_CARD_WIDTH
+    cx = gui.center(anchor_box)[0]
+    for _ in range(max(1, int(wait * 5))):
+        in_band = [
+            b for b in LocateRGB.locate_all(PTH[name], conf=conf)
+            if band_left <= gui.center(b)[0] <= band_right
+        ]
+        if in_band:
+            return min(in_band, key=lambda b: abs(gui.center(b)[0] - cx))
         time.sleep(0.2)
     return None
 
@@ -240,6 +270,39 @@ def _click_enterdoor_for_stage(stage_box) -> bool:
     return True
 
 
+# Stage badges (lux_stageN) share an identical "STAGE 0_" ribbon and differ
+# only in the trailing digit, so a sibling badge clears the 0.9 match floor.
+# After a candidate hit, re-score every digit inside the matched badge and keep
+# it only when the requested stage is the best fit; otherwise it's a look-alike
+# and we must keep scrolling to the real card.
+def _is_requested_stage(stage: int, box) -> bool:
+    left, top, w, h = box
+    pad = 20
+    region = (max(0, left - pad), max(0, top - pad), w + 2 * pad, h + 2 * pad)
+    try:
+        frame = screenshot(region=region)
+    except Exception:
+        return False
+    best_n, best_c = None, -1.0
+    for n, name in _EXP_STAGE_TEMPLATES.items():
+        if name not in PTH:
+            continue
+        try:
+            c = LocateRGB.get_conf(PTH[name], image=frame)
+        except Exception:
+            continue
+        if c > best_c:
+            best_c, best_n = c, n
+    return best_n == stage
+
+
+def _match_target_stage(stage: int, tpl: str):
+    box = LocateRGB.locate(PTH[tpl])
+    if box and _is_requested_stage(stage, box):
+        return box
+    return None
+
+
 def _find_exp_stage_box():
     """Scroll until the user's stage card is visible; return its match box."""
     stage = int(getattr(p, "LUX_EXP_STAGE", 6) or 6)
@@ -249,7 +312,7 @@ def _find_exp_stage_box():
             f"EXP Luxcavation: templateerror - no stage template "
             f"registered for stage {stage}.")
 
-    box = LocateRGB.locate(PTH[tpl])
+    box = _match_target_stage(stage, tpl)
     if box:
         return box
 
@@ -259,7 +322,7 @@ def _find_exp_stage_box():
             stage, i + 1, _EXP_SCROLL_LEFT_ATTEMPTS)
         _scroll_exp("left_to_right")
         time.sleep(_EXP_DRAG_INTER_GAP)
-        box = LocateRGB.locate(PTH[tpl])
+        box = _match_target_stage(stage, tpl)
         if box:
             return box
 
@@ -270,7 +333,7 @@ def _find_exp_stage_box():
             i + 1, _EXP_SCROLL_RIGHT_ATTEMPTS)
         _scroll_exp("right_to_left")
         time.sleep(_EXP_DRAG_INTER_GAP)
-        box = LocateRGB.locate(PTH[tpl])
+        box = _match_target_stage(stage, tpl)
         if box:
             return box
 
@@ -295,7 +358,7 @@ def select_exp_stage(remaining: int) -> int:
     logging.info("EXP Luxcavation: stage %d card located.", stage)
 
     # Open the consecutive-battle popup for THIS stage and dial the count.
-    batch = _setup_lux_consecutive_batch(remaining)
+    batch = _setup_lux_consecutive_batch(remaining, anchor_box=stage_box)
 
     # Either skip the battle (scheduler task with Skip on) or enter it.
     if getattr(p, "LUX_SKIP_EXP", False):
