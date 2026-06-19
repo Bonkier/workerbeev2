@@ -856,6 +856,66 @@ def enhance(gifts, floor1=False):
     time.sleep(0.3)
 
 
+_COST_INK_MASKS = None
+_INK_FALLBACK_LOGGED = False
+
+
+def _cost_ink_masks():
+    """Otsu ink-masks of the cost digit templates (native FHD size), cached.
+    Used by the brightness-invariant money fallback."""
+    global _COST_INK_MASKS
+    if _COST_INK_MASKS is None:
+        masks = {}
+        for i in range(10):
+            t = cv2.imread(PTH[f"cost{i}"])
+            if t is None:
+                continue
+            g = cv2.cvtColor(t, cv2.COLOR_BGR2GRAY)
+            _, m = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+            masks[i] = m
+        _COST_INK_MASKS = masks
+    return _COST_INK_MASKS
+
+
+def _read_money_ink(region):
+    """Brightness-invariant money read, used only when the normal RGB read finds
+    nothing. The cost templates are a tan glyph; some setups (HDR, raised
+    brightness/gamma) render the money near-white, so RGB can't colour-match and
+    balance() reads nothing. Matching on the glyph ink-mask drops fill colour
+    out while the shape still matches, so tan and white digits both read. The
+    capture is normalised to the FHD reference size first so this holds at any
+    window scale. Returns the balance, or -1 when no digits are found."""
+    global _INK_FALLBACK_LOGGED
+    reg = screenshot(region=region)
+    if reg is None or getattr(reg, "size", 0) == 0:
+        return -1
+    if reg.shape[0] != region[3] or reg.shape[1] != region[2]:
+        reg = cv2.resize(reg, (region[2], region[3]), interpolation=cv2.INTER_LINEAR)
+    g = cv2.cvtColor(reg, cv2.COLOR_BGR2GRAY)
+    _, rmask = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    cands = []
+    for i, tmask in _cost_ink_masks().items():
+        if tmask.shape[0] > rmask.shape[0] or tmask.shape[1] > rmask.shape[1]:
+            continue
+        res = cv2.matchTemplate(rmask, tmask, cv2.TM_SQDIFF_NORMED)
+        ys, xs = np.where(res <= 0.15)  # conf >= 0.85 on the ink-mask
+        for y, x in zip(ys, xs):
+            cands.append((int(x), i, float(res[y, x])))
+    cands.sort(key=lambda c: c[2])  # strongest match wins its position
+    chosen = []
+    for x, i, _ in cands:
+        if all(abs(x - cx) > 7 for cx, _ in chosen):
+            chosen.append((x, i))
+    chosen.sort()
+    num = "".join(str(i) for _, i in chosen)
+    if not num:
+        return -1
+    if not _INK_FALLBACK_LOGGED:
+        logging.info("balance: money read via brightness-invariant fallback (over-bright/HDR capture).")
+        _INK_FALLBACK_LOGGED = True
+    return int(num)
+
+
 def balance():
     answer_me = True
     bal = -1
@@ -873,6 +933,8 @@ def balance():
         bal = ""
         for i in digits: bal += str(i[0])
         bal = int(bal or -1)
+        if bal == -1:
+            bal = _read_money_ink((857, 175, 99, 57))  # over-bright/HDR fallback
         if bal != -1 and bal < 300 and answer_me:
             time.sleep(0.2)
             answer_me = False # low reading may be mid-update; re-read
