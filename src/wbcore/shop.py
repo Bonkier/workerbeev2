@@ -1394,48 +1394,27 @@ def do_skill_replace():
     return swaps_taken
 
 
-def _close_skill_replace_menu():
-    """ESC the swap menu shut if it's still up, so a half-finished swap can't
-    leave it open and brick the next shop step."""
-    if _SKILL_REPLACE_MENU not in PTH:
-        return
-    for _ in range(2):
-        if not (LocateGray.check(PTH[_SKILL_REPLACE_MENU], wait=False, conf=0.85)
-                or LocateRGB.check(PTH[_SKILL_REPLACE_MENU], wait=False, conf=0.85)):
-            return
-        gui.press("escape")
-        time.sleep(0.4)
-
-
 def saikai_skill_replace():
-    """SAIKAI: take Ryoshu's S1 -> S3 swap once per run when her offer is on the
-    shelf. Hard-coded to Ryoshu - the generic do_skill_replace never runs for
-    SAIKAI, so no other (possibly skill-locked) sinner is ever attempted.
-
-    Detection uses the proven srep_ryoshu offer card; the swap uses Ryoshu's own
-    ryoshus1s3 button. Any failure after the menu opens ESCs it shut."""
+    """SAIKAI: take Ryoshu's S1 -> S3 swap once per run - the first thing done
+    at the rest shop. Hard-coded to Ryoshu (the generic do_skill_replace never
+    runs for SAIKAI). Locates her market skill-swap icon (ryoshuskillreplace),
+    opens it, and applies the S1 -> S3 swap (ryoshus1s3)."""
     if getattr(p, "SAIKAI_S3_DONE", False):
         return False
-    if "ryoshus1s3" not in PTH or "srep_ryoshu" not in PTH:
+    if "ryoshuskillreplace" not in PTH or "ryoshus1s3" not in PTH:
         return False
 
-    # Find Ryoshu's offer (LABEL strip; the clickable button sits ~110px above).
-    box = (LocateGray.locate(PTH["srep_ryoshu"], conf=0.80)
-           or LocateRGB.locate(PTH["srep_ryoshu"], conf=0.80))
-    if box is None:
+    # Click Ryoshu's skill-swap icon. wait=3 so the market shelf has time to
+    # render after the shop opens; wait=0 was missing it and skipping the swap.
+    if not tap_center("ryoshuskillreplace", tsize=(46, 22), wait=3):
         return False
-
-    cx, cy = gui.center(box)
-    logging.info("SAIKAI: Ryoshu skill-replace offer found - opening swap menu.")
-    win_click(cx, cy - _SKILL_REPLACE_BUTTON_Y_OFFSET, tsize=(10, 10))
+    logging.info("SAIKAI: Ryoshu skill-swap icon found - applying S1 -> S3.")
     time.sleep(0.6)
-    if not _wait_for_skill_replace_menu(timeout_s=3.0):
-        logging.warning("SAIKAI: opened Ryoshu offer but the swap menu did not appear.")
-        return False
 
     if not tap_center("ryoshus1s3", tsize=(46, 22), wait=3):
-        logging.warning("SAIKAI: S1->S3 option not found; closing menu.")
-        _close_skill_replace_menu()
+        logging.warning("SAIKAI: S1->S3 option not found after opening the "
+                        "swap menu; backing out.")
+        gui.press("escape"); time.sleep(0.4)
         return False
 
     time.sleep(0.5)
@@ -1447,8 +1426,8 @@ def saikai_skill_replace():
         confirms += 1
         time.sleep(0.6)
 
-    _close_skill_replace_menu()             # fail-safe: never leave it open
     if confirms == 0:
+        gui.press("escape"); time.sleep(0.4)    # fail-safe: never leave it open
         return False
     p.SAIKAI_S3_DONE = True
     logging.info("SAIKAI: Ryoshu S1 -> S3 skill replace complete.")
