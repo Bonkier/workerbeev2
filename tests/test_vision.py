@@ -45,6 +45,17 @@ def _checker(size: int = 32, tile: int = 4) -> np.ndarray:
     return img
 
 
+def _quads(size: int = 64) -> np.ndarray:
+    """Four solid colour quadrants - distinctive and robust to rescaling."""
+    img = np.zeros((size, size, 3), dtype=np.uint8)
+    h = size // 2
+    img[:h, :h] = (200, 50, 50)
+    img[:h, h:] = (50, 200, 50)
+    img[h:, :h] = (50, 50, 200)
+    img[h:, h:] = (200, 200, 50)
+    return img
+
+
 class _RecordingBackend:
     """Fake CaptureFn that records what it was asked to capture."""
 
@@ -365,6 +376,61 @@ def test_finder_accepts_explicit_frame_skips_capture():
     assert hit is not None
     # If the frame is provided we must not call the backend at all.
     assert backend_calls == []
+
+
+def test_finder_sub_fhd_window_upscales_and_lifts():
+    """Below FHD, the captured frame is upscaled to FHD and the template
+    matched at native size; the hit must still land in correct FHD coords."""
+    template = _quads(64)  # native FHD size
+    region = Region(x=400, y=200, w=300, h=200)
+    # The region's FHD content, with the template at FHD-local (70, 50).
+    fhd_region = _solid(region.h, region.w, (12, 12, 12))
+    fhd_region[50:50 + 64, 70:70 + 64] = template
+    # 0.5x window: the backend hands back the region captured at half size.
+    window = WindowGeometry(x=0, y=0, w=960, h=540)
+    captured = cv2.resize(
+        fhd_region, (region.w // 2, region.h // 2), interpolation=cv2.INTER_AREA
+    )
+    backend = _RecordingBackend(captured)
+    loader = TemplateLoader(prefilled={"quads": template})
+    finder = Finder(window=window, backend=backend, loader=loader)
+
+    # conf below the round-trip blur loss: this exercises the lift, not the floor
+    # (the upscale path no longer relaxes confidence).
+    hit = finder.find("quads", region=region, conf=0.8)
+
+    assert hit is not None
+    # Upscaled back to FHD: match at FHD-local (70, 50) + region (400, 200).
+    assert abs(hit.x - 470) <= 2
+    assert abs(hit.y - 250) <= 2
+    # Matched at native size (~64), proving the template was NOT shrunk to scale.
+    assert abs(hit.w - 64) <= 2
+
+
+def test_finder_sub_fhd_passed_frame_keeps_legacy_path():
+    """A caller-supplied frame below FHD must NOT be upscaled: the template
+    is shrunk to window scale and the match lifts via the window (legacy)."""
+    template = _quads(64)
+    region = Region(x=400, y=200, w=300, h=200)
+    # Caller hands a window-scaled (0.5x) frame with a 0.5x template embedded.
+    small = cv2.resize(template, (32, 32), interpolation=cv2.INTER_AREA)
+    frame = _solid(region.h // 2, region.w // 2, (12, 12, 12))
+    frame[25:25 + 32, 35:35 + 32] = small
+
+    window = WindowGeometry(x=0, y=0, w=960, h=540)
+    backend = _RecordingBackend(np.zeros((1, 1, 3), dtype=np.uint8))
+    loader = TemplateLoader(prefilled={"quads": template})
+    finder = Finder(window=window, backend=backend, loader=loader)
+
+    hit = finder.find("quads", region=region, conf=0.9, frame=frame)
+
+    assert hit is not None
+    assert backend.calls == []  # supplied frame, no capture
+    # Legacy lift: window-local (35, 25) * inv_scale(2) + region (400, 200).
+    assert (hit.x, hit.y) == (470, 250)
+    # Exact 0.5x-vs-0.5x match: the passed frame was NOT upscaled (an upscale
+    # would blur the embed below 1.0).
+    assert hit.confidence > 0.99
 
 
 @pytest.mark.skipif(

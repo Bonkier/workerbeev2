@@ -1,7 +1,7 @@
 from .utils.utils import *
 from itertools import cycle
 
-from .battle import fight, select_team, thrill_swap
+from .battle import fight, select_team, squad_swap
 from .event import event
 from .pack import pack
 from .move import move
@@ -44,6 +44,11 @@ SAIKAI_FULL = (0, 0, 1920, 1080)
 # Templates the keyword-less gift pick needs (in ImageAssets/UI/saikai/).
 SAIKAI_GIFT_ASSETS = ("keywordless", "spiderwebego", "searchselect")
 
+# Gift thumbnails are detailed art that matches ~0.86 (vs ~0.95 for buttons)
+# when captured below FHD and upscaled; gift-icon lookups pass this lower floor
+# so the default 0.9 gate stays strict everywhere else (matching FHD behaviour).
+_GIFT_CONF = 0.80
+
 
 def ensure_gift_search_on():
     """Ensure the in-game 'Activate Gift Search' toggle is ON.
@@ -68,15 +73,134 @@ def saikai_gift_search():
     for _ in range(3):
         tap_center("keywordless", tsize=(34, 16), wait=4)
         time.sleep(0.7)
-        if loc.button("spiderwebego", SAIKAI_FULL, wait=2):
+        if loc.button("spiderwebego", SAIKAI_FULL, wait=2, conf=_GIFT_CONF):
             break
-    tap_center("spiderwebego", tsize=(34, 34), wait=3)
+    tap_center("spiderwebego", tsize=(34, 34), wait=3, conf=_GIFT_CONF)
     time.sleep(0.3)
     tap_center("searchselect", tsize=(46, 18), wait=3)
     time.sleep(0.4)
     for _ in range(2):
         gui.press("enter")
         time.sleep(0.6)
+
+
+# General start-of-run EGO gift search (up to 3 user-picked gifts). Regions in
+# FHD: the keyword filter-tab row sits at y~287, the thumbnail grid below it.
+_GIFT_TAB_REGION = (110, 250, 940, 80)     # spans all 11 keyword tabs incl. Keywordless
+_GIFT_TAB_Y = 287
+# Fixed FHD x-centres of the keyword tabs - used as a fallback when the template
+# match can't confirm a tab (e.g. it is drawn in its selected/dimmed state).
+_GIFT_TAB_X = {
+    "burn": 154, "bleed": 237, "tremor": 320, "rupture": 403,
+    "sinking": 486, "poise": 569, "charge": 652, "slash": 735,
+    "pierce": 818, "blunt": 901, "keywordless": 984,
+}
+_GIFT_GRID_REGION = (140, 350, 1000, 575)
+_GIFT_GRID_HOOK = (600, 620)        # cursor point for wheel-scrolling the grid
+
+
+def _gift_click_template(path, region, tsize=(30, 30), conf=0.9, wait=3.0):
+    """Locate a template by file path within region and click its centre."""
+    box = None
+    for _ in range(max(1, int(wait * 5))):
+        box = LocateRGB.locate(path, region=region, conf=conf)
+        if box:
+            break
+        time.sleep(0.2)
+    if not box:
+        return False
+    win_click(*gui.center(box), tsize=tsize)
+    return True
+
+
+def _click_keyword_tab(kw):
+    """Click a keyword filter tab. Prefers the catalog tab template (verified),
+    falling back to the tab's fixed FHD coordinate so a selected/dimmed tab the
+    template can't match is still clicked."""
+    from . import gift_catalog
+    tab = gift_catalog.tab_path(kw)
+    if tab and _gift_click_template(tab, _GIFT_TAB_REGION, tsize=(24, 24),
+                                    conf=0.85, wait=2):
+        return True
+    x = _GIFT_TAB_X.get(kw)
+    if x is not None:
+        win_click(x, _GIFT_TAB_Y, tsize=(16, 16))
+        return True
+    return False
+
+
+def _gift_scroll(clicks):
+    """Wheel-scroll the grid (+up / -down) with the cursor over it."""
+    win_moveTo(*_GIFT_GRID_HOOK, tsize=(1, 1))
+    gui.scroll(clicks)
+    time.sleep(0.4)
+
+
+def _find_and_click_gift(path, max_scrolls=6):
+    """Match the gift thumbnail in the grid, scrolling down until found."""
+    for attempt in range(max_scrolls + 1):
+        box = LocateRGB.locate(path, region=_GIFT_GRID_REGION, conf=_GIFT_CONF)
+        if box:
+            win_click(*gui.center(box), tsize=(34, 34))
+            return True
+        if attempt < max_scrolls:
+            _gift_scroll(-3)
+    return False
+
+
+def gift_search(targets):
+    """Select up to 3 EGO gifts in the in-game gift-search overlay: click each
+    gift's keyword tab, reset the grid to the top, match + click the thumbnail,
+    then Select. Returns how many were selected."""
+    from . import gift_catalog
+    picks, seen = [], set()
+    for name in (targets or []):
+        info = gift_catalog.gift_info(name)
+        if info and name not in seen:
+            picks.append((name, info)); seen.add(name)
+    picks = picks[:3]
+    if not picks:
+        return 0
+    # Starting gifts are picked first; the EGO Gift Search menu then appears
+    # (the toggle is already ensured on). Confirm we're in it before touching
+    # anything - giftsearch.png is the menu marker.
+    if "giftsearch" in PTH and not loc.button("giftsearch", (0, 0, 1920, 1080), wait=8):
+        logging.info("gift search: EGO Gift Search menu not detected; skipping.")
+        return 0
+    time.sleep(0.5)
+    # Group by keyword so same-keyword picks share one tab click; order kept.
+    picks.sort(key=lambda x: x[1]["keyword"])
+    selected = 0
+    current_kw = None
+    for name, info in picks:
+        kw = info["keyword"]
+        if kw != current_kw:
+            if not _click_keyword_tab(kw):
+                logging.warning("gift search: keyword tab '%s' not found; skipping '%s'.", kw, name)
+                continue
+            current_kw = kw
+            time.sleep(0.7)
+        _gift_scroll(12)        # reset to top so every search is top-down
+        if _find_and_click_gift(info["path"]):
+            selected += 1
+            logging.info("gift search: selected '%s' (%s).", name, kw)
+            time.sleep(0.4)
+        else:
+            logging.warning("gift search: '%s' not found in the '%s' grid.", name, kw)
+    if selected:
+        time.sleep(0.3)
+        tap_center("searchselect", tsize=(46, 18), wait=3)
+        time.sleep(0.4)
+        for _ in range(2):
+            gui.press("enter")
+            time.sleep(0.6)
+    else:
+        # Nothing selected: back out of the overlay so the run isn't stuck on it.
+        logging.warning("gift search: nothing selected; backing out of the overlay.")
+        win_click(145, 68, tsize=(20, 20))   # top-left back arrow
+        time.sleep(0.6)
+    logging.info("gift search: %d/%d gift(s) selected.", selected, len(picks))
+    return selected
 
 
 def _select_archetype_gifts():
@@ -91,34 +215,33 @@ def _select_archetype_gifts():
     ClickAction((1624, 882)).execute(try_click)
 
 
-def select_starting_gift():
-    """Run-start gift selection. SAIKAI runs the archetype picks then the
-    keyword-less Spiderweb search. Other runs do only the default picks."""
-    if p.RUN_SCRIPT != "saikai_ryoshu":
-        _select_archetype_gifts()
-        return
+_SPIDERWEB_GIFT = "Spiderweb Entangled in Red"
 
+
+def select_starting_gift():
+    """Run-start gift selection: archetype picks, then (if any are chosen) the
+    EGO Gift Search for the user's gifts. SAIKAI always searches Spiderweb,
+    first and mandatory; Thrill and standard runs search the user's picks."""
     _select_archetype_gifts()
 
-    missing = [n for n in SAIKAI_GIFT_ASSETS if n not in PTH]
-    if missing:
-        logging.warning(
-            "SAIKAI keyword-search templates missing: %s. Add them to "
-            "ImageAssets/UI/saikai/ and relaunch. Skipping the Spiderweb "
-            "search (starter gifts were still selected).", ", ".join(missing))
+    targets = [str(n) for n in (getattr(p, "GIFT_SEARCH", None) or [])]
+    if p.RUN_SCRIPT == "saikai_ryoshu":
+        targets = [_SPIDERWEB_GIFT] + [t for t in targets if t != _SPIDERWEB_GIFT]
+    targets = targets[:3]
+    if not targets:
         return
 
-    # Wait for each "E.G.O Gift GET!" Confirm before pressing Enter (a fixed
-    # delay fired before the first dialog was up and only confirmed one gift).
-    for _ in range(2):
+    # Confirm each starter-gift "E.G.O Gift GET!" dialog (Enter), one per gift
+    # selected; the EGO Gift Search menu opens once they're cleared.
+    for _ in range(4):
         if "packconfirm" in PTH:
-            loc.button("packconfirm", (0, 0, 1920, 1080), wait=5)
+            if not loc.button("packconfirm", (0, 0, 1920, 1080), wait=3):
+                break
         else:
             time.sleep(1.2)
         gui.press("enter")
         time.sleep(1.0)
-
-    saikai_gift_search()
+    gift_search(targets)
 
 
 def dungeon_start() -> bool:
@@ -132,11 +255,11 @@ def dungeon_start() -> bool:
         Action("Start"),
         Action("enterInvert", ver="ConfirmTeam"),
         select_team,
-        thrill_swap,   # THRILL: swap 0-energy IDs for +5 before confirming
+        squad_swap,   # swap 0-energy IDs for +5 before confirming (THRILL / opt-in)
         lambda: try_click.button("ConfirmTeam"),
         lambda: time.sleep(0.5),
         # ConfirmInvert in a retry loop; a one-shot click missed if the dialog
-        # was mid-render (especially after thrill_swap's animation lag).
+        # was mid-render (especially after squad_swap's animation lag).
         lambda: wait_while_condition(
             lambda: not now.button("enterBonus"),
             action=lambda: now_click.button("ConfirmInvert"),
@@ -151,7 +274,8 @@ def dungeon_start() -> bool:
         Action("Confirm.0", ver="refuse"),
 
         lambda: time.sleep(0.2),
-        lambda: (ensure_gift_search_on() if p.RUN_SCRIPT == "saikai_ryoshu"
+        lambda: (ensure_gift_search_on()
+                 if (p.RUN_SCRIPT == "saikai_ryoshu" or getattr(p, "GIFT_SEARCH", None))
                  else now_click.button("giftSearch")),
         select_starting_gift,
 
@@ -425,10 +549,13 @@ def dungeon_fail():
     # THRILL uses the GiveUp-less FAIL so partial rewards are claimed; same for
     # the "Claim rewards on defeat" Behaviour toggle.
     is_thrill = (getattr(p, "RUN_SCRIPT", "") == "thrill")
-    if is_thrill:
+    saikai_leave = bool(getattr(p, "SAIKAI_LEAVE_CLAIM", False))
+    p.SAIKAI_LEAVE_CLAIM = False              # consume; fresh for the next run
+    if is_thrill or saikai_leave:
         fail_seq = THRILL_FAIL
         locations = THRILL_FAIL_LOCATIONS
-        logging.info("THRILL: using GiveUp-less FAIL flow to keep partial rewards.")
+        logging.info("%s: GiveUp-less FAIL flow to keep partial rewards.",
+                     "THRILL" if is_thrill else "SAIKAI floor-leave")
     elif getattr(p, "CLAIM_ON_DEFEAT", False):
         # Drop Action("GiveUp") so partial Claim rewards are kept.
         fail_seq = [step for step in FAIL
@@ -622,6 +749,7 @@ def set_team(team, teams, keywordless):
     if not p.BUFF[3]: p.GIFTS[0]['uptie1'] = {k: p.GIFTS[0]['uptie1'][k] for k in list(p.GIFTS[0]['uptie1'])[:1]}
 
     p.SELECTED = [list(SINNERS.keys())[i] for i in list(teams[team]["sinners"])]
+    p.SWAP_EXCLUDE = list(teams[team].get("swap_exclude", []) or [])
     # Keep raw inputs so pack() can rebuild tables on a mid-run difficulty switch.
     p.PRIORITY_INPUT = teams[team]["priority"]
     p.AVOID_INPUT = teams[team]["avoid"]
@@ -667,8 +795,16 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
     p.HARD = p.HARD_TARGET and (1 >= p.HARD_FROM_FLOOR)
     p.RUN_SCRIPT = settings.get('run_script', '') or ''
     p.SAIKAI_BATTLE = 0
-    p.SAIKAI_S3_DONE = False
+    p.SAIKAI_S3_ONLY = bool(settings.get('saikai_s3_only', False))
+    p.SAIKAI_TURN_TOTAL = 0
+    # HoS evade phase length: ceil(deployed/2) from the scripted team's order,
+    # clamped to the MD squad cap (the order grid allows up to 12 picks).
+    _dep = min(len((teams.get(0) or {}).get("sinners") or []) or 7, 7)
+    p.SAIKAI_EVADE_TURNS = (_dep + 1) // 2
+    p.SAIKAI_STOP_FLOOR = int(settings.get('saikai_stop_floor', 0) or 0)
+    p.SAIKAI_LEAVE_CLAIM = False
     p.THRILL_EXCLUDE = list(settings.get('thrill_exclude', []) or [])
+    p.SWAP_MAX_ENERGY = bool(settings.get('swap_max_energy', False))
     p.THRILL_DONE = False
     p.THRILL_F1_RESTART = False
 
@@ -688,9 +824,27 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
     p.SKIP_EGO_FUSION     = bool(settings.get('skip_ego_fusion', False))
     p.SKIP_EGO_ENHANCING  = bool(settings.get('skip_ego_enhancing', False))
     p.SKIP_EGO_BUYING     = bool(settings.get('skip_ego_buying', False))
+    p.SKIP_EGO_BATTLE     = bool(settings.get('skip_ego_battle', False))
     p.SKIP_SINNER_HEALING = bool(settings.get('skip_sinner_healing', False))
     p.CLAIM_ON_DEFEAT     = bool(settings.get('claim_on_defeat', False))
+    # Market workflow: OFF buys only tagged gifts and uses the custom reroll.
+    p.DEFAULT_MARKET_WORKFLOW   = bool(settings.get('default_market_workflow', True))
+    p.MARKET_REFRESH_COUNT      = int(settings.get('market_refresh_count', 0) or 0)
+    p.MARKET_REFRESH_UNTIL_COST = bool(settings.get('market_refresh_until_cost', False))
+    p.BUY_EGO_FUEL              = bool(settings.get('buy_ego_fuel', False))
     p.LOGOUT_ON_FINISH    = bool(settings.get('logout_on_finish', False))
+    # Pack search: when False, pack() takes a single non-refreshing pick.
+    p.PACK_SEARCH         = bool(settings.get('pack_search', True))
+    # General-tab numeric inputs.
+    p.RETRY_COUNT         = int(settings.get('retry_count', 0) or 0)
+    _pr = settings.get('pack_refreshes', 7)
+    p.PACK_REFRESHES      = int(_pr) if _pr is not None else 7
+    # Pack Search fallback: per-floor pack to hunt in the search window
+    # when it is not on offer.
+    p.PACK_SEARCH_FLOORS = {
+        int(k): str(v)
+        for k, v in (settings.get('pack_search_floors') or {}).items() if v
+    }
 
     # Skill Replacement. REMAINING is deep-copied so shop can decrement without
     # mutating the source; per-visit counters reset so nothing leaks across runs.
@@ -722,6 +876,31 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
     p.MOUSE_SPEED = int(settings.get('mouse_speed', 100) or 100)
     p.MACRO_PROFILE = str(settings.get('macro_profile', 'SAFE') or 'SAFE').upper()
     p.MACRO_RHYTHM = bool(settings.get('rhythm', True))
+    p.MOUSE_MEMORY = bool(settings.get('mouse_memory', True))
+    try:
+        from .input.click_memory import MEMORY
+        MEMORY.configure(enabled=p.MOUSE_MEMORY)
+    except Exception:
+        pass
+    p.GIFT_SEARCH = [str(n) for n in (settings.get('gift_search') or [])][:3]
+    p.MARKET_GIFTS = dict(settings.get('market_gifts') or {})
+    # SAIKAI: the market is no longer forced. run_config supplies the user's
+    # editable SAIKAI tag slot (preset-seeded) as market_gifts; here we only
+    # route it through the custom market flow with fuel buying on so the T4
+    # crafts can complete.
+    if p.RUN_SCRIPT == "saikai_ryoshu":
+        if p.DEFAULT_MARKET_WORKFLOW:
+            # User never ran the custom market: their reroll knobs are 0/off
+            # (or stale from a greyed-out row). Give the buy step the old
+            # SAIKAI shelf-hunting (2 rerolls/floor) instead of inheriting.
+            p.MARKET_REFRESH_UNTIL_COST = False
+            p.MARKET_REFRESH_COUNT = max(int(p.MARKET_REFRESH_COUNT or 0), 2)
+        p.DEFAULT_MARKET_WORKFLOW = False
+        p.BUY_EGO_FUEL = True
+        logging.info("SAIKAI: market auto-configured via tags "
+                     "(custom market flow, EGO fuel buying on, %s rerolls).",
+                     "until-cost" if p.MARKET_REFRESH_UNTIL_COST
+                     else p.MARKET_REFRESH_COUNT)
     p.APP = app
     p.WARNING = warning
 
@@ -763,7 +942,17 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
                 p.RUN_BATTLES_LOST = 0
                 p.RUN_EVENTS_HANDLED = 0
                 completed = False
+                defeats = 0
                 while not completed:
+                    # Fresh per-attempt counters: a defeat retry is a brand
+                    # new dungeon, so the SAIKAI evade phase, battle
+                    # numbering, and the end-of-run gift scan all start
+                    # over with it.
+                    p.SAIKAI_TURN_TOTAL = 0
+                    p.SAIKAI_BATTLE = 0
+                    p.RUN_GIFTS_SCANNED = False
+                    p.CUSTOM_ENHANCE_DONE = {}
+                    p.CUSTOM_FUSE_DONE = set()
                     try:
                         set_team(team, teams, keywordless)
                         # THRILL: scope the team's auto-buy list to ONLY
@@ -797,6 +986,18 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
                     tele.run_result(completed, duration=time.time() - run_t0,
                                     team=(p.TEAM[0] if p.TEAM else ""),
                                     mode="mirror")
+                    if not completed:
+                        # "Retry count on defeat" (General tab): 0 keeps the
+                        # historical retry-forever; N gives up after N retries
+                        # and moves to the next iteration.
+                        defeats += 1
+                        cap = int(getattr(p, "RETRY_COUNT", 0) or 0)
+                        if cap and defeats > cap:
+                            logging.warning(
+                                "Defeated %d time(s) - retry cap (%d) "
+                                "reached, moving to the next run.",
+                                defeats, cap)
+                            break
 
             if p.ALTF4:
                 close_limbus()

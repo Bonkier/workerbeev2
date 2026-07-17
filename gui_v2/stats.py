@@ -3,11 +3,43 @@
 
 import json
 import os
+import sys
 import time
 from typing import Any
 
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_STATS_PATH = os.path.join(_BASE_DIR, "config", "v2_stats.json")
+
+def _stats_path() -> str:
+    """Writable stats path. Frozen: %LOCALAPPDATA%\\WorkerBee\\config (the
+    install dir is /MIR-purged on every update). Dev: the repo's config/."""
+    if getattr(sys, "frozen", False):
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "WorkerBee", "config", "v2_stats.json")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(root, "config", "v2_stats.json")
+
+
+def _migrate_legacy_stats(path: str) -> None:
+    """One-time move of the pre-fix bundle-dir stats file into the durable
+    location, so any surviving history carries over."""
+    if os.path.exists(path):
+        return
+    legacy = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "config", "v2_stats.json")
+    if legacy == path or not os.path.exists(legacy):
+        return
+    try:
+        import shutil
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # Copy, never move: the source dir is updater-wiped anyway, and a
+        # copy can't destroy history if the destination write is lost.
+        shutil.copy2(legacy, path)
+    except OSError:
+        pass
+
+
+_STATS_PATH = _stats_path()
+_migrate_legacy_stats(_STATS_PATH)
 _MAX_RUNS = 1000  # cap history so the file can't grow without limit
 
 
@@ -35,9 +67,11 @@ def _save(data: dict) -> None:
 
 
 def record_run(completed: bool, duration: float = 0.0, team: str = "",
-               mode: str = "mirror", floors: list | None = None) -> None:
+               mode: str = "mirror", floors: list | None = None,
+               gifts: list | None = None) -> None:
     """Append one finished-run record. `floors` is an optional list of
-    {floor, pack, duration} dicts giving per-floor pack timing."""
+    {floor, pack, duration} dicts giving per-floor pack timing; `gifts` an
+    optional [{name, uptied}] inventory from the end-of-run fuse-shelf scan."""
     data = _load()
     runs = data["runs"]
     runs.append({
@@ -51,6 +85,10 @@ def record_run(completed: bool, duration: float = 0.0, team: str = "",
              "pack": str(f.get("pack", "")),
              "duration": max(0.0, float(f.get("duration", 0) or 0))}
             for f in (floors or []) if isinstance(f, dict)
+        ],
+        "gifts": [
+            {"name": str(g.get("name", "")), "uptied": bool(g.get("uptied"))}
+            for g in (gifts or []) if isinstance(g, dict)
         ],
     })
     if len(runs) > _MAX_RUNS:

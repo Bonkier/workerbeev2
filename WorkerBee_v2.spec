@@ -77,8 +77,18 @@ hiddenimports = [
     # Bridge for input.
     "bridge",
     "bridge.bridge",
+    "bridge.lghub_check",
+    # Global hotkey listener for the Start/Pause/Stop keybinds.
+    "keyboard",
+    "keyboard._winkeyboard",
     # Our own packages.
     "wbcore",
+    # Only imported lazily (inside functions), so name them explicitly.
+    "wbcore.input.click_memory",
+    "wbcore.utils.datadir",
+    "wbcore.market_catalog",
+    "wbcore.gift_catalog",
+    "wbcore.pack_search_catalog",
     "gui_v2",
     "audio_manager",
     "discord_integration",

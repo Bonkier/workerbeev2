@@ -21,6 +21,7 @@ import random
 import time
 from typing import Iterable, Optional
 
+from .pack_search_catalog import PACK_SEARCH_KEYS
 from .runtime import ops, state
 from .teams import HARD as HARD_TEAMS, TEAMS
 from .utils import telemetry as tele
@@ -42,13 +43,15 @@ from .utils.utils import (
 _SAIKAI_PACK_GRID = (835, 300, 960, 565)     # search-window's pack grid
 _SAIKAI_PACK_CONFIRM = (1182, 871)            # black "Confirm" fallback coords
 _SAIKAI_PACK_CANCEL = (765, 871)              # cancel coords
-# Test toggle: skip the on-screen scan and go straight to Pack Search.
-_SAIKAI_FORCE_SEARCH = False
 
 # Floor-banner animation timing: F5/F10 changeovers run a transition
 # longer than the usual frame, so let it settle before we read.
 _LONG_TRANSITION_LEVELS = {6, 11}
 _LONG_TRANSITION_DELAY = 2.0
+# Pack cards slide into place when a floor opens; PackPull can register
+# mid-slide, and SIFT scoring a still-moving card maps it to a neighbour's
+# slot (wrong pack). Wait this long after detection before scoring x-positions.
+_PACK_SETTLE_DELAY = 1.0
 
 # Floor-bar geometry used by both the floor-number OCR and the move
 # step that follows the pack pick.
@@ -190,7 +193,11 @@ def _evaluate_packs(level: int,
         if idx is not None:
             weight[slots[idx]] += 1
 
-    winning_slot = max(weight, key=weight.get)
+    # Pick the lightest column (fewest gifts already there, per the note
+    # above); break ties randomly so an all-zero floor (no gifts detected yet)
+    # doesn't collapse to slot 0 - and the same pack - every single run.
+    min_w = min(weight.values())
+    winning_slot = random.choice([s for s, w in weight.items() if w == min_w])
     winning_pack = next(
         (pname for pname, i in filtered.items() if i == winning_slot), None,
     )
@@ -300,26 +307,25 @@ def _maybe_switch_difficulty(level: int) -> None:
     state.PICK_ALL = generate_packs_all(state.PRIORITY_INPUT)
 
 
-# ----------------------------------------------------- SAIKAI pack search
+# ----------------------------------------------------- pack search window
 
-def _saikai_pack_search(level: int) -> bool:
-    """SAIKAI fallback: open Pack Search, hunt for the floor's mandatory
-    pack, click + confirm + enter. Returns True if a wanted pack was
-    secured (so the caller can fall through to the regular pack-pick
-    eval and land on it)."""
-    wanted = state.PICK.get(f"floor{level}", [])
-    if not wanted:
-        return False
+def _pack_search_window(level, candidates, tag):
+    """Open Pack Search and hunt `candidates` [(template_stem, pack_key)]
+    in the grid; click + confirm + enter the first hit. Returns the
+    secured pack_key, or None. Shared by the SAIKAI script and the
+    user-configured pack-search fallback."""
+    if not candidates:
+        return None
     if "packsearch" not in PTH:
         logging.warning(
-            "SAIKAI: packsearch.png missing; add it to "
-            "ImageAssets/UI/saikai/ and relaunch.",
+            "%s: packsearch.png missing; add it to "
+            "ImageAssets/UI/saikai/ and relaunch.", tag,
         )
-        return False
+        return None
 
     logging.info(
-        "SAIKAI: opening Pack Search on floor %d (want one of %s)",
-        level, wanted,
+        "%s: opening Pack Search on floor %d (want one of %s)",
+        tag, level, [key for _stem, key in candidates],
     )
 
     # 1. Open Pack Search. tap_center uses a tight jitter so the click
@@ -331,9 +337,9 @@ def _saikai_pack_search(level: int) -> bool:
         # so a miss here means the button was covered / mid-animation /
         # off-resolution at poll time. Capture exactly what the bot saw
         # so the next report has hard evidence instead of a guess.
-        logging.error("SAIKAI: Pack Search button not located on screen.")
+        logging.error("%s: Pack Search button not located on screen.", tag)
         dump_template_diag("packsearch", "packsearch")
-        return False
+        return None
     time.sleep(0.8)
 
     # 2. Refresh the offerings (the red logo above the packs).
@@ -348,24 +354,19 @@ def _saikai_pack_search(level: int) -> bool:
     if banner in PTH and not ops.find(banner, region=(0, 0, 1920, 1080),
                                        timeout=2):
         logging.warning(
-            "SAIKAI: %s banner not detected after refresh; pack UI "
+            "%s: %s banner not detected after refresh; pack UI "
             "or difficulty may be wrong.",
-            banner,
+            tag, banner,
         )
 
-    # 3. Hunt for the floor's required pack in the visible grid; scroll
-    #    down by one tick and retry up to ten times before giving up.
+    # 3. Hunt for a wanted pack in the visible grid; scroll down by one
+    #    tick and retry up to ten times before giving up.
     grid_x = _SAIKAI_PACK_GRID[0] + _SAIKAI_PACK_GRID[2] // 2
     grid_y = _SAIKAI_PACK_GRID[1] + _SAIKAI_PACK_GRID[3] // 2
-    findable = [pk for pk in wanted if ("find" + pk) in PTH]
 
     for attempt in range(11):
-        for pack_name in findable:
-            hit = ops.find(
-                "find" + pack_name,
-                region=_SAIKAI_PACK_GRID,
-                mode="gray",
-            )
+        for stem, key in candidates:
+            hit = ops.find(stem, region=_SAIKAI_PACK_GRID, mode="gray")
             if hit is None:
                 continue
             ops.click_at(hit.center, tsize=(48, 70))
@@ -375,19 +376,48 @@ def _saikai_pack_search(level: int) -> bool:
             time.sleep(0.5)
             ops.press("enter")
             time.sleep(1.0)
-            logging.info("SAIKAI: secured %s via Pack Search.", pack_name)
-            return True
+            logging.info("%s: secured %s via Pack Search.", tag, key)
+            return key
         if attempt < 10:
             ops.scroll(-3, grid_x, grid_y)
             time.sleep(0.6)
 
     logging.error(
-        "SAIKAI: required pack for floor %d not found in Pack Search; "
-        "run compromised. Cancelling out.", level,
+        "%s: no wanted pack for floor %d found in Pack Search. "
+        "Cancelling out.", tag, level,
     )
     ops.click_at(_SAIKAI_PACK_CANCEL)
     time.sleep(0.5)
-    return False
+    return None
+
+
+def _configured_search_candidates(level):
+    """[(template_stem, pack_key)] for the user's configured Pack Search
+    pick on this floor (one pack per floor), if it belongs to the current
+    difficulty's pool."""
+    name = (getattr(state, "PACK_SEARCH_FLOORS", None) or {}).get(level)
+    if not name or name not in PACK_SEARCH_KEYS:
+        return []
+    key = PACK_SEARCH_KEYS[name]
+    pool = HARD_FLOORS[format_lvl(level)] if state.HARD else FLOORS[format_lvl(level)]
+    if key not in pool or ("ps_" + name) not in PTH:
+        return []
+    return [("ps_" + name, key)]
+
+
+def _configured_pack_search(level: int) -> bool:
+    """User-configured fallback: hunt the Packs-tab picks via Pack Search.
+    On success the secured pack is pushed to the front of this floor's
+    priority so the follow-up non-strict evaluate lands on it."""
+    key = _pack_search_window(
+        level, _configured_search_candidates(level), "PackSearch")
+    if key is None:
+        return False
+    pick_list = state.PICK.setdefault(f"floor{level}", [])
+    if key in pick_list:
+        pick_list.remove(key)
+    pick_list.insert(0, key)
+    return True
 
 
 # ---------------------------------------------------- main entry point
@@ -453,25 +483,47 @@ def pack() -> bool:
         center_x, _ = box.center
         card_count = 5 - min(max(center_x - 21, 1) // 157, 2)
 
+    # Let the cards finish sliding in before SIFT scores their x-positions,
+    # otherwise a still-moving card gets mapped to its neighbour's slot.
+    time.sleep(_PACK_SETTLE_DELAY)
+
     offset = (5 - card_count) * 161
     regions = [
         (182 + offset + 322 * i, 280, 291, 624)
         for i in range(card_count)
     ]
     refresh_budget = 1 + state.BUFF[2] + int(state.BUFF[2] > 0)
+    # "Pack refreshes" (General tab) caps the grace-derived budget; the
+    # default 7 sits above any derivable value, so untouched configs keep
+    # the historical behaviour.
+    refresh_budget = min(refresh_budget,
+                         int(getattr(state, "PACK_REFRESHES", 7)))
 
     logging.info("%d packs", card_count)
 
-    strict = (
-        state.RUN_SCRIPT == "saikai_ryoshu"
-        and bool(state.PICK.get(f"floor{state.LVL}"))
+    # User-configured Pack Search fallback (Packs tab). SAIKAI honours it
+    # like ordinary runs - the script's priorities still steer the pick and
+    # the refresh hunt, but the search window opens only when the user
+    # configured this floor. THRILL keeps managing its own packs.
+    custom_search = (
+        state.RUN_SCRIPT != "thrill"
+        and bool(_configured_search_candidates(state.LVL))
     )
+    strict = custom_search
+
+    do_search = bool(getattr(state, "PACK_SEARCH", True))
 
     slot: Optional[int] = None
-    if strict and _SAIKAI_FORCE_SEARCH:
-        # Testing path: bypass the on-screen scan entirely.
-        if _saikai_pack_search(state.LVL):
-            time.sleep(1.0)
+    if not do_search:
+        # Pack search off: one non-refreshing pass. Lands on a configured
+        # priority pack if it is on offer, else a ban-filtered fallback;
+        # never refreshes. The configured Pack Search fallback still
+        # applies: a strict pass first, then the search window on a miss.
+        time.sleep(0.2)
+        slot = _evaluate_packs(state.LVL, regions, 0, 0, strict=custom_search)
+        if custom_search and slot is None:
+            if _configured_pack_search(state.LVL):
+                time.sleep(1.0)
             slot = _evaluate_packs(state.LVL, regions, 0, 0, strict=False)
     else:
         for skip in range(refresh_budget + 1):
@@ -486,11 +538,12 @@ def pack() -> bool:
                 ops.click_at(_FLOOR_BAR_POINT, tsize=_FLOOR_BAR_SIZE)
                 time.sleep(2.0)
 
-        # SAIKAI strict + the pack still didn't appear: open Pack
-        # Search, then re-evaluate the pack screen non-strictly (so it
-        # actually lands on the now-secured pack).
-        if strict and slot is None and _saikai_pack_search(state.LVL):
-            time.sleep(1.0)
+        # The configured pack still didn't appear: open Pack Search, then
+        # re-evaluate non-strictly (so the pick lands on the now-secured
+        # pack); a failed search degrades to a normal pick.
+        if slot is None and custom_search:
+            if _configured_pack_search(state.LVL):
+                time.sleep(1.0)
             slot = _evaluate_packs(state.LVL, regions, 0, 0, strict=False)
 
     if slot is not None:

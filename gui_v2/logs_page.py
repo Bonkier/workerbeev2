@@ -84,9 +84,11 @@ _LEGACY_RE = re.compile(
 
 
 def _candidate_log_paths() -> list[str]:
+    from wbcore.utils.datadir import wb_data_dir
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return [
-        os.path.join(base, "game.log"),
+        os.path.join(wb_data_dir(), "game.log"),   # current location (survives updates)
+        os.path.join(base, "game.log"),            # legacy / dev fallbacks
         os.path.join(base, "src", "game.log"),
         os.path.join(base, "logs", "game.log"),
     ]

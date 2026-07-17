@@ -1,5 +1,7 @@
 import datetime, csv, sys, os, statistics
 
+from .utils.datadir import wb_data_dir
+
 
 class Floor:
     def __init__(self, st_time):
@@ -268,37 +270,13 @@ def export_to_csv(data, filename):
                 writer.writerow([])
 
 
-def _is_onefile_temp_path(path):
-    normalized = os.path.normcase(os.path.abspath(path))
-    return "\\appdata\\local\\temp\\onefil" in normalized
-
-
-def _launched_executable_dir():
-    argv0 = os.path.abspath(sys.argv[0]) if sys.argv else ""
-    exe = os.path.abspath(sys.executable)
-
-    if argv0 and os.path.isfile(argv0) and not _is_onefile_temp_path(argv0):
-        return os.path.dirname(argv0)
-
-    if exe and os.path.isfile(exe) and not _is_onefile_temp_path(exe):
-        return os.path.dirname(exe)
-
-    if argv0:
-        return os.path.dirname(argv0)
-
-    return os.path.dirname(exe)
-
-
 def log_to_csv():
-    appimage_path = os.environ.get("APPIMAGE")
-    if appimage_path:
-        base_path = os.path.dirname(appimage_path)
-    elif "__compiled__" in globals():
-        base_path = _launched_executable_dir()
-    else:
-        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__)))
-    lines = process_log_file(f"{base_path}/game.log")
+    # Read the log and write the csv from the writable data dir, the same place
+    # the logger writes game.log, so stats survive updates and frozen/dev builds
+    # agree on one location.
+    base_path = wb_data_dir()
+    lines = process_log_file(os.path.join(base_path, "game.log"))
     data = build_data(lines)
-    export_to_csv(data, f"{base_path}/game.csv")
+    export_to_csv(data, os.path.join(base_path, "game.csv"))
 
 

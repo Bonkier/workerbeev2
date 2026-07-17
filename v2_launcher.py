@@ -94,7 +94,12 @@ def main() -> int:
         if p not in sys.path:
             sys.path.insert(0, p)
 
-    _setup_logging(base)
+    # Log into the writable data dir (%LOCALAPPDATA%\WorkerBee when frozen) so
+    # game.log/game.csv - and the run statistics derived from them - survive the
+    # self-updater's robocopy /MIR instead of being wiped with the old install.
+    from wbcore.utils.datadir import wb_data_dir, migrate_legacy_logs
+    migrate_legacy_logs()
+    _setup_logging(wb_data_dir())
 
     from PySide6.QtCore import QCoreApplication, Qt
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings)

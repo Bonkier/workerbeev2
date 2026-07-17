@@ -11,6 +11,7 @@ pefile==2024.8.26
 pyasn1==0.6.1
 pathgenerator
 pynput>=1.7.0
+keyboard>=0.13.5
 pyinstaller==6.10.0
 pyinstaller-hooks-contrib==2024.8
 pywin32-ctypes==0.2.3

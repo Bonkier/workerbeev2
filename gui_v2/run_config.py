@@ -123,34 +123,58 @@ def _build_saikai_run(md_state: dict):
     # falling back to the scripted default only when every grace is 0.
     if not any(settings["buff"]):
         settings["buff"] = list(_SAIKAI_BUFF)
-    settings["infinity"] = False            # never Extreme
+    # "Go to floor 10": run the Infinite Mirror Dungeon and leave after floor 10;
+    # otherwise the normal 5-floor MD (the game ends it at floor 5).
+    floor10 = bool(md_state.get("saikai_floor10"))
+    settings["infinity"] = bool(floor10)
+    settings["saikai_stop_floor"] = 10 if floor10 else 0
     settings["winrate"] = False             # the battle script decides winrate
-    # Default flips Normal -> Hard at F4; "Hard from F1" option runs Hard throughout.
-    settings["hard_from_floor"] = (
-        1 if md_state.get("saikai_only_hard") else 4
-    )
+    # Legacy battle style: force S3 picks + evade elsewhere (HoS turn order off).
+    settings["saikai_s3_only"] = bool(md_state.get("saikai_s3_only"))
+    # Full normal: stay Normal every floor and skip pack search this run.
+    # Full hard: Hard from F1. Default (neither): flips Normal -> Hard at F4.
+    # Otherwise pack_search stays whatever the user's Behaviour toggle set in
+    # build_settings (default on) - do not pin it, or the toggle is dead.
+    full_normal = bool(md_state.get("saikai_full_normal"))
+    if full_normal:
+        settings["hard_from_floor"] = 99    # never flips to Hard
+        settings["pack_search"] = False
+    else:
+        settings["hard_from_floor"] = (
+            1 if md_state.get("saikai_only_hard") else 4
+        )
     settings["run_script"] = SAIKAI_SCRIPT
 
-    excluded = set(md_state.get("saikai_exclude") or [])
-    order_names = [n for n in (md_state.get("saikai_order") or [])
-                   if n not in excluded]
+    order_names = list(md_state.get("saikai_order") or [])
     user_order_idx = [_SINNER_INDEX[n] for n in order_names
                       if n in _SINNER_INDEX]
     sinners = user_order_idx or list(_SAIKAI_SINNERS)
+    # SAIKAI "Swap exclusion": sinners to keep OUT of the max-energy squad swap
+    # (only acts when the "Swap for max energy" toggle is on).
+    swap_exclude = [_SINNER_INDEX[n] for n in (md_state.get("saikai_exclude")
+                    or []) if n in _SINNER_INDEX]
+
+    # Primary status the saved team is filed under in-game (drives team select +
+    # the early gift pool). User-overridable; falls back to the Poise default.
+    saikai_status = md_state.get("saikai_status")
+    if saikai_status not in _STATUS_INDEX:
+        saikai_status = _SAIKAI_AFFINITY
 
     teams = {0: {
-        # Poise primary (drives in-game team select + early gifts), Slash second
-        # so the market fuses a Tier-4 Poise gift then a Tier-4 Slash gift.
-        # Only Poise is picked in-game (p.TEAM[0]).
-        "affinity": [_STATUS_INDEX[_SAIKAI_AFFINITY], _STATUS_INDEX["Slash"]],
+        # Primary status (drives in-game team select via p.TEAM[0] + early gifts),
+        # Slash second so the market fuses a Tier-4 primary gift then a Tier-4
+        # Slash gift.
+        "affinity": [_STATUS_INDEX[saikai_status], _STATUS_INDEX["Slash"]],
         "affinity_idx": 0,
         "duplicates": False,
         "sinners": sinners,
+        "swap_exclude": swap_exclude,
         "priority": _SAIKAI_PRIORITY,        # mandatory per-floor packs
-        "avoid": _SAIKAI_AVOID,
+        "avoid": _scripted_avoid_with_user(_SAIKAI_AVOID, _SAIKAI_PRIORITY,
+                                           md_state),
     }}
     count = int(md_state.get("run_count", 1) or 1)
-    hard = True                              # ultimate difficulty (active from F4)
+    hard = not full_normal                   # Full normal stays Normal all run
     return count, teams, settings, hard
 
 
@@ -164,6 +188,7 @@ def _build_thrill_run(md_state: dict):
     settings["winrate"] = False
     settings["hard_from_floor"] = 99         # never flips to Hard
     settings["forfeit_floor"] = 3            # forfeit after Floor 3
+    settings["pack_search"] = True           # scripted run hunts its packs
     settings["run_script"] = THRILL_SCRIPT
     # SINNERS indices the swap leaves alone. Capped at 12 (total sinner count).
     settings["thrill_exclude"] = [
@@ -177,17 +202,43 @@ def _build_thrill_run(md_state: dict):
     thrill_order_idx = [_SINNER_INDEX[n] for n in thrill_order_names
                         if n in _SINNER_INDEX][:12]
 
+    # Status the saved Thrill team is filed under in-game (drives team select).
+    # User-overridable; falls back to the Rupture default.
+    thrill_status = md_state.get("thrill_status")
+    if thrill_status not in _STATUS_INDEX:
+        thrill_status = _THRILL_AFFINITY
+
     teams = {0: {
-        "affinity": [_STATUS_INDEX[_THRILL_AFFINITY]],
+        "affinity": [_STATUS_INDEX[thrill_status]],
         "affinity_idx": 0,
         "duplicates": False,
         "sinners": thrill_order_idx or list(_DEFAULT_SINNERS),
         "priority": _THRILL_PRIORITY,
-        "avoid": _THRILL_AVOID,
+        "avoid": _scripted_avoid_with_user(_THRILL_AVOID, _THRILL_PRIORITY,
+                                           md_state),
     }}
     count = int(md_state.get("run_count", 1) or 1)
     hard = False                             # Normal mode
     return count, teams, settings, hard
+
+
+def _scripted_avoid_with_user(scripted_avoid, scripted_priority, md_state):
+    """Scripted avoid + the user's Packs-tab exclusions, so 'avoid' picks
+    keep working on SAIKAI/THRILL runs. The script's own priority packs stay
+    un-bannable (mandatory picks win over exclusions); user priorities are
+    ignored (scripted runs pin their own)."""
+    _pri, user_avoid = _build_packs(md_state.get("packs", {}),
+                                    md_state.get("global_packs", {}))
+    mandatory = set(scripted_priority[0])
+    packs = list(scripted_avoid[0])
+    for pk in user_avoid[0]:
+        if pk not in mandatory and pk not in packs:
+            packs.append(pk)
+    avo_floor = dict(scripted_avoid[2])
+    for pk, fl in user_avoid[2].items():
+        if pk in packs and pk not in avo_floor:
+            avo_floor[pk] = fl
+    return (packs, dict(scripted_avoid[1]), avo_floor)
 
 
 def _build_packs(packs: dict, global_packs: dict | None = None):
@@ -241,6 +292,26 @@ def _sinners_for(team_status: str, sinner_sel: dict) -> list:
     return idx or list(_DEFAULT_SINNERS)
 
 
+def _swap_exclude_for(team_status: str, sinner_excl: dict) -> list:
+    """SINNERS indices to leave alone during the squad max-energy swap, from
+    the team's 'Sinner swap exclusion' names."""
+    names = (sinner_excl or {}).get(team_status) or []
+    return [_SINNER_INDEX[n] for n in names if n in _SINNER_INDEX]
+
+
+def _market_gifts_for(md_state: dict) -> dict:
+    """The Market/Fuse tag dict for this run: the SAIKAI slot for SAIKAI runs
+    (preset-seeded when never saved), the normal slot otherwise."""
+    if (md_state.get("custom_run")
+            and md_state.get("custom_strategy") == SAIKAI_LABEL):
+        slot = md_state.get("market_gifts_saikai")
+        if slot is None:
+            from wbcore.market_catalog import SAIKAI_MARKET_TAGS
+            return {k: list(v) for k, v in SAIKAI_MARKET_TAGS.items()}
+        return slot
+    return md_state.get("market_gifts")
+
+
 def build_settings(md_state: dict) -> dict:
     """Build the bot's `settings` dict from the Mirror Dungeon UI state."""
     beh = md_state.get("behaviour", {}) or {}
@@ -268,12 +339,32 @@ def build_settings(md_state: dict) -> dict:
         "repeats": dict(skill_replace_raw.get("repeats") or {}),
     }
 
+    mkt_ctrl = md_state.get("market_controls") or {}
+    # Pack Search fallback (Packs tab): {floor: pack display name} for the
+    # floors whose toggle is on and a pack is configured.
+    ps_floors = {}
+    ps_raw = (md_state.get("pack_search_cfg") or {}).get("floors") or {}
+    for k, ent in ps_raw.items():
+        try:
+            fl = int(k)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(ent, dict) and ent.get("enabled") and ent.get("pack"):
+            ps_floors[fl] = str(ent["pack"])
+
     return {
         "bonus": bool(beh.get("bonus", True)),
         "restart": bool(beh.get("restart", True)),
         "altf4": (bool(beh.get("altf4", False)), bool(beh.get("altf4", False))),
         "enkephalin": bool(beh.get("enkephalin", True)),
         "skip": bool(beh.get("skip", True)),
+        "pack_search": bool(beh.get("pack_search", True)),
+        "pack_search_floors": ps_floors,
+        # General-tab numeric inputs (previously saved but never consumed).
+        "retry_count": int(md_state.get("retry_count", 0) or 0),
+        "pack_refreshes": int(md_state.get("pack_refreshes", 7) if
+                              md_state.get("pack_refreshes") is not None else 7),
+        "swap_max_energy": bool(beh.get("swap_max_energy", False)),
         "buff": [int(grace.get(name, 0)) for name in _GRACE_ORDER],
         "card": card,
         "wishmaking": bool(beh.get("wishmaking", False)),
@@ -294,10 +385,21 @@ def build_settings(md_state: dict) -> dict:
         "claim_on_defeat":     bool(beh.get("claim_on_defeat", False)),
         "logout_on_finish":    bool(beh.get("logout_on_finish", False)),
         "skill_replace":       skill_replace,
+        # Up to 3 EGO gifts to auto-select at run start (gift_catalog names).
+        "gift_search":         list(md_state.get("gift_search") or [])[:3],
+        # Market/Fuse per-gift tags (keep_fuse/keep_sell/sell/buy, catalog names).
+        # SAIKAI runs use their own editable tag slot, seeded from the preset
+        # when the slot has never been saved.
+        "market_gifts":        dict(_market_gifts_for(md_state) or {}),
+        # Market workflow controls (Market/Fuse tab). OFF buys only tagged gifts.
+        "default_market_workflow":   bool(mkt_ctrl.get("default_market_workflow", True)),
+        "market_refresh_count":      int(mkt_ctrl.get("refresh_count", 0) or 0),
+        "market_refresh_until_cost": bool(mkt_ctrl.get("refresh_until_cost", False)),
+        "buy_ego_fuel":              bool(mkt_ctrl.get("buy_ego_fuel", False)),
     }
 
 
-def build_md_run(md_state: dict, sinner_sel: dict):
+def build_md_run(md_state: dict, sinner_sel: dict, sinner_excl: dict = None):
     """Return (count, teams, settings, hard) for a Mirror Dungeon run, or
     raise ValueError with a user-facing message if config is unusable."""
     # SAIKAI is a fully scripted preset: it ignores the page inputs below.
@@ -336,6 +438,7 @@ def build_md_run(md_state: dict, sinner_sel: dict):
             "affinity_idx": 0,
             "duplicates": False,
             "sinners": _sinners_for(status[0], sinner_sel),
+            "swap_exclude": _swap_exclude_for(status[0], sinner_excl),
             "priority": priority,
             "avoid": avoid,
         }

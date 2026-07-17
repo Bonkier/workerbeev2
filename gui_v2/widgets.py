@@ -108,6 +108,9 @@ class FlowLayout(QLayout):
         line_height = 0
         spacing = self.spacing()
         for item in self._items:
+            w = item.widget()
+            if w is not None and w.isHidden():
+                continue        # filtered-out items don't reserve space (pack left)
             hint = item.sizeHint()
             next_x = x + hint.width() + spacing
             if next_x - spacing > rect.right() and line_height > 0:
@@ -854,16 +857,19 @@ class Segmented(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
 
-        # Track.
+        # Track. Cap the corner radius so the rounded ends do not grow with the
+        # control height (which scales with the font at high display scaling)
+        # and clip the labels. A fixed radius keeps a constant, small inset.
         track = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        track_r = min(track.height() / 2.0, 11.0)
         p.setBrush(QColor(Colors.BG_OVERLAY))
-        p.drawRoundedRect(track, track.height() / 2.0, track.height() / 2.0)
+        p.drawRoundedRect(track, track_r, track_r)
 
         # Sliding pill.
         if not self._pill.isNull():
+            pill_r = min(self._pill.height() / 2.0, 9.0)
             p.setBrush(QColor("#e8e8ea"))
-            p.drawRoundedRect(self._pill, self._pill.height() / 2.0,
-                              self._pill.height() / 2.0)
+            p.drawRoundedRect(self._pill, pill_r, pill_r)
 
     def selected(self) -> str:
         for label, btn in self._buttons.items():

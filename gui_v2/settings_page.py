@@ -10,6 +10,7 @@ The controls here map to real backend params where one exists; nothing
 fake is added. Persistence wiring lands with the settings_manager port.
 """
 
+import logging
 import os
 import sys
 
@@ -40,6 +41,7 @@ class _BridgeProbe(QObject):
 
     @Slot()
     def run(self):
+        b = None
         try:
             base = _project_root()
             for p in (base, os.path.join(base, "src")):
@@ -49,9 +51,24 @@ class _BridgeProbe(QObject):
             b = Bridge(auto_open=False)
             b.open()
             ok = bool(b.is_open())
-            self.done.emit(ok, "" if ok else "bridge reported not open")
+            if ok:
+                # Detail carries the installed G Hub version ("" = undetected).
+                from bridge.lghub_check import installed_lghub_version
+                self.done.emit(True, installed_lghub_version() or "")
+            else:
+                self.done.emit(False, self._diag(b, "bridge reported not open"))
         except Exception as exc:
-            self.done.emit(False, f"{type(exc).__name__}: {exc}")
+            self.done.emit(False, self._diag(b, f"{type(exc).__name__}: {exc}"))
+
+    @staticmethod
+    def _diag(b, msg: str) -> str:
+        """Append the DLL's diagnose() text (names e.g. a G Hub version
+        problem) to a failure message when available."""
+        try:
+            d = b.diagnose() if b is not None else ""
+        except Exception:
+            d = ""
+        return f"{msg} [{d}]" if d else msg
 
 
 # Bindable actions (key, label, default combo). exp/threads runners were
@@ -80,10 +97,19 @@ _TEAM_TYPES = (
     # Luxcavation sin affinities (EXP runs targeting a specific sin).
     "Wrath", "Lust", "Sloth", "Gluttony", "Gloom", "Pride", "Envy",
 )
+# Statuses with a Mirror Dungeon team-select icon (the SAIKAI/THRILL keyword).
+_STK_STATUSES = (
+    "Burn", "Bleed", "Tremor", "Rupture", "Sinking", "Poise", "Charge",
+)
 
 
 # Holds the live Discord bot across page rebuilds.
 _discord_bot = None
+
+
+def discord_bot():
+    """The live DiscordBot instance, or None when not configured/running."""
+    return _discord_bot
 
 
 def _project_root() -> str:
@@ -150,6 +176,7 @@ class SettingsPage(QWidget):
         outer.addWidget(self._build_profiles())
         outer.addWidget(self._build_sinners())
         outer.addWidget(self._build_sinner_exclusion())
+        outer.addWidget(self._build_saikai_thrill())
         outer.addWidget(self._build_humanization())
         outer.addWidget(self._build_advanced())
         outer.addWidget(self._build_overlay())
@@ -401,9 +428,21 @@ class SettingsPage(QWidget):
 
     def _on_lghub_done(self, ok: bool, detail: str):
         if ok:
-            self._lghub_status.setText("Connected to LGHub")
-            self._lghub_status.setStyleSheet(f"color: {Colors.SUCCESS};")
+            from bridge.lghub_check import (EXPECTED_LGHUB_VERSION,
+                                            lghub_version_ok)
+            if detail and not lghub_version_ok(detail):
+                self._lghub_status.setText(
+                    f"Connected, but G Hub is v{detail} - WorkerBee needs "
+                    f"v{EXPECTED_LGHUB_VERSION} (mouse input may drift)"
+                )
+                self._lghub_status.setStyleSheet(f"color: {Colors.WARNING};")
+            else:
+                ver = f" (v{detail})" if detail else ""
+                self._lghub_status.setText(f"Connected to LGHub{ver}")
+                self._lghub_status.setStyleSheet(f"color: {Colors.SUCCESS};")
         else:
+            if detail:
+                logging.warning("LGHub probe failed: %s", detail)
             self._lghub_status.setText(
                 "Not reachable - start LGHub, then check again"
             )
@@ -526,6 +565,228 @@ class SettingsPage(QWidget):
         return {team: list(state["exclude"])
                 for team, state in self._sinner_states.items()}
 
+    # --- SAIKAI / THRILL teams -----------------------------------
+    def _build_saikai_thrill(self) -> QWidget:
+        section = Card("SAIKAI / THRILL TEAMS", self)
+        # Kept so the shell's "Go to SAIKAI / Thrill settings" button can scroll
+        # this card into view after switching to the Settings tab.
+        self._stk_card = section
+        section.body.addWidget(self._wrap_hint(
+            "Sinner pick order and team keyword for the SAIKAI and Thrill "
+            "scripted runs. Choose a run, set its order, and the keyword the "
+            "team is saved under in-game."))
+        self._stk_loading = True
+        self._stk_states = {
+            "SAIKAI": {"order": [], "exclude": [], "keyword": "Poise",
+                       "only_hard": False, "full_normal": False,
+                       "floor10": False, "s3_only": False},
+            "Thrill": {"order": [], "exclude": [], "keyword": "Rupture"},
+        }
+        self._stk_run = "SAIKAI"
+
+        row = QHBoxLayout()
+        row.setSpacing(Sizing.SPACE_SM)
+        row.addWidget(QLabel("Run", self, objectName="settingTitle"))
+        self._stk_seg = Segmented(["SAIKAI", "Thrill"], default="SAIKAI",
+                                  parent=section)
+        self._stk_seg.selection_changed.connect(self._on_stk_run)
+        row.addWidget(self._stk_seg)
+        row.addStretch(1)
+        section.body.addLayout(row)
+
+        self._stk_keyword = _combo(list(_STK_STATUSES), section)
+        self._stk_keyword.currentTextChanged.connect(self._on_stk_changed)
+        section.body.addWidget(SettingRow(
+            "Team keyword", "What keyword is this team binded to?",
+            self._stk_keyword, parent=section))
+
+        self._stk_hard = Toggle(default=False, parent=section)
+        self._stk_hard.toggled.connect(self._on_stk_changed)
+        self._stk_hard.toggled.connect(self._on_stk_hard_toggled)
+        self._stk_hard_row = SettingRow(
+            "Full hard",
+            "SAIKAI only: run every floor on Hard (default flips to Hard at "
+            "Floor 4). Mutually exclusive with Full normal.",
+            self._stk_hard, parent=section)
+        section.body.addWidget(self._stk_hard_row)
+
+        self._stk_normal = Toggle(default=False, parent=section)
+        self._stk_normal.toggled.connect(self._on_stk_changed)
+        self._stk_normal.toggled.connect(self._on_stk_normal_toggled)
+        self._stk_normal_row = SettingRow(
+            "Full normal",
+            "SAIKAI only: stay on Normal every floor (never flips to Hard) "
+            "and skip pack search for this run. Mutually exclusive with "
+            "Full hard.", self._stk_normal, parent=section)
+        section.body.addWidget(self._stk_normal_row)
+
+        self._stk_floor10 = Toggle(default=False, parent=section)
+        self._stk_floor10.toggled.connect(self._on_stk_changed)
+        self._stk_floor10_row = SettingRow(
+            "Go to floor 10",
+            "SAIKAI only: run the Infinite Mirror Dungeon and leave after "
+            "floor 10 (claiming rewards) instead of ending at floor 5.",
+            self._stk_floor10, parent=section)
+        section.body.addWidget(self._stk_floor10_row)
+
+        self._stk_s3_only = Toggle(default=False, parent=section)
+        self._stk_s3_only.toggled.connect(self._on_stk_changed)
+        self._stk_s3_only_row = SettingRow(
+            "Choose Skill 3 only",
+            "SAIKAI only: legacy battle style - force Skill 3 picks and evade "
+            "on her other slots every turn. Off (default): evade one slot per "
+            "turn for the first ceil(deployed/2) turns across battles, then "
+            "plain winrate for the rest of the run.",
+            self._stk_s3_only, parent=section)
+        section.body.addWidget(self._stk_s3_only_row)
+
+        section.body.addWidget(QLabel("Sinner order", self,
+                                      objectName="subSectionLabel"))
+        self._stk_order = ClickOrderGrid(list(_SINNER_NAMES), rows=2, cols=6,
+                                         max_picks=12, parent=section)
+        self._stk_order.changed.connect(self._on_stk_changed)
+        section.body.addWidget(self._stk_order)
+
+        section.body.addWidget(QLabel("Swap exclusion", self,
+                                      objectName="subSectionLabel"))
+        section.body.addWidget(self._wrap_hint(
+            "Sinners to keep out of the max-energy swap (only acts when "
+            "Behaviour > Swap for max energy is on)."))
+        self._stk_exclude = ClickOrderGrid(list(_SINNER_NAMES), rows=2, cols=6,
+                                           max_picks=12, parent=section)
+        self._stk_exclude.changed.connect(self._on_stk_changed)
+        section.body.addWidget(self._stk_exclude)
+
+        self._stk_apply("SAIKAI")
+        self._stk_loading = False
+        return section
+
+    def _stk_sync(self):
+        st = self._stk_states[self._stk_run]
+        st["order"] = self._stk_order.order()
+        st["exclude"] = self._stk_exclude.order()
+        st["keyword"] = self._stk_keyword.currentText()
+        if self._stk_run == "SAIKAI":
+            st["only_hard"] = self._stk_hard.isChecked()
+            st["full_normal"] = self._stk_normal.isChecked()
+            st["floor10"] = self._stk_floor10.isChecked()
+            st["s3_only"] = self._stk_s3_only.isChecked()
+
+    def _stk_apply(self, run):
+        prev = self._stk_loading
+        self._stk_loading = True
+        try:
+            st = self._stk_states[run]
+            self._stk_order.set_order(st["order"])
+            self._stk_exclude.set_order(st["exclude"])
+            if st["keyword"] in _STK_STATUSES:
+                self._stk_keyword.setCurrentText(st["keyword"])
+            saikai = (run == "SAIKAI")
+            self._stk_hard_row.setVisible(saikai)
+            self._stk_normal_row.setVisible(saikai)
+            self._stk_floor10_row.setVisible(saikai)
+            self._stk_s3_only_row.setVisible(saikai)
+            if saikai:
+                self._stk_hard.setChecked(bool(st.get("only_hard")))
+                self._stk_normal.setChecked(bool(st.get("full_normal")))
+                self._stk_floor10.setChecked(bool(st.get("floor10")))
+                self._stk_s3_only.setChecked(bool(st.get("s3_only")))
+        finally:
+            self._stk_loading = prev
+
+    def _on_stk_run(self, run):
+        self._stk_sync()
+        self._stk_run = run
+        self._stk_apply(run)
+
+    def _on_stk_changed(self, *_):
+        if getattr(self, "_stk_loading", False):
+            return
+        self._stk_sync()
+        self._save_state()
+
+    def _on_stk_hard_toggled(self, on):
+        # Full hard and Full normal are mutually exclusive.
+        if getattr(self, "_stk_loading", False):
+            return
+        if on and self._stk_normal.isChecked():
+            self._stk_normal.setChecked(False)
+
+    def _on_stk_normal_toggled(self, on):
+        if getattr(self, "_stk_loading", False):
+            return
+        if on and self._stk_hard.isChecked():
+            self._stk_hard.setChecked(False)
+
+    def saikai_thrill_config(self) -> dict:
+        """Flat md_state keys for run_config; merged in by the coordinator."""
+        self._stk_sync()
+        s = self._stk_states["SAIKAI"]
+        t = self._stk_states["Thrill"]
+        return {
+            "saikai_order": list(s["order"]),
+            "saikai_exclude": list(s["exclude"]),
+            "saikai_status": s["keyword"],
+            "saikai_only_hard": bool(s["only_hard"]),
+            "saikai_full_normal": bool(s.get("full_normal")),
+            "saikai_floor10": bool(s.get("floor10")),
+            "saikai_s3_only": bool(s.get("s3_only")),
+            "thrill_order": list(t["order"]),
+            "thrill_exclude": list(t["exclude"]),
+            "thrill_status": t["keyword"],
+        }
+
+    def _restore_stk(self, stk):
+        if not isinstance(stk, dict):
+            stk = self._migrate_stk_from_mirror()
+        for run, st in (stk or {}).items():
+            if run not in self._stk_states or not isinstance(st, dict):
+                continue
+            kw = st.get("keyword")
+            self._stk_states[run].update({
+                "order": [n for n in (st.get("order") or [])
+                          if n in _SINNER_NAMES],
+                "exclude": [n for n in (st.get("exclude") or [])
+                            if n in _SINNER_NAMES],
+                "keyword": (kw if kw in _STK_STATUSES
+                            else self._stk_states[run]["keyword"]),
+            })
+            if run == "SAIKAI":
+                self._stk_states["SAIKAI"]["only_hard"] = bool(
+                    st.get("only_hard"))
+                self._stk_states["SAIKAI"]["full_normal"] = bool(
+                    st.get("full_normal"))
+                self._stk_states["SAIKAI"]["floor10"] = bool(
+                    st.get("floor10"))
+                self._stk_states["SAIKAI"]["s3_only"] = bool(
+                    st.get("s3_only"))
+        if hasattr(self, "_stk_apply"):
+            self._stk_apply(self._stk_run)
+
+    def _migrate_stk_from_mirror(self) -> dict:
+        """One-time: read SAIKAI/THRILL config from the MD page's old 'mirror'
+        section so existing setups carry over after the move to Settings."""
+        try:
+            m = load_section("mirror") or {}
+        except Exception:
+            return {}
+        if not m:
+            return {}
+        return {
+            "SAIKAI": {
+                "order": m.get("saikai_order") or [],
+                "exclude": m.get("saikai_exclude") or [],
+                "keyword": m.get("saikai_status") or "Poise",
+                "only_hard": bool(m.get("saikai_only_hard")),
+                "full_normal": bool(m.get("saikai_full_normal")),
+            },
+            "Thrill": {
+                "order": m.get("thrill_order") or [],
+                "exclude": m.get("thrill_exclude") or [],
+                "keyword": m.get("thrill_status") or "Rupture",
+            },
+        }
+
     # --- Persistence ---------------------------------------------
     def _connect_persistence(self):
         self._monitor.currentIndexChanged.connect(self._save_state)
@@ -559,6 +820,7 @@ class SettingsPage(QWidget):
             "macro_profile": self._macro_profile.selected(),
             "rhythm": self._rhythm.isChecked(),
             "mouse_speed": self._mouse_speed.value(),
+            "mouse_memory": self._mouse_memory.isChecked(),
             "audio_alerts": self._audio_alerts.isChecked(),
             "volume": self._volume.value(),
             "show_descriptions": self._show_descriptions.isChecked(),
@@ -567,6 +829,7 @@ class SettingsPage(QWidget):
                         for k, t in self._overlay_toggles.items()},
             "shortcuts": {k: b.binding() for k, b in self._shortcuts.items()},
             "sinners": sinners,
+            "saikai_thrill": {k: v for k, v in self._stk_states.items()},
         })
 
     def _on_descriptions_toggled(self, on: bool):
@@ -592,6 +855,8 @@ class SettingsPage(QWidget):
                     self._rhythm.setChecked(bool(s["rhythm"]))
                 if isinstance(s.get("mouse_speed"), int):
                     self._mouse_speed.setValue(s["mouse_speed"])
+                if "mouse_memory" in s:
+                    self._mouse_memory.setChecked(bool(s["mouse_memory"]))
                 if "audio_alerts" in s:
                     self._audio_alerts.setChecked(bool(s["audio_alerts"]))
                 if isinstance(s.get("volume"), int):
@@ -648,6 +913,10 @@ class SettingsPage(QWidget):
                 pass
             finally:
                 self._loading = False
+        # SAIKAI/THRILL: restored unconditionally so the one-time migration
+        # from the old "mirror" section runs even when app_settings is empty
+        # (SAIKAI set in the MD page, but no app settings saved yet).
+        self._restore_stk((s or {}).get("saikai_thrill"))
         # Always re-sync the appearance + config controls (covers a config
         # load that swapped the whole settings file under us).
         if hasattr(self, "_sync_theme_controls"):
@@ -831,6 +1100,16 @@ class SettingsPage(QWidget):
             "How fast the cursor moves. 100% is the default human-like speed; "
             "higher is faster, but above 200% looks less human.",
             ms_cluster, parent=section,
+        ))
+        self._mouse_memory = Toggle(default=True, parent=section)
+        self._mouse_memory.toggled.connect(self._save_state)
+        section.body.addWidget(SettingRow(
+            "Mouse memory",
+            "Learns where buttons usually appear and pre-moves the cursor there "
+            "while waiting, like muscle memory. Speeds up runs and looks more "
+            "human; the click always lands on the real button.",
+            self._mouse_memory,
+            parent=section,
         ))
         return section
 
@@ -1027,6 +1306,21 @@ class SettingsPage(QWidget):
         stats / screenshot providers, and log path the Discord bot needs."""
         self._discord_hooks = hooks or {}
 
+    def autostart_discord(self):
+        """Connect the Discord bot on launch if it is enabled and configured.
+        Previously the gateway connect only ran from the Save handler, so users
+        had to open Settings and Save every launch. Idempotent; no-op when
+        disabled or unconfigured."""
+        try:
+            if not self._discord_enable.isChecked():
+                return
+            token = self._discord_token.text().strip()
+            channel = self._discord_channel.text().strip()
+            if token and channel:
+                self._apply_discord(token)
+        except Exception as exc:
+            print(f"Discord autostart skipped: {exc}")
+
     def _apply_discord(self, token: str):
         """Best-effort start/stop the bot. The bot instance is held at
         module scope so it survives across rebuilds."""
@@ -1043,6 +1337,7 @@ class SettingsPage(QWidget):
             _discord_bot = None
             if self._discord_enable.isChecked() and token and \
                     self._discord_channel.text().strip():
+                from wbcore.utils.datadir import wb_data_dir
                 hooks = self._discord_hooks or {}
                 _discord_bot = DiscordBot(
                     token,
@@ -1052,7 +1347,7 @@ class SettingsPage(QWidget):
                     hooks.get("get_stats", lambda: {}),
                     hooks.get("get_screenshot", lambda: None),
                     hooks.get("log_path")
-                    or os.path.join(_project_root(), "game.log"),
+                    or os.path.join(wb_data_dir(), "game.log"),
                 )
                 _discord_bot.start()
         except Exception as exc:

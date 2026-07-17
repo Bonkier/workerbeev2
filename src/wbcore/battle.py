@@ -186,8 +186,9 @@ def find_skill3(background, known_rgb, threshold=40, min_pixels=10, max_pixels=1
 def select_team():
     time.sleep(1)
 
-    # SAIKAI pins to Poise regardless of p.TEAM order.
-    affinity = "poise" if p.RUN_SCRIPT == "saikai_ryoshu" else p.TEAM[0].lower()
+    # Team-select status = the run's primary affinity. SAIKAI/THRILL expose this
+    # as a user override (defaults stay Poise/Rupture via p.TEAM[0]).
+    affinity = p.TEAM[0].lower()
     idx = p.NAME_ORDER
     if not p.DUPLICATES and LocateGray.check(PTH[f"{affinity}_current"], region=REG["current_team"], conf=0.92, method=cv2.TM_SQDIFF_NORMED, wait=False):
         return
@@ -200,7 +201,7 @@ def select_team():
     for i in range(4):
         coords = [gui.center(box) for box in LocateGray.locate_all(PTH[f"{affinity}_team"], region=REG["teams"], threshold=15, conf=0.85)]
         print(coords)
-        sorted(coords, key=lambda coord: coord[1])
+        coords.sort(key=lambda coord: coord[1])
 
         if len(coords) > idx:
             if i != 0 and i != 3: gui.mouseUp()
@@ -260,16 +261,27 @@ def _thrill_gold_peaks(tpl_key, region, thr):
     return peaks
 
 
-def thrill_swap():
-    """THRILL: at the squad screen, swap every 0-energy ID for a +5 one."""
-    if p.RUN_SCRIPT != "thrill":
+# +5 ID select: the maxenergy badge sits at each card's top-right corner, but the
+# clickable identity is the card body, so shift the click from the badge to the
+# portrait centre (offset measured from a captured ID-list frame).
+_SWAP_CARD_DX = -80
+_SWAP_CARD_DY = 90
+
+
+def squad_swap():
+    """At the squad screen, swap every non-excluded 0-energy ID for a +5 one.
+    Runs for the THRILL preset, or for any run when the user enabled the
+    'Swap for max energy' Behaviour toggle (p.SWAP_MAX_ENERGY)."""
+    is_thrill = (p.RUN_SCRIPT == "thrill")
+    if not is_thrill and not getattr(p, "SWAP_MAX_ENERGY", False):
         return
     if "zeroenergy" not in PTH or "maxenergy" not in PTH:
-        logging.warning("THRILL: energy templates missing from PTH - skipping swap.")
+        logging.warning("Squad swap: energy templates missing from PTH - skipping.")
         return
     time.sleep(0.4)
-    excluded = set(getattr(p, "THRILL_EXCLUDE", []) or [])
-    logging.info("THRILL: squad swap start (excluding sinner slots %s)",
+    excluded = set((getattr(p, "THRILL_EXCLUDE", []) if is_thrill
+                    else getattr(p, "SWAP_EXCLUDE", [])) or [])
+    logging.info("Squad swap start (excluding sinner slots %s)",
                  sorted(excluded))
     swapped = 0
     poll_interval = 0.12
@@ -283,9 +295,14 @@ def thrill_swap():
         if not zero:
             continue   # this slot's equipped ID already has energy
         zx, zy, zc = zero[0]
-        logging.info("THRILL: slot %d shows +0 (%.2f) at (%d,%d) - opening ID list.",
+        logging.info("Squad swap: slot %d shows +0 (%.2f) at (%d,%d) - opening ID list.",
                      slot, zc, zx, zy)
         win_click(zx, zy)
+        # Let the clicked sinner's ID list open before reading +5. Otherwise the
+        # poll instantly locks onto other sinners' +5 starlight badges still on
+        # the team screen (a SAIKAI team starts with +5 IDs; after the first swap
+        # the swapped sinner shows +5 too), and we'd click the wrong card.
+        time.sleep(0.8)
         five = []
         deadline = time.time() + open_timeout
         while time.time() < deadline:
@@ -295,13 +312,14 @@ def thrill_swap():
             time.sleep(poll_interval)
         if five:
             fx, fy, fc = five[0]
-            logging.info("THRILL: slot %d -> +5 (%.2f) at (%d,%d) - equipping.",
-                         slot, fc, fx, fy)
-            win_click(fx, fy)
+            cx, cy = fx + _SWAP_CARD_DX, fy + _SWAP_CARD_DY
+            logging.info("Squad swap: slot %d -> +5 (%.2f) badge(%d,%d) card(%d,%d) - equipping.",
+                         slot, fc, fx, fy, cx, cy)
+            win_click(cx, cy)
             time.sleep(0.35)
             swapped += 1
         else:
-            logging.info("THRILL: slot %d - no +5 found in ID list, leaving it.", slot)
+            logging.info("Squad swap: slot %d - no +5 found in ID list, leaving it.", slot)
         gui.press("esc")
         deadline = time.time() + close_timeout
         while time.time() < deadline:
@@ -309,7 +327,7 @@ def thrill_swap():
                                       (250, 150, 1450, 760), 0.65):
                 break
             time.sleep(poll_interval)
-    logging.info("THRILL: squad swap done - %d sinner(s) swapped.", swapped)
+    logging.info("Squad swap done - %d sinner(s) swapped.", swapped)
 
 
 def select(sinners):
@@ -870,8 +888,16 @@ def fight(lux=False):
                 background = screenshot(region=(round(gear_start[0] + 100), 775, round(gear_end[0] - gear_start[0] - 200), 10))
 
                 if p.RUN_SCRIPT == "saikai_ryoshu":
-                    # Park the mouse off the slot row (cursor tooltips break detection).
                     saikai_turn += 1
+                    s3_only = bool(getattr(p, "SAIKAI_S3_ONLY", False))
+                    if (not s3_only and
+                            int(getattr(p, "SAIKAI_TURN_TOTAL", 0)) >=
+                            int(getattr(p, "SAIKAI_EVADE_TURNS", 0))):
+                        # HoS turn order: the evade phase (ceil(deployed/2)
+                        # COMMITTED turns, counted across battles) is over -
+                        # plain winrate for the rest of the run.
+                        raise gui.ImageNotFoundException
+                    # Park the mouse off the slot row (cursor tooltips break detection).
                     win_moveTo(960, 160)
                     time.sleep(0.2)
                     slots = _ryoshu_slot_centers()
@@ -888,10 +914,16 @@ def fight(lux=False):
                                          gear_start[1]-46+80, slots[0][1])
                         except Exception as _e:
                             logging.debug("clean capture failed: %s", _e)
-                    # Battle 1, turns 1-2: evade EVERY slot. Otherwise: pass 1 finds
-                    # top-S3 columns via wrath chip; pass 2 template-matches her S3
-                    # gem art on the bottom-selected columns.
-                    evade_all_now = (p.SAIKAI_BATTLE <= 1 and saikai_turn <= 2)
+                    # Legacy "Choose Skill 3 only": battle 1 turns 1-2 evade EVERY
+                    # slot, then S3 forcing with evades on the non-S3 columns.
+                    # Default (HoS turn order): during the evade phase, evade ONE
+                    # slot per turn (prefer a non-top-S3 column) and let the rest
+                    # attack via the chain's own picks. Either way, an evaded
+                    # column MUST have its BOTTOM skill selected in the chain -
+                    # the card click puts the evade on the bottom slot, so a
+                    # top-selected column would attack instead of evading.
+                    evade_all_now = (s3_only and p.SAIKAI_BATTLE <= 1
+                                     and saikai_turn <= 2)
                     evade_slots = slots
                     force_offsets = {}
                     debug_suspect = False
@@ -905,25 +937,40 @@ def fight(lux=False):
                             top_s3 = {col for col in
                                       _ryoshu_top_s3_columns(background, gear_start, skill_num)
                                       if col in ryoshu_cols}
-                        for col in ryoshu_cols:
-                            force_offsets[col] = (_SAIKAI_S3_UPPER_OFF if col in top_s3
-                                                  else _SAIKAI_S3_BOTTOM_OFF)
+                        if s3_only:
+                            for col in ryoshu_cols:
+                                force_offsets[col] = (_SAIKAI_S3_UPPER_OFF if col in top_s3
+                                                      else _SAIKAI_S3_BOTTOM_OFF)
+                        else:
+                            # Pick the evade column BEFORE the drag (top-chip
+                            # knowledge only; the bottom gems aren't readable
+                            # yet) and force its bottom skill selected.
+                            non_s3 = [col for col in sorted(ryoshu_cols)
+                                      if col not in top_s3]
+                            pick = non_s3[0] if non_s3 else sorted(ryoshu_cols)[0]
+                            force_offsets[pick] = _SAIKAI_S3_BOTTOM_OFF
+                            evade_slots = [ryoshu_cols[pick]]
+                            logging.info(
+                                "SAIKAI: evade phase turn %d/%d - evading col %d "
+                                "(%s), bottom skill forced.", p.SAIKAI_TURN_TOTAL,
+                                int(getattr(p, "SAIKAI_EVADE_TURNS", 0)), pick,
+                                "non-top-S3" if non_s3 else "top-S3-only slots")
                         chain(gear_start, gear_end, background, execute=False,
                               force_offsets=force_offsets)
                         time.sleep(0.35)
-                        # No park here: after the chain the cursor sits on the last
                         # No park: cursor sits below the gem read band post-chain.
-                        bottom_s3 = set()
-                        if not evade_all_now:
-                            bottom_s3 = _ryoshu_bottom_s3_columns(ryoshu_cols, top_s3)
-                        attack_cols = top_s3 | bottom_s3
-                        evade_slots = [ryoshu_cols[col] for col in sorted(ryoshu_cols)
-                                       if col not in attack_cols]
-                        for col in sorted(ryoshu_cols):
-                            kind = ("top S3" if col in top_s3 else
-                                    "bottom S3" if col in bottom_s3 else "evade")
-                            logging.info("SAIKAI: col %d -> %s.", col, kind)
-                        debug_suspect = (not evade_all_now and not attack_cols)
+                        if s3_only:
+                            bottom_s3 = set()
+                            if not evade_all_now:
+                                bottom_s3 = _ryoshu_bottom_s3_columns(ryoshu_cols, top_s3)
+                            attack_cols = top_s3 | bottom_s3
+                            evade_slots = [ryoshu_cols[col] for col in sorted(ryoshu_cols)
+                                           if col not in attack_cols]
+                            for col in sorted(ryoshu_cols):
+                                kind = ("top S3" if col in top_s3 else
+                                        "bottom S3" if col in bottom_s3 else "evade")
+                                logging.info("SAIKAI: col %d -> %s.", col, kind)
+                            debug_suspect = (not evade_all_now and not attack_cols)
                     else:
                         chain(gear_start, gear_end, background, execute=False,
                               force_offsets=force_offsets)
@@ -932,7 +979,7 @@ def fight(lux=False):
                         evaded = evade_all_ryoshu_slots(evade_slots)
                         if not evaded:
                             logging.warning("SAIKAI: Ryoshu evade failed.")
-                    else:
+                    elif s3_only:
                         logging.info("SAIKAI: every one of her slots has S3 - all attacking.")
                     if _SAIKAI_DEBUG_CAPTURE and slots:
                         try:
@@ -957,6 +1004,9 @@ def fight(lux=False):
                         raise StopExecution
                     logging.info("SAIKAI: turn %d done - pressing Enter to execute.", saikai_turn)
                     gui.press("enter", 1, 0.1)
+                    # Tick the run-wide turn counter only on COMMIT (a pause
+                    # before the Enter re-enters this turn without burning it).
+                    p.SAIKAI_TURN_TOTAL = int(getattr(p, "SAIKAI_TURN_TOTAL", 0)) + 1
                     time.sleep(1)
                 elif p.RUN_SCRIPT == "thrill" and getattr(p, "THRILL_DONE", False):
                     # THRILL non-focused battles after Thrill is crafted. Do NOT
@@ -981,7 +1031,7 @@ def fight(lux=False):
                 if is_focused and p.RUN_SCRIPT == "thrill":
                     # THRILL focused: no 'p'/winrate; evade, drag gems, Enter.
                     thrill_focused_turn()
-                    if not lux and p.HARD: select_ego()
+                    if not lux and not p.SKIP_EGO_BATTLE: select_ego()
                     gui.press("enter", 1, 0.1)
                     time.sleep(1)
                 else:
@@ -991,8 +1041,11 @@ def fight(lux=False):
                     if is_focused and not loc.button("winrate_on", "winrate", wait=2, method=cv2.TM_SQDIFF_NORMED):
                         win_click(1385, 930)
 
-                    if not lux and p.HARD: select_ego()
+                    if not lux and not p.SKIP_EGO_BATTLE: select_ego()
                     gui.press("enter", 1, 0.1)
+                    if p.RUN_SCRIPT == "saikai_ryoshu":
+                        # Focused and post-phase winrate turns commit here.
+                        p.SAIKAI_TURN_TOTAL = int(getattr(p, "SAIKAI_TURN_TOTAL", 0)) + 1
                     time.sleep(1)
 
         if now_rgb.button("event"):

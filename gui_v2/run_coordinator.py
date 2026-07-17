@@ -22,14 +22,9 @@ from .overlay import RunOverlay
 from .run_config import build_md_run, build_lux_run
 from .settings import load_section
 
-# Default global hotkeys (match v1). Wired to the `keyboard` library if it
-# imports; otherwise hotkeys are simply unavailable (buttons still work).
-_HOTKEYS = {
-    "mirror": "ctrl+q",
-    "exp": "ctrl+e",
-    "thread": "ctrl+r",
-    "stop": "f2",
-}
+# Global hotkeys are read from the user's saved Shortcuts (Settings) at
+# startup; see _install_hotkeys. Requires the `keyboard` package; without it,
+# hotkeys are simply unavailable (the on-screen buttons still work).
 
 
 class RunCoordinator(QObject):
@@ -38,6 +33,7 @@ class RunCoordinator(QObject):
     _hk_exp = Signal()
     _hk_thread = Signal()
     _hk_stop = Signal()
+    _hk_pause = Signal()
     # Bot-thread telemetry, marshalled to the GUI thread for the overlay.
     _tele_event = Signal(dict)
 
@@ -109,6 +105,7 @@ class RunCoordinator(QObject):
         self._hk_exp.connect(lambda: self._toggle_lux("exp"))
         self._hk_thread.connect(lambda: self._toggle_lux("thread"))
         self._hk_stop.connect(self._stop)
+        self._hk_pause.connect(self._toggle_pause)
         self._install_hotkeys()
         self._prewarm_audio()
 
@@ -123,23 +120,39 @@ class RunCoordinator(QObject):
 
     # --- starting ---------------------------------------------------
     def _inject_global_settings(self, settings: dict) -> None:
-        """Fold Settings-page globals (mouse speed, movement profile, rhythm)
-        into the run's settings dict so the bot applies them via execute_me.
-        These live on the Settings page (section 'app_settings'), not the
-        per-run MD/Lux pages."""
+        """Fold Settings-page globals (mouse speed, movement profile, rhythm,
+        skip-EGO-in-battle) into the run's settings dict so the bot applies
+        them via execute_me. These live on the Settings page (section
+        'app_settings'), not the per-run MD/Lux pages."""
         app = load_section("app_settings") or {}
         settings["mouse_speed"] = int(app.get("mouse_speed", 100) or 100)
+        settings["mouse_memory"] = bool(app.get("mouse_memory", True))
         prof = app.get("macro_profile", "Safe")
         settings["macro_profile"] = (
             prof if prof in ("Safe", "Fast", "Chaotic") else "Safe")
         settings["rhythm"] = bool(app.get("rhythm", True))
+        settings["skip_ego_battle"] = bool(
+            (app.get("advanced") or {}).get("skip_ego_battle", False))
+
+    def _md_state(self) -> dict:
+        """MD page state with the SAIKAI/THRILL team config (now edited in the
+        Settings tab) merged in, so run_config sees it where it expects."""
+        md = self._md.state()
+        if self._settings is not None and hasattr(self._settings,
+                                                   "saikai_thrill_config"):
+            try:
+                md.update(self._settings.saikai_thrill_config())
+            except Exception:
+                pass
+        return md
 
     def _start_md(self):
         if self._controller.is_running():
             return
         try:
             sinners = self._settings.sinner_selection() if self._settings else {}
-            count, teams, settings, hard = build_md_run(self._md.state(), sinners)
+            excl = self._settings.sinner_exclusion() if self._settings else {}
+            count, teams, settings, hard = build_md_run(self._md_state(), sinners, excl)
         except ValueError as exc:
             self._on_warning(str(exc))
             return
@@ -319,8 +332,9 @@ class RunCoordinator(QObject):
     def _sched_run_md(self, task: dict):
         try:
             sinners = self._settings.sinner_selection() if self._settings else {}
+            excl = self._settings.sinner_exclusion() if self._settings else {}
             count, teams, settings, hard = build_md_run(
-                self._md.state(), sinners)
+                self._md_state(), sinners, excl)
         except Exception as exc:
             self._on_warning(f"Scheduler MD config error: {exc}")
             self._scheduler_done()
@@ -375,6 +389,7 @@ class RunCoordinator(QObject):
             p.MOUSE_SPEED = int(settings.get("mouse_speed", 100) or 100)
             p.MACRO_PROFILE = str(settings.get("macro_profile", "SAFE")).upper()
             p.MACRO_RHYTHM = bool(settings.get("rhythm", True))
+            p.MOUSE_MEMORY = bool(settings.get("mouse_memory", True))
             p.NETZACH = True       # gate the convert flow on
         except Exception:
             pass
@@ -425,6 +440,7 @@ class RunCoordinator(QObject):
         self._cur_phase = ""             # last "phase" event
         self._cur_floor = 0              # last "floor" event
         self._cur_pack = ""               # last "floor" event's pack
+        self._cur_gifts = []             # last "gifts" event (floor-5 scan)
         self._last_action = ""           # last "action" event
         self._run_index = 0              # last "run" event's iteration index
         self._run_total = 0              # last "run" event's total count
@@ -455,11 +471,36 @@ class RunCoordinator(QObject):
         # current task was a run-type one (MD / EXP / THD / Convert) and
         # the bot has just stopped - either by completing or by failing,
         # both of which should pop the queue forward.
-        if self._sched_active:
-            self._sched_advance()
+        if self._sched_active and not self._wait_timer.isActive():
+            # bot_stopped fires before the worker thread is torn down, so
+            # starting the next run task immediately trips start_run's
+            # "Bot is already running" guard and kills the queue. Poll
+            # until the controller is actually free. Skipped while a Wait
+            # task is pending: its timer owns the queue advance, and a
+            # manual run finishing must not double-advance past it.
+            self._sched_advance_when_free()
+
+    def _sched_advance_when_free(self, _hops: int = 0):
+        if not self._sched_active:
+            return
+        if self._controller.is_running():
+            if _hops >= 150:   # ~30s: teardown is wedged, fail loudly
+                logging.warning("Scheduler: bot thread never freed up - "
+                                "aborting the queue.")
+                self._scheduler_done()
+                return
+            from PySide6.QtCore import QTimer as _QTimer
+            _QTimer.singleShot(
+                200, lambda: self._sched_advance_when_free(_hops + 1))
+            return
+        self._sched_advance()
 
     def _on_warning(self, msg: str):
         logging.warning("%s", msg)
+        # Discord ping first: unattended users never see the message box.
+        reason = next((ln for ln in str(msg or "").splitlines() if ln.strip()),
+                      "unknown")
+        self._discord_stuck(reason[:300])
         QMessageBox.warning(self._ui, "WorkerBee", msg)
 
     # --- run stats -------------------------------------------------
@@ -496,6 +537,15 @@ class RunCoordinator(QObject):
             self._cur_floor = int(event.get("floor", 0) or 0)
             self._cur_pack = str(event.get("pack", ""))
             return
+        if kind == "gifts":
+            # End-of-run gift inventory (floor-5 fuse shelf scan); folded
+            # into the next run_result's stats record + Discord embed.
+            items = event.get("items") or []
+            self._cur_gifts = [
+                {"name": str(g.get("name", "")), "uptied": bool(g.get("uptied"))}
+                for g in items if isinstance(g, dict)
+            ]
+            return
         if kind == "restart":
             # A run was aborted partway (e.g. THRILL F1 forfeit). Stash
             # the elapsed time so it shows up as a "Restart - MM:SS"
@@ -515,6 +565,8 @@ class RunCoordinator(QObject):
         if kind != "run_result":
             return
         completed = bool(event.get("completed"))
+        run_gifts = getattr(self, "_cur_gifts", None) or []
+        self._cur_gifts = []
         try:
             from . import stats
             stats.record_run(
@@ -523,6 +575,7 @@ class RunCoordinator(QObject):
                 team=str(event.get("team", "")),
                 mode=str(event.get("mode", "mirror")),
                 floors=self._finalize_floors(),
+                gifts=run_gifts,
             )
         except Exception:
             pass
@@ -535,6 +588,19 @@ class RunCoordinator(QObject):
         # configs; this prevents the elapsed clock from drifting forever.
         self._run_start_ts = time.time()
         self._refresh_stats()
+        mins, secs = divmod(int(float(event.get("duration", 0) or 0)), 60)
+        desc = f"{event.get('team') or 'Team'} - {mins}:{secs:02d}"
+        if run_gifts:
+            names = ", ".join(
+                g["name"] + (" [+]" if g["uptied"] else "") for g in run_gifts)
+            uptied = sum(1 for g in run_gifts if g["uptied"])
+            desc += (f"\nGifts ({len(run_gifts)}, {uptied} uptied): "
+                     f"{names[:600]}")
+        self._discord_notify(
+            "Run completed" if completed else "Run failed",
+            desc,
+            0x2ECC71 if completed else 0xE74C3C,
+        )
 
     def _finalize_floors(self) -> list:
         """Turn the buffered per-floor pack picks into [{floor, pack,
@@ -653,7 +719,7 @@ class RunCoordinator(QObject):
         screenshot/stats are pulled live."""
         if self._settings is None or not hasattr(self._settings, "set_discord_hooks"):
             return
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        from wbcore.utils.datadir import wb_data_dir
         self._settings.set_discord_hooks({
             "callbacks": {
                 "start_mirror": lambda: self._disc_start(self._hk_md,
@@ -667,8 +733,33 @@ class RunCoordinator(QObject):
             },
             "get_stats": self._discord_stats,
             "get_screenshot": self._discord_screenshot,
-            "log_path": os.path.join(base, "game.log"),
+            "log_path": os.path.join(wb_data_dir(), "game.log"),
         })
+        # Connect the Discord bot on launch when it is enabled + configured,
+        # instead of only after the user opens Settings and clicks Save.
+        if hasattr(self._settings, "autostart_discord"):
+            self._settings.autostart_discord()
+
+    def _discord_notify(self, title, description, color=0x3498DB):
+        """Best-effort run-outcome ping; silently no-ops when the Discord
+        bot is off or unconfigured."""
+        try:
+            from .settings_page import discord_bot
+            bot = discord_bot()
+            if bot is not None:
+                bot.notify_event(title, description, color)
+        except Exception:
+            pass
+
+    def _discord_stuck(self, reason):
+        """Best-effort stuck/crash ping (attaches screenshot + log tail)."""
+        try:
+            from .settings_page import discord_bot
+            bot = discord_bot()
+            if bot is not None:
+                bot.notify_stuck(str(reason))
+        except Exception:
+            pass
 
     def _disc_start(self, signal, message):
         if self._controller.is_running():
@@ -802,19 +893,44 @@ class RunCoordinator(QObject):
             print(f"alert sound failed: {exc}")
 
     # --- hotkeys ----------------------------------------------------
+    def _toggle_pause(self):
+        """Pause/resume hotkey. Best-effort: while Limbus is focused the
+        focus watchdog may auto-resume, so Stop is the reliable halt."""
+        if self._controller.is_running():
+            self._controller.toggle_pause()
+
     def _install_hotkeys(self):
+        """Register global hotkeys from the user's saved binds (Settings ->
+        Shortcuts), falling back to defaults. The previous build read a
+        hardcoded table and ignored custom binds (and had no pause), so a
+        rebound key never registered. Requires the `keyboard` package."""
         try:
             import keyboard
-        except Exception:
+        except Exception as exc:
+            logging.warning("Global hotkeys unavailable: 'keyboard' not "
+                            "importable (%s)", exc)
             return
         emitters = {
-            "mirror": self._hk_md.emit,
-            "exp": self._hk_exp.emit,
-            "thread": self._hk_thread.emit,
+            "start_md": self._hk_md.emit,
+            "start_exp": self._hk_exp.emit,
+            "start_thread": self._hk_thread.emit,
+            "pause": self._hk_pause.emit,
             "stop": self._hk_stop.emit,
         }
-        for action, combo in _HOTKEYS.items():
+        defaults = {"start_md": "Ctrl+Q", "start_exp": "Ctrl+E",
+                    "start_thread": "Ctrl+R", "pause": "F9", "stop": "F2"}
+        saved = (load_section("app_settings") or {}).get("shortcuts") or {}
+        try:
+            keyboard.unhook_all()
+        except Exception:
+            pass
+        for action, emit in emitters.items():
+            combo = str(saved.get(action) or defaults[action]).strip()
+            if not combo:
+                continue
+            hk = combo.lower().replace(" ", "")   # Qt "Ctrl+Shift+S" -> keyboard
             try:
-                keyboard.add_hotkey(combo, emitters[action])
-            except Exception:
-                pass
+                keyboard.add_hotkey(hk, emit)
+                logging.info("Hotkey registered: %s -> %s", combo, action)
+            except Exception as exc:
+                logging.warning("Hotkey %r (%s) failed: %s", combo, action, exc)

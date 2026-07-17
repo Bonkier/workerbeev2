@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Mirror Dungeon page - the full run-config surface."""
 
-from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QDrag
+from PySide6.QtCore import QMimeData, QPoint, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QDrag, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout,
-    QLabel, QLineEdit, QListWidgetItem, QPushButton, QScrollArea, QSizePolicy,
-    QSpinBox, QVBoxLayout, QWidget,
+    QAbstractButton, QApplication, QCompleter, QDialog, QDialogButtonBox,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidgetItem,
+    QPushButton, QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from .run_config import SAIKAI_LABEL
@@ -16,11 +16,7 @@ from .copy import (
     MD_DIFFICULTY_HINT,
     MD_GRACE_HINT,
     MD_RUN_COUNT_HINT,
-    MD_SAIKAI_EXCLUSION_HINT,
-    MD_SAIKAI_ORDER_HINT,
     MD_SKILL_REPLACEMENT_HINT_RICH,
-    MD_THRILL_EXCLUSION_HINT,
-    MD_THRILL_ORDER_HINT,
 )
 from .theme import Colors, Sizing
 from .widgets import (
@@ -31,6 +27,927 @@ from .widgets import (
 )
 
 _SECTION = "mirror"
+
+# Statuses with a confirmed Mirror Dungeon team-select icon ({status}_team).
+
+
+_GIFT_TIER_ROMAN = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V", 6: "EX"}
+# Keyword display order within each tier (status order, keywordless last).
+_GIFT_KW_ORDER = (
+    "burn", "bleed", "tremor", "rupture", "sinking", "poise",
+    "charge", "slash", "pierce", "blunt", "keywordless",
+)
+
+
+class _GiftTile(QAbstractButton):
+    """Clickable EGO-gift thumbnail; draws an accent border + check when picked."""
+
+    _SIZE = 58
+
+    def __init__(self, name, info, parent=None):
+        super().__init__(parent)
+        self._name = name
+        self._selected = False
+        self._locked = False
+        self._hover = False
+        self.setFixedSize(self._SIZE + 8, self._SIZE + 8)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(
+            f"{name}\n{info['keyword'].title()}  -  Tier "
+            f"{_GIFT_TIER_ROMAN.get(info['tier'], '?')}")
+        pm = QPixmap(info["path"])
+        self._pix = (pm.scaled(self._SIZE, self._SIZE,
+                               Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+                     if not pm.isNull() else pm)
+
+    def set_selected(self, on):
+        on = bool(on)
+        if on != self._selected:
+            self._selected = on
+            self.update()
+
+    def set_locked(self, on):
+        on = bool(on)
+        if on != self._locked:
+            self._locked = on
+            self.setCursor(Qt.CursorShape.ArrowCursor if on
+                           else Qt.CursorShape.PointingHandCursor)
+            self.update()
+
+    def is_selected(self):
+        return self._selected
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        # The thumbnail carries its own in-game frame, so no flat fill - only a
+        # soft backing on hover, otherwise it reads as a grey box.
+        if self._hover and not self._locked:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(Colors.BG_OVERLAY))
+            p.drawRoundedRect(r, 8, 8)
+        if not self._pix.isNull():
+            x = int((self.width() - self._pix.width()) / 2)
+            y = int((self.height() - self._pix.height()) / 2)
+            p.drawPixmap(x, y, self._pix)
+        if self._selected:
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(Colors.ACCENT), 2))
+            p.drawRoundedRect(r, 8, 8)
+            self._draw_badge(p)
+        elif self._hover:
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(Colors.BORDER_STRONG), 1))
+            p.drawRoundedRect(r, 8, 8)
+        p.end()
+
+    def _draw_badge(self, p):
+        b = 16
+        cx, cy = self.width() - b / 2.0 - 3, b / 2.0 + 3
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(Colors.ACCENT))
+        p.drawEllipse(int(cx - b / 2), int(cy - b / 2), b, b)
+        dark = QColor("#0e0e10")
+        if self._locked:
+            p.setPen(QPen(dark, 1.4))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawArc(int(cx - 3), int(cy - 5), 6, 6, 0, 180 * 16)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(dark)
+            p.drawRoundedRect(int(cx - 4), int(cy - 1), 8, 6, 1.5, 1.5)
+        else:
+            p.setPen(QPen(dark, 2))
+            p.drawLine(int(cx - 4), int(cy + 1), int(cx - 1), int(cy + 3))
+            p.drawLine(int(cx - 1), int(cy + 3), int(cx + 4), int(cy - 3))
+
+
+class _KeywordTab(QAbstractButton):
+    """Keyword filter tab (icon + name), mirroring the in-game gift-search tabs."""
+
+    def __init__(self, keyword, icon_path, parent=None):
+        super().__init__(parent)
+        self._kw = keyword
+        self._hover = False
+        self.setCheckable(True)
+        self.setAutoExclusive(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(keyword.title())
+        self.setFixedSize(64, 60)
+        pm = QPixmap(icon_path) if icon_path else QPixmap()
+        self._pix = (pm.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+                     if not pm.isNull() else pm)
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        checked = self.isChecked()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(Colors.BG_OVERLAY if (checked or self._hover)
+                          else Colors.BG_RAISED))
+        p.drawRoundedRect(r, 8, 8)
+        if not self._pix.isNull():
+            p.drawPixmap(int((self.width() - self._pix.width()) / 2), 6, self._pix)
+        f = QFont(self.font())
+        f.setPointSizeF(7.5)
+        p.setFont(f)
+        p.setPen(QColor(Colors.TEXT_PRIMARY if checked else Colors.TEXT_TERTIARY))
+        p.drawText(QRect(2, 40, self.width() - 4, 16),
+                   int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
+                   self._kw.title())
+        if checked:
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(Colors.ACCENT), 2))
+            p.drawRoundedRect(r, 8, 8)
+        p.end()
+
+
+class _GiftGallery(QWidget):
+    """In-game-style EGO gift picker: keyword tabs, the active keyword's gifts
+    grouped by tier, pick up to `max_picks`, search across all keywords, reset.
+    Emits `changed` on any selection change."""
+
+    changed = Signal()
+
+    def __init__(self, max_picks=3, parent=None):
+        super().__init__(parent)
+        self._max = max_picks
+        self._order = []          # selected names, in pick order
+        self._locked = set()      # mandatory, non-removable (e.g. SAIKAI Spiderweb)
+        self._tiles = {}          # name -> _GiftTile
+        self._panels = {}         # keyword -> panel widget
+        self._sections = {}       # keyword -> [(tier, tier_hdr, holder, [names])]
+        self._kw_header = {}      # keyword -> label (shown only while searching)
+        self._tabs = {}           # keyword -> _KeywordTab
+        try:
+            from wbcore.gift_catalog import load_catalog, tab_path
+            self._cat = load_catalog()
+        except Exception:
+            self._cat, tab_path = {}, (lambda *_a: None)
+
+        present = [kw for kw in _GIFT_KW_ORDER
+                   if any(v.get("keyword") == kw for v in self._cat.values())]
+        self._active_kw = present[0] if present else None
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(Sizing.SPACE_SM)
+
+        # Keyword tab bar (icons are the in-game keyword tabs).
+        tabholder = QWidget(self)
+        tabrow = FlowLayout(tabholder, spacing=4)
+        for kw in present:
+            tab = _KeywordTab(kw, tab_path(kw), tabholder)
+            tab.clicked.connect(lambda _=False, k=kw: self._on_tab(k))
+            self._tabs[kw] = tab
+            tabrow.addWidget(tab)
+        outer.addWidget(tabholder)
+
+        # Search + count + reset.
+        head = QHBoxLayout()
+        head.setSpacing(Sizing.SPACE_MD)
+        self._search = QLineEdit(self)
+        self._search.setObjectName("textField")
+        self._search.setPlaceholderText("Search all EGO gifts by name...")
+        self._search.setClearButtonEnabled(True)
+        self._search.textChanged.connect(self._refresh_view)
+        head.addWidget(self._search, 1)
+        self._count = QLabel(self, objectName="inlineMeta")
+        head.addWidget(self._count)
+        self._reset_btn = GhostButton("Reset", self)
+        self._reset_btn.clicked.connect(self.reset)
+        head.addWidget(self._reset_btn)
+        outer.addLayout(head)
+
+        # Selected chips.
+        self._chips_holder = QWidget(self)
+        self._chips = QHBoxLayout(self._chips_holder)
+        self._chips.setContentsMargins(0, 0, 0, 0)
+        self._chips.setSpacing(Sizing.SPACE_XS)
+        outer.addWidget(self._chips_holder)
+
+        # Per-keyword panels: that keyword's gifts grouped by tier (III..I).
+        sa = QScrollArea(self)
+        sa.setObjectName("pageScroll")     # transparent bg, matches the page
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QScrollArea.Shape.NoFrame)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        body = QVBoxLayout(inner)
+        body.setContentsMargins(0, 0, 0, Sizing.SPACE_MD)
+        body.setSpacing(Sizing.SPACE_SM)
+        for kw in present:
+            panel = QWidget(inner)
+            pcol = QVBoxLayout(panel)
+            pcol.setContentsMargins(0, 0, 0, 0)
+            pcol.setSpacing(Sizing.SPACE_SM)
+            kwhdr = QLabel(kw.title(), panel, objectName="sectionLabel")
+            pcol.addWidget(kwhdr)
+            self._kw_header[kw] = kwhdr
+            secs = []
+            for tier in (3, 2, 1):
+                names = sorted(
+                    [n for n, v in self._cat.items()
+                     if v.get("keyword") == kw and v.get("tier") == tier],
+                    key=lambda n: n.lower())
+                if not names:
+                    continue
+                thdr = QLabel(f"Tier {_GIFT_TIER_ROMAN[tier]}", panel,
+                              objectName="subSectionLabel")
+                pcol.addWidget(thdr)
+                holder = QWidget(panel)
+                flow = FlowLayout(holder, spacing=6)
+                for n in names:
+                    tile = _GiftTile(n, self._cat[n], holder)
+                    tile.clicked.connect(lambda _=False, nm=n: self._toggle(nm))
+                    self._tiles[n] = tile
+                    flow.addWidget(tile)
+                pcol.addWidget(holder)
+                secs.append((tier, thdr, holder, names))
+            self._panels[kw] = panel
+            self._sections[kw] = secs
+            body.addWidget(panel)
+        body.addStretch(1)
+        sa.setWidget(inner)
+        outer.addWidget(sa, 1)
+
+        if self._active_kw is not None:
+            self._tabs[self._active_kw].setChecked(True)
+        self._refresh()
+        self._refresh_view()
+
+    def _on_tab(self, kw):
+        self._active_kw = kw
+        self._tabs[kw].setChecked(True)
+        if self._search.text():
+            self._search.blockSignals(True)
+            self._search.clear()
+            self._search.blockSignals(False)
+        self._refresh_view()
+
+    def _toggle(self, name):
+        if name in self._locked:
+            return                      # mandatory pick, can't be removed
+        if name in self._order:
+            self._order.remove(name)
+        elif len(self._order) < self._max:
+            self._order.append(name)
+        else:
+            return
+        self._refresh()
+        self.changed.emit()
+
+    def reset(self):
+        # Clear everything except the locked, mandatory picks.
+        keep = [n for n in self._order if n in self._locked]
+        if self._order == keep:
+            return
+        self._order = keep
+        self._refresh()
+        self.changed.emit()
+
+    def selected(self):
+        return list(self._order)
+
+    def set_selected(self, names):
+        order = [n for n in self._order if n in self._locked]   # keep locked
+        for n in (names or []):
+            if n in self._tiles and n not in order and len(order) < self._max:
+                order.append(n)
+        self._order = order
+        self._refresh()
+
+    def set_locked(self, names):
+        """Mandatory, non-removable picks (always selected, counted in the cap).
+        Used to pin SAIKAI's Spiderweb gift."""
+        self._locked = {n for n in (names or []) if n in self._tiles}
+        # Locked picks go to the front and survive the cap.
+        rest = [n for n in self._order if n not in self._locked]
+        self._order = (list(self._locked) + rest)[:self._max]
+        for n in self._locked:          # guarantee every locked pick is in
+            if n not in self._order:
+                self._order = ([n] + self._order)[:self._max]
+        self._refresh()
+
+    def _refresh(self):
+        for n, tile in self._tiles.items():
+            tile.set_locked(n in self._locked)
+            tile.set_selected(n in self._order)
+        self._count.setText(f"{len(self._order)} / {self._max} selected")
+        self._reset_btn.setEnabled(any(n not in self._locked for n in self._order))
+        self._rebuild_chips()
+
+    def _rebuild_chips(self):
+        while self._chips.count():
+            it = self._chips.takeAt(0)
+            w = it.widget() if it else None
+            if w is not None:
+                w.deleteLater()
+        for name in self._order:
+            locked = name in self._locked
+            chip = QPushButton(f"{name}  \U0001F512" if locked else f"{name}   x",
+                               self._chips_holder)
+            border = Colors.ACCENT if locked else Colors.BORDER_STRONG
+            chip.setStyleSheet(
+                f"QPushButton{{background:{Colors.BG_OVERLAY};"
+                f"color:{Colors.TEXT_PRIMARY};border:1px solid {border};"
+                f"border-radius:12px;padding:3px 10px;}}"
+                + ("" if locked else
+                   f"QPushButton:hover{{border-color:{Colors.ACCENT};}}"))
+            if locked:
+                chip.setToolTip("Mandatory for SAIKAI")
+            else:
+                chip.setCursor(Qt.CursorShape.PointingHandCursor)
+                chip.clicked.connect(lambda _=False, nm=name: self._toggle(nm))
+            self._chips.addWidget(chip)
+        self._chips.addStretch(1)
+        self._chips_holder.setVisible(bool(self._order))
+
+    def _refresh_view(self, *_):
+        """Browse (active keyword only) when the search box is empty; otherwise
+        show every gift matching the query across all keywords."""
+        q = self._search.text().strip().lower()
+        searching = bool(q)
+        for kw, panel in self._panels.items():
+            if searching:
+                p_any = False
+                for _tier, thdr, holder, names in self._sections[kw]:
+                    t_any = False
+                    for n in names:
+                        vis = q in n.lower()
+                        self._tiles[n].setVisible(vis)
+                        t_any = t_any or vis
+                    thdr.setVisible(t_any)
+                    holder.setVisible(t_any)
+                    p_any = p_any or t_any
+                self._kw_header[kw].setVisible(p_any)
+                panel.setVisible(p_any)
+            else:
+                active = (kw == self._active_kw)
+                panel.setVisible(active)
+                self._kw_header[kw].setVisible(False)
+                for _tier, thdr, holder, names in self._sections[kw]:
+                    thdr.setVisible(active)
+                    holder.setVisible(active)
+                    if active:
+                        for n in names:
+                            self._tiles[n].setVisible(True)
+
+
+# Tile tag badge colours.
+_MARKET_KEEPFUSE_COL = "#5b8cff"   # F = keep (don't fuse), blue
+_MARKET_KEEPSELL_COL = "#a371f7"   # K = keep (don't sell), purple
+_MARKET_SELL_COL = "#f0883e"       # S = sell, amber
+_MARKET_BUY_COL = "#3fb950"        # buy priority number, green
+_MARKET_FUSE_COL = "#f85149"       # C = fuse target (craft), red
+_MARKET_ENH1_COL = "#39c5cf"       # E1 = enhance once, cyan
+_MARKET_ENH2_COL = "#76e3ea"       # E2 = enhance twice, light cyan
+# Tag "brush" modes: with one active, clicking a gift toggles that tag.
+_MARKET_MODES = (
+    ("keep_fuse", "Keep · no fuse"),
+    ("keep_sell", "Keep · no sell"),
+    ("sell", "Sell"),
+    ("buy", "Buy priority"),
+    ("fuse", "Fuse target"),
+    ("enhance1", "Enhance once"),
+    ("enhance2", "Enhance twice"),
+)
+
+
+class _MarketGiftTile(QAbstractButton):
+    """Market-config gift thumbnail. Draws small fuse/sell/buy role badges and
+    an accent border when it is the gift currently being edited."""
+
+    _SIZE = 58
+
+    def __init__(self, name, info, parent=None):
+        super().__init__(parent)
+        self._name = name
+        self._keep_fuse = False
+        self._keep_sell = False
+        self._sell = False
+        self._buy = 0          # 0 = not in buy order, else 1-based priority
+        self._fuse = False
+        self._enh1 = False
+        self._enh2 = False
+        self._active = False
+        self._hover = False
+        self.setFixedSize(self._SIZE + 8, self._SIZE + 8)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(
+            f"{name}\n{info['keyword'].title()}  -  Tier "
+            f"{_GIFT_TIER_ROMAN.get(info['tier'], '?')}")
+        pm = QPixmap(info["path"])
+        self._pix = (pm.scaled(self._SIZE, self._SIZE,
+                               Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+                     if not pm.isNull() else pm)
+
+    def set_state(self, keep_fuse, keep_sell, sell, buy, fuse, enh1, enh2):
+        kf, ks, s, b = bool(keep_fuse), bool(keep_sell), bool(sell), int(buy)
+        fu, e1, e2 = bool(fuse), bool(enh1), bool(enh2)
+        if (kf, ks, s, b, fu, e1, e2) != (self._keep_fuse, self._keep_sell,
+                                          self._sell, self._buy,
+                                          self._fuse, self._enh1, self._enh2):
+            (self._keep_fuse, self._keep_sell, self._sell, self._buy,
+             self._fuse, self._enh1, self._enh2) = kf, ks, s, b, fu, e1, e2
+            self.update()
+
+    def set_active(self, on):
+        on = bool(on)
+        if on != self._active:
+            self._active = on
+            self.update()
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def _configured(self):
+        return (self._keep_fuse or self._keep_sell or self._sell
+                or self._buy > 0 or self._fuse or self._enh1 or self._enh2)
+
+    def _badges(self):
+        out = []
+        if self._keep_fuse:
+            out.append(("F", _MARKET_KEEPFUSE_COL))
+        if self._keep_sell:
+            out.append(("K", _MARKET_KEEPSELL_COL))
+        if self._sell:
+            out.append(("S", _MARKET_SELL_COL))
+        if self._buy > 0:
+            out.append((str(self._buy), _MARKET_BUY_COL))
+        if self._fuse:
+            out.append(("C", _MARKET_FUSE_COL))
+        if self._enh1:
+            out.append(("E1", _MARKET_ENH1_COL))
+        if self._enh2:
+            out.append(("E2", _MARKET_ENH2_COL))
+        return out
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        if self._hover:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(Colors.BG_OVERLAY))
+            p.drawRoundedRect(r, 8, 8)
+        if not self._pix.isNull():
+            x = int((self.width() - self._pix.width()) / 2)
+            y = int((self.height() - self._pix.height()) / 2)
+            p.drawPixmap(x, y, self._pix)
+        # Role badges along the bottom-left.
+        bx, by = 4, self.height() - 17
+        f = QFont(self.font())
+        f.setPointSizeF(6.5)
+        f.setBold(True)
+        for letter, col in self._badges():
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(col))
+            p.drawRoundedRect(bx, by, 13, 13, 3, 3)
+            p.setFont(f)
+            p.setPen(QColor("#0e0e10"))
+            p.drawText(QRect(bx, by, 13, 13),
+                       int(Qt.AlignmentFlag.AlignCenter), letter)
+            bx += 15
+        if self._active:
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(Colors.ACCENT), 2))
+            p.drawRoundedRect(r, 8, 8)
+        elif self._configured():
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(Colors.BORDER_STRONG), 1.5))
+            p.drawRoundedRect(r, 8, 8)
+        elif self._hover:
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(Colors.BORDER_STRONG), 1))
+            p.drawRoundedRect(r, 8, 8)
+        p.end()
+
+
+class _MarketGiftGallery(QWidget):
+    """Market gift config: keyword tabs + the active keyword's gifts grouped by
+    tier (IV..I); click a gift to set its keep-from-fusion / sell / buy
+    behaviour. Emits `changed` on any config change."""
+
+    changed = Signal()
+
+    def __init__(self, parent=None, scrollable=True):
+        super().__init__(parent)
+        self._keep_fuse = set()  # names to keep out of fusion fuel
+        self._keep_sell = set()  # names to never sell
+        self._sell = set()       # names to sell
+        self._buy = []           # names to buy, in priority (click) order
+        self._fuse = set()       # names to craft via fusion
+        self._enh1 = set()       # names to enhance once
+        self._enh2 = set()       # names to enhance twice
+        self._mode = None        # active tag brush, one of _MARKET_MODES keys
+        self._loading = False
+        self._tiles = {}
+        self._panels = {}
+        self._sections = {}
+        self._kw_header = {}
+        self._tabs = {}
+        try:
+            from wbcore.market_catalog import load_market_catalog
+            from wbcore.gift_catalog import tab_path
+            self._cat = load_market_catalog()
+        except Exception:
+            self._cat, tab_path = {}, (lambda *_a: None)
+
+        present = [kw for kw in _GIFT_KW_ORDER
+                   if any(v.get("keyword") == kw for v in self._cat.values())]
+        self._active_kw = present[0] if present else None
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(Sizing.SPACE_SM)
+
+        tabholder = QWidget(self)
+        tabrow = FlowLayout(tabholder, spacing=4)
+        for kw in present:
+            tab = _KeywordTab(kw, tab_path(kw), tabholder)
+            tab.clicked.connect(lambda _=False, k=kw: self._on_tab(k))
+            self._tabs[kw] = tab
+            tabrow.addWidget(tab)
+        outer.addWidget(tabholder)
+
+        outer.addWidget(self._build_mode_selector())
+
+        head = QHBoxLayout()
+        head.setSpacing(Sizing.SPACE_MD)
+        self._search = QLineEdit(self)
+        self._search.setObjectName("textField")
+        self._search.setPlaceholderText("Search all gifts by name...")
+        self._search.setClearButtonEnabled(True)
+        self._search.textChanged.connect(self._refresh_view)
+        head.addWidget(self._search, 1)
+        self._count = QLabel(self, objectName="inlineMeta")
+        head.addWidget(self._count)
+        self._reset_btn = GhostButton("Clear all", self)
+        self._reset_btn.clicked.connect(self.reset)
+        head.addWidget(self._reset_btn)
+        outer.addLayout(head)
+
+        # Summary of tagged gifts (grouped, removable chips) - lets you see
+        # everything in keep/sell/buy at a glance without hunting tabs.
+        self._summary_holder = QWidget(self)
+        self._summary_col = QVBoxLayout(self._summary_holder)
+        self._summary_col.setContentsMargins(0, 0, 0, 0)
+        self._summary_col.setSpacing(Sizing.SPACE_XS)
+        self._summary_holder.setVisible(False)
+        outer.addWidget(self._summary_holder)
+
+        inner = QWidget()
+        body = QVBoxLayout(inner)
+        body.setContentsMargins(0, 0, 0, Sizing.SPACE_MD)
+        body.setSpacing(Sizing.SPACE_SM)
+        for kw in present:
+            panel = QWidget(inner)
+            pcol = QVBoxLayout(panel)
+            pcol.setContentsMargins(0, 0, 0, 0)
+            pcol.setSpacing(Sizing.SPACE_SM)
+            kwhdr = QLabel(kw.title(), panel, objectName="sectionLabel")
+            pcol.addWidget(kwhdr)
+            self._kw_header[kw] = kwhdr
+            secs = []
+            for tier in (6, 5, 4, 3, 2, 1):
+                names = sorted(
+                    [n for n, v in self._cat.items()
+                     if v.get("keyword") == kw and v.get("tier") == tier],
+                    key=lambda n: n.lower())
+                if not names:
+                    continue
+                thdr = QLabel(f"Tier {_GIFT_TIER_ROMAN[tier]}", panel,
+                              objectName="subSectionLabel")
+                pcol.addWidget(thdr)
+                holder = QWidget(panel)
+                flow = FlowLayout(holder, spacing=6)
+                for n in names:
+                    tile = _MarketGiftTile(n, self._cat[n], holder)
+                    tile.clicked.connect(lambda _=False, nm=n: self._on_tile(nm))
+                    self._tiles[n] = tile
+                    flow.addWidget(tile)
+                pcol.addWidget(holder)
+                secs.append((tier, thdr, holder, names))
+            self._panels[kw] = panel
+            self._sections[kw] = secs
+            body.addWidget(panel)
+        if scrollable:
+            body.addStretch(1)
+            sa = QScrollArea(self)
+            sa.setObjectName("pageScroll")
+            sa.setWidgetResizable(True)
+            sa.setFrameShape(QScrollArea.Shape.NoFrame)
+            sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            sa.setWidget(inner)
+            outer.addWidget(sa, 1)
+        else:
+            outer.addWidget(inner)
+
+        if self._active_kw is not None:
+            self._tabs[self._active_kw].setChecked(True)
+        self._refresh_counts()
+        self._refresh_view()
+
+    def _build_mode_selector(self) -> QWidget:
+        panel = QWidget(self)
+        col = QVBoxLayout(panel)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(Sizing.SPACE_XS)
+        row = QHBoxLayout()
+        row.setSpacing(Sizing.SPACE_SM)
+        row.addWidget(QLabel("Tag mode", panel, objectName="settingTitle"))
+        mode_qss = (
+            f"QPushButton{{background:{Colors.BG_RAISED};"
+            f"color:{Colors.TEXT_SECONDARY};"
+            f"border:1px solid {Colors.BORDER_SUBTLE};border-radius:13px;"
+            f"padding:5px 14px;font-weight:600;}}"
+            f"QPushButton:hover{{border-color:{Colors.ACCENT};}}"
+            f"QPushButton:checked{{background:{Colors.ACCENT};"
+            f"color:{Colors.BG_BASE};border-color:{Colors.ACCENT};}}"
+        )
+        self._mode_btns = {}
+        for key, label in _MARKET_MODES:
+            b = QPushButton(label, panel)
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(mode_qss)
+            b.clicked.connect(lambda _=False, k=key: self._on_mode(k))
+            self._mode_btns[key] = b
+            row.addWidget(b)
+        row.addStretch(1)
+        col.addLayout(row)
+        self._mode_hint = QLabel("Pick a mode, then click gifts to tag them.",
+                                 panel, objectName="inlineHint")
+        col.addWidget(self._mode_hint)
+        return panel
+
+    def _on_tab(self, kw):
+        self._active_kw = kw
+        self._tabs[kw].setChecked(True)
+        if self._search.text():
+            self._search.blockSignals(True)
+            self._search.clear()
+            self._search.blockSignals(False)
+        self._refresh_view()
+
+    def _on_mode(self, key):
+        self._mode = None if key == self._mode else key
+        for k, b in self._mode_btns.items():
+            b.setChecked(k == self._mode)
+        self._refresh_mode_hint()
+
+    def _refresh_mode_hint(self):
+        label = dict(_MARKET_MODES).get(self._mode)
+        if label:
+            self._mode_hint.setText(
+                f"Click gifts to toggle the “{label}” tag.")
+        else:
+            self._mode_hint.setText(
+                "Pick a mode, then click gifts to tag them.")
+
+    def _on_tile(self, name):
+        m = self._mode
+        if m is None:
+            return
+        if m == "keep_fuse":
+            if name in self._keep_fuse:
+                self._keep_fuse.discard(name)
+            else:
+                self._keep_fuse.add(name)
+        elif m == "keep_sell":
+            if name in self._keep_sell:
+                self._keep_sell.discard(name)
+            else:
+                self._keep_sell.add(name)
+                self._sell.discard(name)            # keep-no-sell excludes sell
+        elif m == "sell":
+            if name in self._sell:
+                self._sell.discard(name)
+            else:
+                self._sell.add(name)
+                self._keep_sell.discard(name)        # sell excludes keep-no-sell
+        elif m == "buy":
+            if name in self._buy:
+                self._buy.remove(name)
+            else:
+                self._buy.append(name)
+        elif m == "fuse":
+            if name in self._fuse:
+                self._fuse.discard(name)
+            else:
+                self._fuse.add(name)
+        elif m == "enhance1":
+            if name in self._enh1:
+                self._enh1.discard(name)
+            else:
+                self._enh1.add(name)
+                self._enh2.discard(name)             # one enhance level only
+        elif m == "enhance2":
+            if name in self._enh2:
+                self._enh2.discard(name)
+            else:
+                self._enh2.add(name)
+                self._enh1.discard(name)             # one enhance level only
+        self._refresh_all_badges()
+        self._refresh_counts()
+        self.changed.emit()
+
+    def _refresh_all_badges(self):
+        pos = {n: i + 1 for i, n in enumerate(self._buy)}
+        for n, t in self._tiles.items():
+            t.set_state(n in self._keep_fuse, n in self._keep_sell,
+                        n in self._sell, pos.get(n, 0),
+                        n in self._fuse, n in self._enh1, n in self._enh2)
+
+    @staticmethod
+    def _clear_layout(lay):
+        while lay.count():
+            item = lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+    def _rebuild_summary(self):
+        if not hasattr(self, "_summary_col"):
+            return
+        self._clear_layout(self._summary_col)
+        groups = (
+            ("keep_fuse", "Keep · no fuse", _MARKET_KEEPFUSE_COL,
+             [(0, n) for n in sorted(self._keep_fuse)]),
+            ("keep_sell", "Keep · no sell", _MARKET_KEEPSELL_COL,
+             [(0, n) for n in sorted(self._keep_sell)]),
+            ("sell", "Sell", _MARKET_SELL_COL,
+             [(0, n) for n in sorted(self._sell)]),
+            ("buy", "Buy priority", _MARKET_BUY_COL,
+             list(enumerate(self._buy, 1))),
+            ("fuse", "Fuse target", _MARKET_FUSE_COL,
+             [(0, n) for n in sorted(self._fuse)]),
+            ("enhance1", "Enhance once", _MARKET_ENH1_COL,
+             [(0, n) for n in sorted(self._enh1)]),
+            ("enhance2", "Enhance twice", _MARKET_ENH2_COL,
+             [(0, n) for n in sorted(self._enh2)]),
+        )
+        shown = False
+        for key, label, col, items in groups:
+            if not items:
+                continue
+            shown = True
+            roww = QWidget(self._summary_holder)
+            rl = QHBoxLayout(roww)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(Sizing.SPACE_SM)
+            tag = QLabel(label, roww, objectName="inlineMeta")
+            tag.setFixedWidth(104)
+            tag.setStyleSheet(f"color:{col};")
+            rl.addWidget(tag, 0, Qt.AlignmentFlag.AlignTop)
+            chipholder = QWidget(roww)
+            flow = FlowLayout(chipholder, spacing=4)
+            for num, name in items:
+                text = f"{num}.  {name}" if num else name
+                chip = QPushButton(f"{text}   ×", chipholder)
+                chip.setCursor(Qt.CursorShape.PointingHandCursor)
+                chip.setStyleSheet(
+                    f"QPushButton{{background:{Colors.BG_OVERLAY};"
+                    f"color:{Colors.TEXT_PRIMARY};border:1px solid {col};"
+                    f"border-radius:11px;padding:2px 9px;}}"
+                    f"QPushButton:hover{{background:{col};"
+                    f"color:{Colors.BG_BASE};}}")
+                chip.clicked.connect(
+                    lambda _=False, k=key, nm=name: self._remove_tag(k, nm))
+                flow.addWidget(chip)
+            rl.addWidget(chipholder, 1)
+            self._summary_col.addWidget(roww)
+        self._summary_holder.setVisible(shown)
+
+    def _remove_tag(self, key, name):
+        if key == "keep_fuse":
+            self._keep_fuse.discard(name)
+        elif key == "keep_sell":
+            self._keep_sell.discard(name)
+        elif key == "sell":
+            self._sell.discard(name)
+        elif key == "buy" and name in self._buy:
+            self._buy.remove(name)
+        elif key == "fuse":
+            self._fuse.discard(name)
+        elif key == "enhance1":
+            self._enh1.discard(name)
+        elif key == "enhance2":
+            self._enh2.discard(name)
+        self._refresh_all_badges()
+        self._refresh_counts()
+        self.changed.emit()
+
+    def _refresh_counts(self):
+        total = len(self._keep_fuse | self._keep_sell | self._sell
+                    | set(self._buy) | self._fuse | self._enh1 | self._enh2)
+        self._count.setText(f"{total} configured")
+        self._reset_btn.setEnabled(bool(self._keep_fuse or self._keep_sell
+                                        or self._sell or self._buy
+                                        or self._fuse or self._enh1
+                                        or self._enh2))
+        self._rebuild_summary()
+
+    def reset(self):
+        if not (self._keep_fuse or self._keep_sell or self._sell or self._buy
+                or self._fuse or self._enh1 or self._enh2):
+            return
+        self._keep_fuse = set()
+        self._keep_sell = set()
+        self._sell = set()
+        self._buy = []
+        self._fuse = set()
+        self._enh1 = set()
+        self._enh2 = set()
+        self._refresh_all_badges()
+        self._refresh_counts()
+        self.changed.emit()
+
+    def config(self) -> dict:
+        return {"keep_fuse": sorted(self._keep_fuse),
+                "keep_sell": sorted(self._keep_sell),
+                "sell": sorted(self._sell), "buy": list(self._buy),
+                "fuse": sorted(self._fuse),
+                "enhance1": sorted(self._enh1),
+                "enhance2": sorted(self._enh2)}
+
+    def set_config(self, cfg):
+        cfg = cfg or {}
+        def valid(key):
+            return {n for n in (cfg.get(key) or []) if n in self._tiles}
+        self._keep_fuse = valid("keep_fuse")
+        self._keep_sell = valid("keep_sell")
+        self._sell = valid("sell") - self._keep_sell   # enforce exclusivity
+        self._fuse = valid("fuse")
+        self._enh1 = valid("enhance1")
+        self._enh2 = valid("enhance2") - self._enh1    # enforce exclusivity
+        seen = set()
+        self._buy = [n for n in (cfg.get("buy") or [])
+                     if n in self._tiles and not (n in seen or seen.add(n))]
+        self._refresh_all_badges()
+        self._refresh_counts()
+
+    def _refresh_view(self, *_):
+        q = self._search.text().strip().lower()
+        searching = bool(q)
+        for kw, panel in self._panels.items():
+            if searching:
+                p_any = False
+                for _tier, thdr, holder, names in self._sections[kw]:
+                    t_any = False
+                    for n in names:
+                        vis = q in n.lower()
+                        self._tiles[n].setVisible(vis)
+                        t_any = t_any or vis
+                    thdr.setVisible(t_any)
+                    holder.setVisible(t_any)
+                    p_any = p_any or t_any
+                self._kw_header[kw].setVisible(p_any)
+                panel.setVisible(p_any)
+            else:
+                active = (kw == self._active_kw)
+                panel.setVisible(active)
+                self._kw_header[kw].setVisible(False)
+                for _tier, thdr, holder, names in self._sections[kw]:
+                    thdr.setVisible(active)
+                    holder.setVisible(active)
+                    if active:
+                        for n in names:
+                            self._tiles[n].setVisible(True)
+
 
 # Falls back to empty dicts if the import fails so the page still builds.
 try:
@@ -447,6 +1364,35 @@ class TeamEditDialog(QDialog):
         return {"name": name, "affinities": affinities}
 
 
+def _pack_search_names_for_floor(floor: int) -> list:
+    """Display names of the packs Pack Search can hunt on `floor`
+    (either difficulty's pool)."""
+    try:
+        from wbcore.pack_search_catalog import PACK_SEARCH_KEYS
+        from wbcore.utils.paths import PACKS
+        return sorted(
+            n for n, k in PACK_SEARCH_KEYS.items()
+            if k in PACKS and (floor in PACKS[k][0] or floor in PACKS[k][1])
+        )
+    except Exception:
+        return []
+
+
+class _PackSearchEdit(QLineEdit):
+    """Line edit whose Tab key accepts the inline completion instead of
+    moving focus."""
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key.Key_Tab:
+            comp = self.completer()
+            done = comp.currentCompletion() if comp is not None else ""
+            if done:
+                self.setText(done)
+                self.end(False)
+                return
+        super().keyPressEvent(ev)
+
+
 class MirrorDungeonPage(QWidget):
 
     # Header + tab bar are pinned; each tab scrolls independently.
@@ -454,8 +1400,11 @@ class MirrorDungeonPage(QWidget):
 
     start_requested = Signal()
     stop_requested = Signal()
+    # Emitted by the "Go to SAIKAI / Thrill settings" link; the shell
+    # navigates to the Settings page.
+    open_stk_settings = Signal()
 
-    _TABS = ("General", "Build", "Packs")
+    _TABS = ("General", "Build", "Packs", "EGO Gift Search", "Market/Fuse")
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -494,6 +1443,10 @@ class MirrorDungeonPage(QWidget):
         self._tab_stack.addWidget(self._scroll(self._build_general_tab()))
         self._tab_stack.addWidget(self._scroll(self._build_build_tab()))
         self._tab_stack.addWidget(self._scroll(self._build_packs_tab()))
+        # The EGO gift gallery manages its own internal scroll (pinned search/reset).
+        self._tab_stack.addWidget(self._build_egogifts_tab())
+        # Market tab scrolls as one page so the buying card scrolls with the grid.
+        self._tab_stack.addWidget(self._scroll(self._build_market_tab()))
         root.addWidget(self._tab_stack, stretch=1)
 
     def _scroll(self, content: QWidget) -> QScrollArea:
@@ -538,11 +1491,6 @@ class MirrorDungeonPage(QWidget):
         col.addLayout(grid)
 
         col.addWidget(self._build_behaviour_section())
-        col.addWidget(self._build_thrill_order_section())
-        col.addWidget(self._build_thrill_exclusion_section())
-        col.addWidget(self._build_saikai_options_section())
-        col.addWidget(self._build_saikai_order_section())
-        col.addWidget(self._build_saikai_exclusion_section())
         col.addWidget(self._build_skill_replace_section())
         col.addStretch(1)
         return page
@@ -587,6 +1535,7 @@ class MirrorDungeonPage(QWidget):
         col = QVBoxLayout(page)
         col.setContentsMargins(0, Sizing.SPACE_LG, Sizing.SPACE_LG, Sizing.SPACE_XL)
         col.setSpacing(Sizing.SPACE_LG)
+        col.addWidget(self._build_pack_search_section())
         col.addWidget(self._build_packs_section())
         col.addStretch(1)
         return page
@@ -642,6 +1591,11 @@ class MirrorDungeonPage(QWidget):
             ["F3 Hard", SAIKAI_LABEL, "Thrill"], default="F3 Hard", parent=section)
         section.body.addWidget(self._custom_strategy)
 
+        self._stk_link = LinkButton("Go to SAIKAI / Thrill settings", section)
+        self._stk_link.clicked.connect(self.open_stk_settings.emit)
+        self._stk_link.setVisible(False)
+        section.body.addWidget(self._stk_link)
+
         # Exactly one of {difficulty, custom strategy} is interactive.
         self._apply_custom_run(self._custom_run.isChecked())
         return section
@@ -656,7 +1610,34 @@ class MirrorDungeonPage(QWidget):
             self._difficulty.set_interactive(not on)
         if hasattr(self, "_custom_strategy"):
             self._custom_strategy.set_interactive(on)
-        self._update_thrill_visibility()
+        self._update_gift_lock()
+
+    def _update_gift_lock(self, *_):
+        """SAIKAI pins its Spiderweb gift in the picker (mandatory, locked)."""
+        if hasattr(self, "_stk_link"):
+            self._stk_link.setVisible(
+                self._custom_run.isChecked()
+                and self._custom_strategy.selected() in (SAIKAI_LABEL, "Thrill"))
+        saikai = (self._custom_run.isChecked()
+                  and self._custom_strategy.selected() == SAIKAI_LABEL)
+        if hasattr(self, "_market_gallery"):
+            # Swap the gallery to the strategy's tag slot (state() serializes
+            # the inactive slot from _market_slots, so no save is needed here).
+            want = "saikai" if saikai else "normal"
+            if want != self._market_slot:
+                self._market_slots[self._market_slot] = \
+                    self._market_gallery.config()
+                self._market_slot = want
+                cfg = self._market_slots.get(want)
+                if want == "saikai" and cfg is None:
+                    cfg = self._saikai_market_seed()
+                    self._market_slots["saikai"] = cfg
+                self._market_gallery.set_config(cfg or {})
+            self._market_slot_hint.setVisible(saikai)
+        if not hasattr(self, "_gift_gallery"):
+            return
+        self._gift_gallery.set_locked(
+            ["Spiderweb Entangled in Red"] if saikai else [])
 
     # --- Team rotation --------------------------------------------
     def _build_team_section(self) -> QWidget:
@@ -729,7 +1710,7 @@ class MirrorDungeonPage(QWidget):
         self._difficulty.selection_changed.connect(self._save_state)
         # custom_run saves via _on_custom_run.
         self._custom_strategy.selection_changed.connect(self._save_state)
-        self._custom_strategy.selection_changed.connect(self._update_thrill_visibility)
+        self._custom_strategy.selection_changed.connect(self._update_gift_lock)
         for sb in (self._run_count, self._retry_count, self._pack_refreshes):
             sb.valueChanged.connect(self._save_state)
         for tog in self._behaviour.values():
@@ -746,13 +1727,10 @@ class MirrorDungeonPage(QWidget):
             "difficulty": self._difficulty.selected(),
             "custom_run": self._custom_run.isChecked(),
             "custom_strategy": self._custom_strategy.selected(),
-            "thrill_exclude": [n for n, c in self._thrill_excl_chips.items()
-                               if c.isChecked()],
-            "thrill_order": self._thrill_order.order(),
-            "saikai_exclude": [n for n, c in self._saikai_excl_chips.items()
-                               if c.isChecked()],
-            "saikai_order": self._saikai_order.order(),
-            "saikai_only_hard": self._saikai_only_hard.isChecked(),
+            "gift_search": self._gift_search_selection(),
+            "market_gifts": self._market_slot_cfg("normal"),
+            "market_gifts_saikai": self._market_slot_cfg("saikai"),
+            "market_controls": self._market_controls_config(),
             "skill_replace": {
                 "active":  sorted(self._skill_active),
                 "order":   {n: list(order)
@@ -770,6 +1748,13 @@ class MirrorDungeonPage(QWidget):
             "card": self._card_priority.order(),
             "packs": self._floor_packs.state(),
             "global_packs": self._floor_packs.global_state(),
+            "pack_search_cfg": {
+                "floors": {
+                    str(fl): {"enabled": tog.isChecked(),
+                              "pack": self._ps_valid.get(fl, "")}
+                    for fl, (tog, _e) in self._ps_rows.items()
+                },
+            },
         }
 
     def _save_state(self, *_):
@@ -790,24 +1775,50 @@ class MirrorDungeonPage(QWidget):
             strat = s.get("custom_strategy")
             if strat:
                 self._custom_strategy.set_selected(strat)
-            excl = s.get("thrill_exclude")
-            if isinstance(excl, list) and hasattr(self, "_thrill_excl_chips"):
-                for n, c in self._thrill_excl_chips.items():
-                    c.setChecked(n in excl)
-            order = s.get("thrill_order") or []
-            if isinstance(order, list) and hasattr(self, "_thrill_order"):
-                self._thrill_order.set_order(order)
-            saikai_excl = s.get("saikai_exclude")
-            if isinstance(saikai_excl, list) and hasattr(self, "_saikai_excl_chips"):
-                for n, c in self._saikai_excl_chips.items():
-                    c.setChecked(n in saikai_excl)
-            saikai_order = s.get("saikai_order") or []
-            if isinstance(saikai_order, list) and hasattr(self, "_saikai_order"):
-                self._saikai_order.set_order(saikai_order)
-            saikai_only_hard = s.get("saikai_only_hard")
-            if isinstance(saikai_only_hard, bool) \
-                    and hasattr(self, "_saikai_only_hard"):
-                self._saikai_only_hard.setChecked(saikai_only_hard)
+            gs = s.get("gift_search")
+            if isinstance(gs, list) and hasattr(self, "_gift_gallery"):
+                self._gift_gallery.set_selected(
+                    [n for n in gs if isinstance(n, str)])
+            if hasattr(self, "_market_gallery"):
+                mkt = s.get("market_gifts")
+                self._market_slots["normal"] = \
+                    mkt if isinstance(mkt, dict) else {}
+                sk = s.get("market_gifts_saikai")
+                self._market_slots["saikai"] = \
+                    sk if isinstance(sk, dict) else None
+                saikai = (bool(s.get("custom_run"))
+                          and s.get("custom_strategy") == SAIKAI_LABEL)
+                self._market_slot = "saikai" if saikai else "normal"
+                cfg = self._market_slots[self._market_slot]
+                if self._market_slot == "saikai" and cfg is None:
+                    cfg = self._saikai_market_seed()
+                    self._market_slots["saikai"] = cfg
+                self._market_gallery.set_config(cfg or {})
+            ps = s.get("pack_search_cfg")
+            if hasattr(self, "_ps_rows"):
+                floors = (ps or {}).get("floors") if isinstance(ps, dict) else {}
+                floors = floors if isinstance(floors, dict) else {}
+                for fl, (tog, edit) in self._ps_rows.items():
+                    ent = floors.get(str(fl))
+                    ent = ent if isinstance(ent, dict) else {}
+                    name = ent.get("pack") or ""
+                    if name not in _pack_search_names_for_floor(fl):
+                        name = ""
+                    self._ps_valid[fl] = name
+                    edit.setText(name)
+                    tog.setChecked(bool(ent.get("enabled", False)))
+            mc = s.get("market_controls")
+            if hasattr(self, "_default_market_workflow"):
+                mc = mc if isinstance(mc, dict) else {}
+                self._default_market_workflow.setChecked(
+                    bool(mc.get("default_market_workflow", True)))
+                self._market_refresh_count.setValue(
+                    int(mc.get("refresh_count", 0) or 0))
+                self._market_refresh_until_cost.setChecked(
+                    bool(mc.get("refresh_until_cost", False)))
+                self._buy_ego_fuel.setChecked(
+                    bool(mc.get("buy_ego_fuel", False)))
+                self._sync_market_controls()
             skill = s.get("skill_replace")
             if isinstance(skill, dict) and hasattr(self, "_skill_chips"):
                 active = skill.get("active") or []
@@ -874,6 +1885,9 @@ class MirrorDungeonPage(QWidget):
             pass
         finally:
             self._loading = False
+        # Programmatic set_selected above does not emit selection_changed, so
+        # re-derive the SAIKAI-dependent UI (gift lock, market auto-tags, link).
+        self._update_gift_lock()
 
     # --- Run count + general -------------------------------------
     def _build_run_section(self) -> QWidget:
@@ -922,6 +1936,14 @@ class MirrorDungeonPage(QWidget):
              "surplus into modules so it is not wasted.", True),
             ("skip", "Skip dialogue",
              "Click through pre-battle cutscenes and dialogue.", True),
+            ("pack_search", "Pack search",
+             "Refresh the floor's pack offering to hunt for your priority "
+             "packs. Off: take a random available pack (or your configured "
+             "priority/avoid picks) without refreshing.", True),
+            ("swap_max_energy", "Swap for max energy",
+             "At the squad screen (after team select, before entering), swap "
+             "each 0-energy sinner for a +5 max-energy one. Leaves the sinners "
+             "in your Sinner swap exclusion (Settings) alone.", False),
             ("winrate", "Always pick winrate",
              "Pick the highest win-rate clash even when damage roll is bigger.", True),
             ("wishmaking", "Wishmaking",
@@ -999,140 +2021,159 @@ class MirrorDungeonPage(QWidget):
         section.body.addLayout(grid)
         return section
 
-    # --- [THRILL] Sinner swap exclusion --------------------------
-    # The in-game squad screen is a fixed 6x2 grid in canonical sinner order.
-    _THRILL_SQUAD = [
-        ["Yi Sang", "Faust", "Don Quixote", "Ryōshū", "Meursault", "Hong Lu"],
-        ["Heathcliff", "Ishmael", "Rodion", "Sinclair", "Outis", "Gregor"],
-    ]
-
-    def _build_thrill_order_section(self) -> QWidget:
-        section = Card("[THRILL] SINNER ORDER", self)
+    def _build_egogifts_tab(self) -> QWidget:
+        """The EGO Gift Search tab: a keyword-tab thumbnail gallery for picking up to
+        3 gifts to auto-select at the start of a Mirror Dungeon run."""
+        from .widgets import _page_gradient_qss
+        page = QWidget()
+        # Paint the page background (only the page, via the id selector) so the
+        # AnimatedStack slide snapshot is the dark page, not a grey transparent.
+        page.setObjectName("egoGiftsPage")
+        page.setStyleSheet(f"QWidget#egoGiftsPage {{ {_page_gradient_qss()} }}")
+        col = QVBoxLayout(page)
+        col.setContentsMargins(Sizing.SPACE_XL, Sizing.SPACE_LG,
+                               Sizing.SPACE_XL, Sizing.SPACE_LG)
+        col.setSpacing(Sizing.SPACE_MD)
         hint = QLabel(
-            MD_THRILL_ORDER_HINT,
-            self, objectName="inlineHint")
+            "Pick up to 3 EGO gifts to auto-select at the start of each "
+            "Mirror Dungeon run. Click a thumbnail to add or remove it; "
+            "search by name or browse by keyword tab. (SAIKAI keeps Spiderweb "
+            "locked in.)",
+            page, objectName="inlineHint")
         hint.setWordWrap(True)
-        section.body.addWidget(hint)
-        flat = [n for row in self._THRILL_SQUAD for n in row]
-        # 12 picks allowed; backend caps the squad at 6 with the rest as fallback.
-        self._thrill_order = ClickOrderGrid(
-            flat, rows=2, cols=6, max_picks=12, parent=section,
-        )
-        self._thrill_order.changed.connect(self._save_state)
-        section.body.addWidget(self._thrill_order)
-        section.setVisible(False)
-        self._thrill_order_section = section
-        return section
+        col.addWidget(hint)
+        self._gift_gallery = _GiftGallery(max_picks=3, parent=page)
+        self._gift_gallery.changed.connect(self._save_state)
+        col.addWidget(self._gift_gallery, 1)
+        return page
 
-    def _build_thrill_exclusion_section(self) -> QWidget:
-        from .widgets import _CheckChip
-        section = Card("[THRILL] SINNER SWAP EXCLUSION", self)
+    def _build_market_tab(self) -> QWidget:
+        """The Market tab: buying-workflow controls + per-gift keep/sell/buy config."""
+        from .widgets import _page_gradient_qss
+        page = QWidget()
+        page.setObjectName("marketPage")
+        page.setStyleSheet(f"QWidget#marketPage {{ {_page_gradient_qss()} }}")
+        col = QVBoxLayout(page)
+        col.setContentsMargins(Sizing.SPACE_XL, Sizing.SPACE_LG,
+                               Sizing.SPACE_XL, Sizing.SPACE_LG)
+        col.setSpacing(Sizing.SPACE_MD)
+
+        # Buying-workflow card: master toggle + reroll controls. The reroll
+        # rows grey out when they don't apply (see _sync_market_controls).
+        card = Card("MARKET BUYING", page)
+        self._market_controls_card = card
+
+        self._default_market_workflow = Toggle(default=True, parent=card)
+        self._default_market_workflow.toggled.connect(self._save_state)
+        self._default_market_workflow.toggled.connect(self._sync_market_controls)
+        card.body.addWidget(SettingRow(
+            "Default market workflow",
+            "On: buy by affinity and tier as usual. Off: buy only the gifts "
+            "you tag Buy priority below, then reroll.",
+            self._default_market_workflow, parent=card))
+
+        self._market_refresh_count = QSpinBox(card)
+        self._market_refresh_count.setObjectName("runCount")
+        self._market_refresh_count.setRange(0, 99)
+        self._market_refresh_count.setValue(0)
+        self._market_refresh_count.setFixedWidth(72)
+        self._market_refresh_count.valueChanged.connect(self._save_state)
+        self._market_count_row = SettingRow(
+            "Refresh count",
+            "How many times to reroll the shop while buying your tagged gifts.",
+            self._market_refresh_count, parent=card)
+        card.body.addWidget(self._market_count_row)
+
+        self._market_refresh_until_cost = Toggle(default=False, parent=card)
+        self._market_refresh_until_cost.toggled.connect(self._save_state)
+        self._market_refresh_until_cost.toggled.connect(self._sync_market_controls)
+        self._market_until_row = SettingRow(
+            "Refresh until cost available",
+            "Keep rerolling while you can still afford it, ignoring the count.",
+            self._market_refresh_until_cost, parent=card)
+        card.body.addWidget(self._market_until_row)
+
+        self._buy_ego_fuel = Toggle(default=False, parent=card)
+        self._buy_ego_fuel.toggled.connect(self._save_state)
+        self._buy_fuel_row = SettingRow(
+            "Buy EGO fuel",
+            "When crafting a Fuse target, buy the missing fuel gifts from the "
+            "shop shelf. Off: fuse only from gifts you already own.",
+            self._buy_ego_fuel, parent=card)
+        card.body.addWidget(self._buy_fuel_row)
+
+        col.addWidget(card)
+        self._sync_market_controls()
+
         hint = QLabel(
-            MD_THRILL_EXCLUSION_HINT, self, objectName="inlineHint")
+            "Tag each EGO gift: Keep · no fuse (never fuse it), Keep · no sell "
+            "(never sell it), Sell (sell it), or Buy priority (bought in the "
+            "order you click, badged 1, 2, 3). Untouched gifts keep the bot's "
+            "default behaviour.",
+            page, objectName="inlineHint")
         hint.setWordWrap(True)
-        section.body.addWidget(hint)
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(Sizing.SPACE_SM)
-        grid.setVerticalSpacing(Sizing.SPACE_XS)
-        self._thrill_excl_chips = {}
-        for r, names in enumerate(self._THRILL_SQUAD):
-            for c, name in enumerate(names):
-                chip = _CheckChip(name, section)
-                chip.toggled.connect(self._on_thrill_exclude_toggled)
-                self._thrill_excl_chips[name] = chip
-                grid.addWidget(chip, r, c)
-        section.body.addLayout(grid)
-        section.setVisible(False)
-        self._thrill_excl_section = section
-        return section
+        col.addWidget(hint)
 
-    def _on_thrill_exclude_toggled(self, _on: bool):
-        # No cap: battle.py handles 0-12 exclusions natively.
-        self._save_state()
+        # Two independent tag configs: the normal one and a SAIKAI one that is
+        # seeded from the preset the first time SAIKAI is selected and stays
+        # fully editable. The gallery edits whichever slot is active.
+        self._market_slot = "normal"
+        self._market_slots = {"normal": {}, "saikai": None}
+        self._market_slot_hint = QLabel(
+            "Editing the SAIKAI market config (used by SAIKAI runs only). "
+            "Pick another strategy to edit your normal config.",
+            page, objectName="inlineHint")
+        self._market_slot_hint.setWordWrap(True)
+        self._market_slot_hint.setVisible(False)
+        col.addWidget(self._market_slot_hint)
 
-    # --- [SAIKAI] Sinner order + exclusion -----------------------
-    # Order overrides _SAIKAI_SINNERS; exclusion subtracts from that order.
-    _SAIKAI_SQUAD = _THRILL_SQUAD
+        self._market_gallery = _MarketGiftGallery(parent=page, scrollable=False)
+        self._market_gallery.changed.connect(self._save_state)
+        col.addWidget(self._market_gallery)
+        return page
 
-    def _build_saikai_options_section(self) -> QWidget:
-        """SAIKAI run-tuning toggles, gated like the order/exclusion cards."""
-        section = Card("[SAIKAI] OPTIONS", self)
-        self._saikai_only_hard = Toggle(default=False, parent=section)
-        self._saikai_only_hard.toggled.connect(self._save_state)
-        row = SettingRow(
-            "Hard from F1",
-            "Run every floor on Hard difficulty. Default flips Normal -> "
-            "Hard at Floor 4 to match the scripted SAIKAI build; tick this "
-            "to start Hard from Floor 1 instead.",
-            self._saikai_only_hard,
-            parent=section,
-        )
-        section.body.addWidget(row)
-        section.setVisible(False)
-        self._saikai_options_section = section
-        return section
+    @staticmethod
+    def _saikai_market_seed() -> dict:
+        from wbcore.market_catalog import SAIKAI_MARKET_TAGS
+        return {k: list(v) for k, v in SAIKAI_MARKET_TAGS.items()}
 
-    def _build_saikai_order_section(self) -> QWidget:
-        section = Card("[SAIKAI] SINNER ORDER", self)
-        hint = QLabel(
-            MD_SAIKAI_ORDER_HINT,
-            self, objectName="inlineHint")
-        hint.setWordWrap(True)
-        section.body.addWidget(hint)
-        flat = [n for row in self._SAIKAI_SQUAD for n in row]
-        self._saikai_order = ClickOrderGrid(
-            flat, rows=2, cols=6, max_picks=12, parent=section,
-        )
-        self._saikai_order.changed.connect(self._save_state)
-        section.body.addWidget(self._saikai_order)
-        section.setVisible(False)
-        self._saikai_order_section = section
-        return section
+    def _market_slot_cfg(self, slot):
+        """The tag dict for `slot`: live from the gallery when that slot is
+        active, else the stored copy. None = SAIKAI slot never saved (the
+        preset seeds it on first use)."""
+        if not hasattr(self, "_market_gallery"):
+            return {} if slot == "normal" else None
+        if slot == self._market_slot:
+            return self._market_gallery.config()
+        return self._market_slots.get(slot)
 
-    def _build_saikai_exclusion_section(self) -> QWidget:
-        from .widgets import _CheckChip
-        section = Card("[SAIKAI] SINNER EXCLUSION", self)
-        hint = QLabel(
-            MD_SAIKAI_EXCLUSION_HINT,
-            self, objectName="inlineHint")
-        hint.setWordWrap(True)
-        section.body.addWidget(hint)
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(Sizing.SPACE_SM)
-        grid.setVerticalSpacing(Sizing.SPACE_XS)
-        self._saikai_excl_chips = {}
-        for r, names in enumerate(self._SAIKAI_SQUAD):
-            for c, name in enumerate(names):
-                chip = _CheckChip(name, section)
-                chip.toggled.connect(self._on_saikai_exclude_toggled)
-                self._saikai_excl_chips[name] = chip
-                grid.addWidget(chip, r, c)
-        section.body.addLayout(grid)
-        section.setVisible(False)
-        self._saikai_excl_section = section
-        return section
+    def _market_controls_config(self) -> dict:
+        """Market workflow toggles + refresh count from the Market tab."""
+        if not hasattr(self, "_default_market_workflow"):
+            return {}
+        return {
+            "default_market_workflow": self._default_market_workflow.isChecked(),
+            "refresh_count": self._market_refresh_count.value(),
+            "refresh_until_cost": self._market_refresh_until_cost.isChecked(),
+            "buy_ego_fuel": self._buy_ego_fuel.isChecked(),
+        }
 
-    def _on_saikai_exclude_toggled(self, _on: bool):
-        # No cap; set_team skips out-of-range entries.
-        self._save_state()
+    def _sync_market_controls(self):
+        """Reroll controls only apply when the default workflow is off; the
+        count only applies when 'refresh until cost' is off. Grey out the rest."""
+        if not hasattr(self, "_market_until_row"):
+            return
+        configured_only = not self._default_market_workflow.isChecked()
+        self._market_until_row.setEnabled(configured_only)
+        self._market_count_row.setEnabled(
+            configured_only and not self._market_refresh_until_cost.isChecked())
+        self._buy_fuel_row.setEnabled(configured_only)
 
-    def _update_thrill_visibility(self, *_):
-        """Toggle Thrill AND SAIKAI section visibility. Legacy name retained
-        so existing signal connections still wire up."""
-        strategy = self._custom_strategy.selected()
-        custom_on = self._custom_run.isChecked()
-        thrill_on = custom_on and strategy == "Thrill"
-        saikai_on = custom_on and strategy == SAIKAI_LABEL
-        if hasattr(self, "_thrill_excl_section"):
-            self._thrill_excl_section.setVisible(thrill_on)
-        if hasattr(self, "_thrill_order_section"):
-            self._thrill_order_section.setVisible(thrill_on)
-        if hasattr(self, "_saikai_excl_section"):
-            self._saikai_excl_section.setVisible(saikai_on)
-        if hasattr(self, "_saikai_order_section"):
-            self._saikai_order_section.setVisible(saikai_on)
-        if hasattr(self, "_saikai_options_section"):
-            self._saikai_options_section.setVisible(saikai_on)
+    def _gift_search_selection(self) -> list:
+        """Up-to-3 selected gift names from the EGO Gift Search gallery."""
+        if hasattr(self, "_gift_gallery"):
+            return self._gift_gallery.selected()
+        return []
 
     # --- Shop: Skill Replacement ---------------------------------
     # Per-sinner skill replacements (1>2, 1>3, 2>3) fired in the shop.
@@ -1292,6 +2333,71 @@ class MirrorDungeonPage(QWidget):
         self._floor_packs = FloorPacks(data, banned, parent=section)
         section.body.addWidget(self._floor_packs)
         return section
+
+    # --- Pack Search fallback -------------------------------------
+    _PS_FLOORS = (1, 2, 3, 4, 5)
+
+    def _build_pack_search_section(self) -> QWidget:
+        section = Card("PACK SEARCH", self)
+        hint = QLabel(
+            "Per floor: when the pack below is not on offer after the "
+            "refreshes, open the in-game Pack Search and secure it instead "
+            "of settling for a fallback pick. Type a pack name - it "
+            "autofills, Tab completes it.",
+            section, objectName="inlineHint")
+        hint.setWordWrap(True)
+        section.body.addWidget(hint)
+
+        self._ps_rows = {}
+        self._ps_valid = {}
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(Sizing.SPACE_MD)
+        grid.setVerticalSpacing(Sizing.SPACE_XS)
+        for i, fl in enumerate(self._PS_FLOORS):
+            lbl = QLabel(f"Floor {fl}", section, objectName="settingTitle")
+            grid.addWidget(lbl, i, 0)
+
+            edit = _PackSearchEdit(section)
+            edit.setObjectName("textField")
+            edit.setPlaceholderText("No pack configured")
+            edit.setClearButtonEnabled(True)
+            comp = QCompleter(_pack_search_names_for_floor(fl), edit)
+            comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            comp.setCompletionMode(QCompleter.CompletionMode.InlineCompletion)
+            edit.setCompleter(comp)
+            edit.editingFinished.connect(
+                lambda f=fl: self._ps_commit_edit(f))
+            grid.addWidget(edit, i, 1)
+
+            tog = Toggle(default=False, parent=section)
+            tog.toggled.connect(self._save_state)
+            grid.addWidget(tog, i, 2)
+
+            self._ps_rows[fl] = (tog, edit)
+        grid.setColumnStretch(1, 1)
+        section.body.addLayout(grid)
+        return section
+
+    def _ps_commit_edit(self, floor: int):
+        """Normalize the floor's edit to a valid pack name (one per floor)
+        or revert to the last valid entry."""
+        _tog, edit = self._ps_rows[floor]
+        typed = edit.text().strip()
+        if not typed:
+            if self._ps_valid.get(floor):
+                self._ps_valid[floor] = ""
+                self._save_state()
+            return
+        match = next((n for n in _pack_search_names_for_floor(floor)
+                      if n.lower() == typed.lower()), None)
+        if match is None:
+            edit.setText(self._ps_valid.get(floor, ""))
+            return
+        if match != edit.text():
+            edit.setText(match)
+        if self._ps_valid.get(floor) != match:
+            self._ps_valid[floor] = match
+            self._save_state()
 
     # --- Starting grace ------------------------------------------
     def _build_grace_section(self) -> QWidget:

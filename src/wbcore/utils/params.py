@@ -21,7 +21,26 @@ BUFF = [1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
 CARD = [1, 0, 2, 3, 4]
 # % of baseline cursor speed; scales movement timing.
 MOUSE_SPEED = 100
+# Click muscle-memory: learn common button spots and pre-move there while
+# waiting (faster + more human; the click still lands on the real button).
+MOUSE_MEMORY = True
 KEYWORDLESS = {}
+# Up to 3 EGO gift display names to auto-select at MD start (gift_catalog).
+GIFT_SEARCH = []
+# Market/Fuse per-gift tags (market_catalog display names): dict with keys
+# keep_fuse / keep_sell / sell / buy -> lists of names ("buy" is click order).
+# Consumed by the shop sell/fuse/buy flows.
+MARKET_GIFTS = {}
+# Pack selection: True = refresh the floor offering to hunt priority packs;
+# False = take a random available pack (or configured priorities), no refresh.
+PACK_SEARCH = True
+# "Retry count on defeat": 0 = retry forever (historical), N = give up after N.
+RETRY_COUNT = 0
+# Cap on per-floor pack refreshes (the grace-derived budget is the floor).
+PACK_REFRESHES = 7
+# Pack Search fallback: {floor: pack display name} (see pack_search_catalog)
+# to hunt in the in-game Pack Search window when it is not on offer.
+PACK_SEARCH_FLOORS = {}
 HARD = False        # current effective difficulty (may change mid-run)
 EXTREME = False
 # "F3 Hard": starts Normal, switches to HARD_TARGET at HARD_FROM_FLOOR.
@@ -33,10 +52,26 @@ RUN_SCRIPT = ""
 # SAIKAI: 1-indexed battle number within the run. First battle's turns 1-2
 # evade everything; every later turn/battle selects S3.
 SAIKAI_BATTLE = 0
-# SAIKAI: set once Ryoshu's S1->S3 replace is bought, so it isn't bought twice.
-SAIKAI_S3_DONE = False
+# HoS turn order. Default: evade ONE slot per turn for the first
+# SAIKAI_EVADE_TURNS turns (ceil(deployed/2), counted across battles), then
+# plain winrate. SAIKAI_S3_ONLY restores the legacy S3-forcing behaviour.
+SAIKAI_S3_ONLY = False
+SAIKAI_TURN_TOTAL = 0
+SAIKAI_EVADE_TURNS = 4
+# Set once the end-of-run gift scan has run for the current attempt.
+RUN_GIFTS_SCANNED = False
+# SAIKAI "Go to floor 10": >0 = run the Infinite MD and leave after this floor,
+# claiming rewards (0 = normal 5-floor run, ended by the game at floor 5).
+SAIKAI_STOP_FLOOR = 0
+# Set when the floor-stop forfeit fires, so dungeon_fail claims (keeps) rewards.
+SAIKAI_LEAVE_CLAIM = False
 # THRILL: SINNERS indices (Yi Sang=0 .. Gregor=11) excluded from the squad swap.
 THRILL_EXCLUDE = []
+# Squad max-energy swap (Behaviour: "Swap for max energy"). When True, the bot
+# swaps each non-excluded 0-energy sinner for a +5 ID at the squad screen.
+SWAP_MAX_ENERGY = False
+# Current team's SINNERS indices to leave alone during that swap (set per team).
+SWAP_EXCLUDE = []
 # v1-parity behaviour gates (default off). When True the matching
 # shop/heal/dungeon_fail function early-returns.
 SKIP_RESTSHOP = False
@@ -44,7 +79,28 @@ SKIP_EGO_CHECK = False
 SKIP_EGO_FUSION = False
 SKIP_EGO_ENHANCING = False
 SKIP_EGO_BUYING = False
+SKIP_EGO_BATTLE = False
 SKIP_SINNER_HEALING = False
+# Market workflow. When False, only the user's tagged "buy" gifts are bought
+# and reroll is driven by the count / until-cost toggle below.
+DEFAULT_MARKET_WORKFLOW = True
+MARKET_REFRESH_COUNT = 0
+MARKET_REFRESH_UNTIL_COST = False
+# Buy missing fuse-fuel gifts from the shop shelf when crafting a fuse target.
+BUY_EGO_FUEL = False
+# Set once the configured-only buy has run for the current shop visit, so
+# fuse_loop's fuel requests get an honest "nothing bought" instead of a loop.
+MARKET_CONFIGURED_DONE = False
+# Set once custom_market has run for the current shop visit (the floor-1 block
+# and the market block can both fire on floor 1 with Skip off).
+CUSTOM_MARKET_DONE = False
+# Custom market enhance tracking: {display name: uptie levels applied} for the
+# current attempt, so "enhance once/twice" caps across ALL shop floors instead
+# of re-uptying every visit. Reset per attempt in execute_me.
+CUSTOM_ENHANCE_DONE = {}
+# Fuse targets confirmed crafted this attempt, so later shops skip the whole
+# open-menu/verify dance for them. Reset per attempt in execute_me.
+CUSTOM_FUSE_DONE = set()
 CLAIM_ON_DEFEAT = False
 # Run `shutdown /l` after the run queue finishes (unattended runs).
 LOGOUT_ON_FINISH = False

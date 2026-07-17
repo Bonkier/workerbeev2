@@ -119,12 +119,15 @@ def _maybe_diag_egobin():
         conf = LocateGray.get_conf(PTH["EGObin"], region=REG["EGObin"])
     except Exception:
         return
-    # 0.55 < conf < 0.90: occluded EGObin, not a clean absence.
-    if 0.55 <= conf < 0.90 and (_t.time() - _LAST_EGOBIN_DIAG) > 20.0:
+    # A clean no-gift screen scores ~0.55 at this region; only a genuinely
+    # occluded icon sits just under the 0.90 floor. Gate the diagnostic at
+    # 0.80 so it stops firing (and dumping) on every routine screen, and keep
+    # it at warning - it is a diagnostic, not a failure.
+    if 0.80 <= conf < 0.90 and (_t.time() - _LAST_EGOBIN_DIAG) > 20.0:
         _LAST_EGOBIN_DIAG = _t.time()
-        logging.error(
-            "EGO gift: EGObin gate failed as a NEAR miss (conf=%.4f at its "
-            "region) - likely on the gift screen but the icon is occluded. "
+        logging.warning(
+            "EGO gift: EGObin gate near miss (conf=%.4f at its region) - "
+            "likely on the gift screen but the icon is occluded. "
             "Capturing the bot's view.", conf)
         dump_template_diag("egobin_nearmiss", "EGObin", "trials")
 
@@ -202,6 +205,31 @@ def thrill_f3_forfeit():
     return True
 
 
+def saikai_leave_forfeit():
+    """SAIKAI "Go to floor 10" toggle: leave the Infinite MD via the settings cog
+    once the target floor is reached, then let dungeon_fail() claim the accrued
+    MD rewards (it keys off p.SAIKAI_LEAVE_CLAIM). Mirrors the THRILL F3 forfeit,
+    which hands off to the same run-failed -> claim path."""
+    logging.info("SAIKAI: floor %d reached (stop=%d) - leaving to claim rewards.",
+                 p.LVL, getattr(p, "SAIKAI_STOP_FLOOR", 0))
+    p.SAIKAI_LEAVE_CLAIM = True
+    if not now_click.button("settingcog", (1700, 0, 220, 130)):
+        logging.warning("SAIKAI: floor-leave - settingcog not found on screen.")
+        return False
+    time.sleep(0.7)
+    try:
+        chain_actions(click, [
+            Action("forfeit"),
+            Action("ConfirmInvert", ver="connecting"),
+        ])
+        connection()
+    except Exception as exc:
+        logging.warning("SAIKAI: floor-leave - confirm sequence failed: %s", exc)
+        return False
+    time.sleep(1)
+    return True
+
+
 def grab_card():
     '''Pick the reward card per priority; True if one was selected.'''
     if not now.button("encounterreward"): return False
@@ -209,6 +237,11 @@ def grab_card():
     # THRILL F3 ends the run: forfeit instead of taking a card.
     if p.RUN_SCRIPT == "thrill" and p.LVL == 3:
         return thrill_f3_forfeit()
+    # SAIKAI "Go to floor 10": leave the Infinite MD once the target floor is
+    # reached, instead of taking another reward card.
+    _stop = getattr(p, "SAIKAI_STOP_FLOOR", 0)
+    if p.RUN_SCRIPT == "saikai_ryoshu" and _stop and p.LVL >= _stop:
+        return saikai_leave_forfeit()
 
     win_moveTo(1000, 900)
     now_click.button("Cancel") # in case of misclick
@@ -239,7 +272,7 @@ def confirm():
 def get_adversity():
     if not now.button("adversity"): return False
     x_coords = [box[0] for box in LocateRGB.locate_all(PTH["projection"], region=REG["projection"], threshold=100)]
-    sorted(x_coords)
+    x_coords.sort()
     for x in x_coords:
         ClickAction((x + 90, 550), ver="selectCount!").execute(click)
     time.sleep(0.3)

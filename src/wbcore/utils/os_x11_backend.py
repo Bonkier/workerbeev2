@@ -533,6 +533,13 @@ def _fail_safe_check():
     if not FAILSAFE_ENABLED:
         return
 
+    # Parity with the Windows backend: honour the GUI Stop signal on every move
+    # so Stop is responsive instead of deferred to the next focus-loss pause.
+    se = getattr(p, "stop_event", None)
+    if se is not None and se.is_set():
+        release_all()
+        raise PauseException("stop")
+
     name = getActiveWindowTitle()
 
     if p.LIMBUS_NAME not in name:

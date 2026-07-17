@@ -16,7 +16,7 @@ from .scheduler_page import SchedulerPage
 from .settings_page import SettingsPage
 from .splash import _load_app_icon, _read_version
 from .stats_page import StatsPage
-from .theme import Sizing
+from .theme import Motion, Sizing
 from .widgets import AnimatedStack
 
 
@@ -167,6 +167,7 @@ class MainUI(QWidget):
         mirror = MirrorDungeonPage(self._stack)
         mirror.start_requested.connect(self.start_requested.emit)
         mirror.stop_requested.connect(self.stop_requested.emit)
+        mirror.open_stk_settings.connect(self._reveal_stk_settings)
         self._pages["mirror_dungeon"] = mirror
 
         lux = LuxcavationPage(self._stack)
@@ -231,6 +232,23 @@ class MainUI(QWidget):
         if self._stack.currentWidget() is target:
             return
         self._stack.setCurrentWidget(target)
+
+    def _reveal_stk_settings(self):
+        """Switch to Settings and scroll the SAIKAI / THRILL card near the top.
+        Deferred past the page transition so the scroll area has final geometry
+        (the switch animates and grabs page pixmaps for ~Motion.NORMAL ms)."""
+        self._select("settings")
+        page = self._pages.get("settings")
+        wrapper = self._wrappers.get("settings")
+        card = getattr(page, "_stk_card", None)
+        if card is None or not isinstance(wrapper, QScrollArea):
+            return
+
+        def _scroll():
+            y = card.mapTo(page, card.rect().topLeft()).y()
+            wrapper.verticalScrollBar().setValue(max(0, y - Sizing.SPACE_XL))
+
+        QTimer.singleShot(Motion.NORMAL, _scroll)
 
     # --- Public hooks ----------------------------------------------
     def page(self, key: str) -> QWidget | None:

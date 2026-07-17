@@ -493,9 +493,12 @@ def build_global_qss() -> str:
         background-color: transparent;
         color: {c.TEXT_SECONDARY};
         border: none;
-        padding: 6px 18px;
+        /* Weight 700 so the button is sized for the bold (selected) label and
+           the bold text cannot overflow; padding clears the capped corner
+           radius (see Segmented.paintEvent). */
+        padding: 6px 20px;
         font-size: {f.SIZE_SM}pt;
-        font-weight: 600;
+        font-weight: 700;
         min-height: 26px;
     }}
     QPushButton#segmentedItem:hover {{

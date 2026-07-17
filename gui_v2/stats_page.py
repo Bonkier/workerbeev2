@@ -12,8 +12,8 @@ import datetime as _dt
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QFileDialog, QHBoxLayout, QLabel, QScrollArea, QToolButton, QVBoxLayout,
-    QWidget,
+    QFileDialog, QHBoxLayout, QLabel, QMessageBox, QScrollArea, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 from . import stats
@@ -52,6 +52,9 @@ class StatsPage(QWidget):
         self._export_btn = GhostButton("Export CSV", self)
         self._export_btn.clicked.connect(self._export_csv)
         header.add_action(self._export_btn)
+        self._clear_btn = GhostButton("Clear stats", self)
+        self._clear_btn.clicked.connect(self._clear_stats)
+        header.add_action(self._clear_btn)
         outer.addWidget(header)
 
         # Match the Mirror Dungeon page aesthetic: text-only tab strip with
@@ -200,7 +203,7 @@ class StatsPage(QWidget):
             with open(path, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 w.writerow(["timestamp", "result", "duration_seconds",
-                            "team", "mode", "floors"])
+                            "team", "mode", "floors", "gifts"])
                 for r in runs:
                     ts = r.get("ts", 0)
                     when = (_dt.datetime.fromtimestamp(ts).isoformat()
@@ -209,6 +212,9 @@ class StatsPage(QWidget):
                         f"F{f.get('floor')}:{f.get('pack')}="
                         f"{int(round(f.get('duration', 0) or 0))}s"
                         for f in (r.get("floors") or []))
+                    gifts = "; ".join(
+                        str(g.get("name", "")) + ("[+]" if g.get("uptied") else "")
+                        for g in (r.get("gifts") or []))
                     w.writerow([
                         when,
                         "completed" if r.get("completed") else "failed",
@@ -216,9 +222,22 @@ class StatsPage(QWidget):
                         r.get("team", ""),
                         r.get("mode", "mirror"),
                         floors,
+                        gifts,
                     ])
         except OSError:
             pass
+
+    # --- clear -----------------------------------------------------
+    def _clear_stats(self):
+        resp = QMessageBox.question(
+            self, "Clear stats",
+            "Delete all recorded run history and stats? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if resp == QMessageBox.StandardButton.Yes:
+            stats.clear()
+            self.refresh_stats()
 
 
 class _HistoryRow(QWidget):
@@ -264,8 +283,9 @@ class _HistoryRow(QWidget):
         col.addWidget(top)
 
         floors = [f for f in (run.get("floors") or []) if isinstance(f, dict)]
+        gifts = [g for g in (run.get("gifts") or []) if isinstance(g, dict)]
         self._details = None
-        if floors:
+        if floors or gifts:
             self._toggle = QToolButton(self)
             self._toggle.setObjectName("expander")
             self._toggle.setCheckable(True)
@@ -293,6 +313,18 @@ class _HistoryRow(QWidget):
                                   f"{humanized}  -  {dur_text}")
                 dv.addWidget(QLabel(label_text, self._details,
                                     objectName="inlineMeta"))
+            if gifts:
+                # End-of-run fuse-shelf scan; [+] marks an uptied gift
+                # (same shape as the Discord embed line).
+                uptied = sum(1 for g in gifts if g.get("uptied"))
+                names = ", ".join(
+                    str(g.get("name", "")) + (" [+]" if g.get("uptied") else "")
+                    for g in gifts)
+                glabel = QLabel(
+                    f"Gifts ({len(gifts)}, {uptied} uptied):  {names}",
+                    self._details, objectName="inlineMeta")
+                glabel.setWordWrap(True)
+                dv.addWidget(glabel)
             self._details.setVisible(False)
             col.addWidget(self._details)
 

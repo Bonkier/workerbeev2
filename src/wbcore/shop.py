@@ -61,7 +61,9 @@ def decide_fusion(target_tier, inventory, depth=0):
         ranges = super_ranges
 
     if p.WISHMAKING:
-        combos += TWO_ITEM_COMBOS
+        # Concat, never +=: combos aliases the module-level COMBOS/EXTRA and
+        # += would append into them permanently, again on every call.
+        combos = combos + TWO_ITEM_COMBOS
 
     low, high = ranges[target_tier]
     valid_combos = [
@@ -93,7 +95,7 @@ def decide_fusion(target_tier, inventory, depth=0):
             continue
 
         if p.SUPER == "shop" and not depth and missing.get(3, 0) == 1 and \
-           sum([missing.get(i, 0) for i in range(1, 2)]) == 0:
+           sum([missing.get(i, 0) for i in range(1, 3)]) == 0:
             new_have = {tier: len(items) for tier, items in inventory.items()}
             skip_missing = True
             for i in range(1, 5):
@@ -137,7 +139,53 @@ def decide_fusion(target_tier, inventory, depth=0):
 def is_in_range(res, coord):
     return res[0] - 103 < coord[0] < res[0] + 19 and res[1] - 105 < coord[1] < res[1] + 17
 
-def inventory_check(reg, h, uptie_det=True):
+_MARKET_TPL_CACHE = {}
+_MARKET_CONF = 0.85
+# Safety net: cap fuse_loop passes so a stuck shop (e.g. buy() reporting success
+# without obtaining the needed fuel) leaves instead of looping forever.
+_FUSE_LOOP_CAP = 12
+# Safety net: cap the "refresh until cost" reroll loop so a stuck reroll (a
+# missed or blocked click that never spends) bails instead of looping forever.
+_MARKET_REFRESH_CAP = 30
+
+
+def _market_scan(image, reg, names, path_key="path"):
+    """Locate Market/Fuse-tagged gifts (market_catalog display names) on the
+    amplified shelf `image` via their catalog template, at native scale.
+    `path_key` picks the template: "path" (egogifts, fuse/sell shelf) or
+    "buy_path" (markettemplate, buy shelf). Returns {name: (x, y)}. These are
+    catalog gifts the team PTH templates don't cover, so this is how the
+    per-gift tags find them on the shelf."""
+    if not names:
+        return {}
+    from .market_catalog import load_market_catalog
+    cat = load_market_catalog()
+    out = {}
+    for name in names:
+        entry = cat.get(name)
+        path = entry.get(path_key) if entry else None
+        if not path:
+            continue
+        try:
+            ck = (name, path_key)
+            tpl = _MARKET_TPL_CACHE.get(ck)
+            if tpl is None:
+                raw = cv2.imread(path)
+                if raw is None:
+                    continue
+                tpl = amplify(raw)
+                _MARKET_TPL_CACHE[ck] = tpl
+            x, y = gui.center(LocateRGB.try_locate(tpl, image=image, region=reg,
+                                                   conf=_MARKET_CONF))
+            out[name] = (x, y)
+        except gui.ImageNotFoundException:
+            continue
+        except Exception as exc:
+            logging.debug("Market scan: '%s' failed: %s", name, exc)
+    return out
+
+
+def inventory_check(reg, h, uptie_det=True, market_mode=None):
     coords_agg = {1: [], 2: [], 3: [], 4: []}
     coords     = {1: [], 2: [], 3: [], 4: []}
     have = {}
@@ -200,7 +248,7 @@ def inventory_check(reg, h, uptie_det=True):
 
     # SAIKAI: never let Spiderweb Entangled become fusion fuel. Not in any
     # team's "all" list, so black it out manually. Total miss is caught by the
-    # fuse() guard, which skips fusion to stay safe.
+    # _fuse_target guard, which skips fusion to stay safe.
     if p.RUN_SCRIPT == "saikai_ryoshu":
         for swt in sorted(k for k in PTH if k.lower().startswith("spider")):
             try:
@@ -213,6 +261,38 @@ def inventory_check(reg, h, uptie_det=True):
             image = rectangle(image, (int(sx - 62 - reg[0]), int(sy - 72 - reg[1])), (int(sx + 60 - reg[0]), int(sy + 60 - reg[1])), (0, 0, 0), -1)
             logging.info("SAIKAI: Spiderweb located via %s at (%d, %d) - locked out of fusion fuel.", swt, sx, sy)
             break
+
+    # SAIKAI: Emerald Elytra is build-critical but absent from the team lists,
+    # so the scans above never see it. Locate it and black it out of the
+    # fusion/sell pool (its enhance is driven by the auto "enhance twice" tag).
+    if p.RUN_SCRIPT == "saikai_ryoshu" and "emeraldelytra" in PTH:
+        try:
+            if "emeraldelytra" in CACHE:
+                ely = CACHE["emeraldelytra"]
+            else:
+                ely = amplify(cv2.imread(PTH["emeraldelytra"]))
+                CACHE["emeraldelytra"] = ely   # once per session, not per pass
+            ex, ey = gui.center(LocateRGB.try_locate(ely, image=image,
+                                                     region=reg, conf=0.85))
+            have["emeraldelytra"] = (ex, ey, h)
+            fuse_shelf = rectangle(fuse_shelf, (int(ex - 62 - reg[0]), int(ey - 72 - reg[1])), (int(ex + 60 - reg[0]), int(ey + 60 - reg[1])), (0, 0, 0), -1)
+            image = rectangle(image, (int(ex - 62 - reg[0]), int(ey - 72 - reg[1])), (int(ex + 60 - reg[0]), int(ey + 60 - reg[1])), (0, 0, 0), -1)
+        except gui.ImageNotFoundException:
+            pass
+
+    # Market/Fuse: protect the user's tagged gifts for THIS pass (keep_fuse on a
+    # fuse pass, keep_sell on a sell pass). Located via egogifts (the team PTH
+    # set doesn't cover them) and blacked out before the tier scan, so they never
+    # enter the fusion/sell pool.
+    if market_mode in ("fuse", "sell"):
+        _mkey = "keep_fuse" if market_mode == "fuse" else "keep_sell"
+        for _mn, (_mx, _my) in _market_scan(
+                image, reg, p.MARKET_GIFTS.get(_mkey) or []).items():
+            fuse_shelf = rectangle(fuse_shelf,
+                (int(_mx - 62 - reg[0]), int(_my - 72 - reg[1])),
+                (int(_mx + 60 - reg[0]), int(_my + 60 - reg[1])), (0, 0, 0), -1)
+            logging.info("Market: %s '%s' at (%d,%d) - excluded from this pass.",
+                         _mkey, _mn, _mx, _my)
 
     found_aff = []
     for aff in p.GIFTS:
@@ -292,7 +372,7 @@ def get_inventory():
                     y = max(295, min(777, y))
                     region = (920, y, 790, 777 - y)
                 
-                coords, coords_agg, have, uptie = inventory_check(region, 0)
+                coords, coords_agg, have, uptie = inventory_check(region, 0, market_mode="fuse")
                 if box:
                     break
             else:
@@ -302,7 +382,7 @@ def get_inventory():
                 if LocateGray.check(PTH["gifts_owned"], region=REG["fuse_shelf"], wait=False):
                     break
                 
-                new_coords, new_coords_agg, new_have, new_uptie = inventory_check(REG["fuse_shelf_peak"], h)
+                new_coords, new_coords_agg, new_have, new_uptie = inventory_check(REG["fuse_shelf_peak"], h, market_mode="fuse")
                 coords = concat(coords, new_coords)
                 coords_agg = concat(coords_agg, new_coords_agg)
                 have.update(new_have)
@@ -320,7 +400,7 @@ def get_inventory():
             y = max(295, min(777, y))
             region = (920, y, 790, 777 - y)
         
-        coords, coords_agg, have, uptie = inventory_check(region, 0)
+        coords, coords_agg, have, uptie = inventory_check(region, 0, market_mode="fuse")
     
     if uptie is None:
         raise RuntimeError
@@ -415,9 +495,6 @@ def search_have(have, fuse_type, idx):
     return missing/iterations
 
 def fuse_search(have):
-    # SAIKAI only wants the two T4 powerful-ego fusions; no recipe chasing.
-    if p.RUN_SCRIPT == "saikai_ryoshu":
-        return []
     advanced_fusing = []
     if p.GIFTS[0]["sin"] and not p.GIFTS[0]["goal"][0] in have.keys():
         advanced_fusing.append((0, search_have(have, 1, 0), 1))
@@ -527,12 +604,6 @@ def fuse():
             logging.info("THRILL: thrill EGO gift confirmed in inventory.")
         p.THRILL_DONE = True
         raise NotImplementedError
-    # SAIKAI: if Spiderweb wasn't located (not blacked out), stop fusing rather
-    # than risk consuming it. Raises the loop's clean "done" exit.
-    if p.RUN_SCRIPT == "saikai_ryoshu" and "spiderwebego" not in have:
-        logging.warning("SAIKAI: Spiderweb NOT found in fuse inventory - stopping fusion "
-                        "this shop so it can never be used as fuel (check the template if this keeps firing).")
-        raise NotImplementedError
     to_click = []
     fuse_type = 0
     got_all = False
@@ -561,9 +632,6 @@ def fuse():
         i, _, fuse_type = advanced_fusing[0]
         set_affinity(i)
     elif got_all:
-        if p.RUN_SCRIPT == "saikai_ryoshu":
-            # Both T4s done; we want NO other fusions.
-            raise NotImplementedError
         for i in range(len(p.GIFTS)):
             for name, tier in p.GIFTS[i]["fuse_ex"].items():
                 if not name in have.keys():
@@ -629,6 +697,127 @@ def confirm_affinity(teams=None):
         else:
             ClickAction((469, 602), ver="keywordSel").execute(shop_click)
 
+def scan_run_gifts():
+    """End-of-run gift inventory (last-shop floor): open the fuse menu, page
+    the owned shelf, and name every team + catalog gift found with its uptie
+    state. Returns [(name, uptied)], and emits it to telemetry so the run
+    record and the Discord embed carry it."""
+    if getattr(p, "SKIP_EGO_CHECK", False):
+        return []
+    found = {}
+    # Open the menu THROUGH the keyword flow, exactly like the fuse targets
+    # do: a fresh fuse menu pops the keyword-selection dialog over the shelf,
+    # and template detection of that dialog is unreliable (the affinity tiles
+    # read 0.99 selected but only ~0.74 neutral). _open_fuse_keyword's
+    # (469, 602) click + confirm handles selected, neutral, and absent dialog
+    # states alike and is the one path proven to work live.
+    checks = (p.GIFTS[0].get("checks") if p.GIFTS else None)
+    if checks:
+        if not _open_fuse_keyword(checks):
+            logging.warning("Gift scan: keyword confirm did not land - skipping.")
+            close_panel()
+            return []
+        logging.info("Gift scan: fuse menu open, keyword confirmed.")
+    else:
+        try:
+            chain_actions(shop_click, [Action(p.SUPER, click=(410, 580), ver="fuse")])
+        except RuntimeError:
+            logging.warning("Gift scan: fuse menu did not open - skipping.")
+            return []
+    try:
+        time.sleep(0.2)
+
+        comp = p.WINDOW[2] / 1920
+        reg = REG["fuse_shelf"]
+        hook_x = random.choice([1083, 1228, 1370, 1515])
+        # Scroll to the top only when actually scrolled: no scrollbar means a
+        # single-page shelf, and "scroll" showing means already at the top.
+        guard = 0
+        while (not now_rgb.button("scroll")
+               and now_rgb.button("scroll", "scroll_full")
+               and guard < 8):
+            browse_fast(hook_x, up=True)
+            time.sleep(0.5)
+            guard += 1
+
+        team_names = set((p.KEYWORDLESS or {}).keys())
+        for aff in p.GIFTS:
+            team_names |= set(aff.get("all") or [])
+        team_names = {g for g in team_names if g in PTH}
+        # Full sell_path catalog (~5s/page): fuel gifts can carry ANY keyword,
+        # so trimming to the run's keywords silently drops them from the
+        # report. Run keywords lead so their blackouts land before the long
+        # tail scans; buy-crop-only entries stay excluded (false positives).
+        from .market_catalog import load_market_catalog
+        kw_run = {str(t).lower() for t in (p.TEAM or [])} | {"keywordless"}
+        _cat = load_market_catalog()
+        cat_names = sorted(
+            (n for n, e in _cat.items() if e.get("sell_path")),
+            key=lambda n: _cat[n].get("keyword") not in kw_run)
+
+        for _page in range(8):
+            shelf = screenshot(region=reg)
+            image = amplify(shelf)
+
+            def _badge(x, y):
+                crop = shelf[int((y-66-reg[1])*comp):int((y-22-reg[1])*comp),
+                             int((x-14-reg[0])*comp):int((x+55-reg[0])*comp)]
+                try:
+                    return bool(LocateRGB.check(PTH["+"], image=crop, wait=False))
+                except cv2.error:
+                    return False
+
+            def _blackout(x, y):
+                # Remove the hit so the catalog pass cannot re-report the
+                # same gift under its display name (inventory_check pattern).
+                nonlocal image, shelf
+                shelf = rectangle(shelf, (int(x - 62 - reg[0]), int(y - 72 - reg[1])),
+                                  (int(x + 60 - reg[0]), int(y + 60 - reg[1])), (0, 0, 0), -1)
+                image = rectangle(image, (int(x - 62 - reg[0]), int(y - 72 - reg[1])),
+                                  (int(x + 60 - reg[0]), int(y + 60 - reg[1])), (0, 0, 0), -1)
+
+            new = 0
+            for gift in team_names:
+                # Already-found gifts are re-located every pass PURELY to
+                # black out their tile: a skipped gift stays visible on the
+                # fresh screenshot and the catalog pass then re-reports the
+                # same tile under its display name (13 gifts scanned as 15).
+                try:
+                    tpl = CACHE[gift] if gift in CACHE else amplify(cv2.imread(PTH[gift]))
+                    x, y = gui.center(LocateRGB.try_locate(tpl, image=image,
+                                                           region=reg, conf=0.87))
+                except gui.ImageNotFoundException:
+                    continue
+                if gift not in found:
+                    found[gift] = _badge(x, y)
+                    new += 1
+                _blackout(x, y)
+            for name, (x, y) in _market_scan(image, reg, cat_names).items():
+                if name not in found:
+                    found[name] = _badge(x, y)
+                    new += 1
+                _blackout(x, y)
+
+            if _page > 0 and new == 0:
+                break
+            if not now_rgb.button("scroll", "scroll_full"):
+                # Single-page shelf: everything is on screen, no second
+                # verification pass needed.
+                break
+            browse_fast(hook_x)
+            time.sleep(0.5)
+    finally:
+        # Never leave the fuse menu open: leave() cannot cope with it.
+        close_panel()
+
+    items = sorted(found.items())
+    logging.info("Run gifts (%d): %s", len(items),
+                 ", ".join(n + (" [uptied]" if u else "") for n, u in items)
+                 or "none detected")
+    tele.gifts(items)
+    return items
+
+
 def init_fuse():
     chain_actions(shop_click, [
         Action(p.SUPER, click=(410, 580), ver="fuse"),
@@ -650,8 +839,14 @@ def fuse_loop():
     init_fuse()
     ehnance_flag = True
     ref_count = 1 + (p.BUFF[5] > 2)
+    loops = 0
     try:
         while True:
+            loops += 1
+            if loops > _FUSE_LOOP_CAP:
+                logging.warning("fuse_loop: %d passes without finishing - "
+                                "leaving the shop to avoid a stuck loop.", loops - 1)
+                raise NotImplementedError   # clean done -> close_panel + leave
             try:
                 missing = fuse()
             except NotImplementedError:
@@ -766,6 +961,18 @@ def power_up():
         wait_while_condition(lambda: not now.button("Confirm.2"), lambda: gui.press("space"), timer=1.5)
         wait_while_condition(lambda: not now.button("power"), lambda: gui.press("space"), timer=1.5)
 
+def power_up_verified():
+    """power_up, but reports whether the uptie confirm dialog actually appeared,
+    so callers tracking enhance counts never count a missed click. The second
+    round only runs after a confirmed first dialog (same protocol, faster on a
+    miss or an already-maxed gift)."""
+    opened = bool(wait_while_condition(lambda: not now.button("Confirm.2"), lambda: gui.press("space"), timer=1.5))
+    wait_while_condition(lambda: not now.button("power"), lambda: gui.press("space"), timer=1.5)
+    if opened:
+        wait_while_condition(lambda: not now.button("Confirm.2"), lambda: gui.press("space"), timer=1.5)
+        wait_while_condition(lambda: not now.button("power"), lambda: gui.press("space"), timer=1.5)
+    return opened
+
 def get_uptie_inventory(gift_list):
     click_gifts(gift_list, REG["fuse_shelf"], chain=power_up)
     if now_rgb.button("scroll", "scroll_full"):
@@ -781,8 +988,11 @@ def get_uptie_inventory(gift_list):
             h += 1
 
 def search_sell(reg):
-    coords, _, _, _ = inventory_check(reg, 0, uptie_det=True)
-    for i in range(4, 0, -1):
+    coords, _, _, _ = inventory_check(reg, 0, uptie_det=True, market_mode="sell")
+    # T4 last: it is premium fusion fuel (15 points). T2 leads so each sell
+    # pass (a full shelf rescan) recovers decent value without burning the
+    # cheap T1 fusion fuel or the mid fuel first.
+    for i in (2, 1, 3, 4):
         if coords[i] != []:
             win_click(coords[i][0][:2])
             time.sleep(0.2)
@@ -1034,9 +1244,56 @@ def buy_affinity(aff):
             time.sleep(0.1)
     return shop_shelf, False
 
+def _buy_configured(names):
+    """Buy each configured 'buy'-tagged catalog gift on the buy shelf, located
+    via its markettemplate (buy_path). Returns True if any were bought."""
+    shop_shelf = amplify(update_shelf())
+    output = False
+    for name, (x, y) in _market_scan(shop_shelf, REG["buy_shelf"], names,
+                                     path_key="buy_path").items():
+        win_click((x, y), tsize=(90, 90))
+        conf_gift()
+        time.sleep(0.1)
+        output = True
+    return output
+
+def buy_configured_only():
+    # Once per shop visit. Later calls come from fuse_loop hunting fusion
+    # fuel; returning False there ends the fuse pass instead of re-running
+    # the whole buy + reroll cycle 12 times (the _FUSE_LOOP_CAP bail).
+    if getattr(p, "MARKET_CONFIGURED_DONE", False):
+        return False
+    p.MARKET_CONFIGURED_DONE = True
+    names = p.MARKET_GIFTS.get("buy") or []
+    if not names:
+        return True
+    _buy_configured(names)
+    if getattr(p, "MARKET_REFRESH_UNTIL_COST", False):
+        loops = 0
+        while balance() >= 200 and loops < _MARKET_REFRESH_CAP:
+            loops += 1
+            win_click(1489, 177, tsize=(180, 53))
+            connection()
+            time.sleep(0.1)
+            do_skill_replace()
+            _buy_configured(names)
+    else:
+        for _ in range(int(getattr(p, "MARKET_REFRESH_COUNT", 0) or 0)):
+            if balance() < 200:
+                break
+            win_click(1489, 177, tsize=(180, 53))
+            connection()
+            time.sleep(0.1)
+            do_skill_replace()
+            _buy_configured(names)
+    return True
+
 def buy_some(rerolls=1, priority=False):
     if getattr(p, "SKIP_EGO_BUYING", False):
         logging.info("Skipping buy_some (Behaviour: Skip EGO buying).")
+        return
+    if not getattr(p, "DEFAULT_MARKET_WORKFLOW", True):
+        buy_configured_only()
         return
     time.sleep(0.2)
     iterations = rerolls + 1
@@ -1048,12 +1305,6 @@ def buy_some(rerolls=1, priority=False):
         if p.EXTREME:
             for _ in range(1 + int(p.SUPER == "supershop")):
                 buy_skill3()
-        # SAIKAI: grab the build's key poise gifts FIRST, ahead of every other gift.
-        # Filtered to installed templates so a missing PNG never KeyErrors.
-        if p.RUN_SCRIPT == "saikai_ryoshu":
-            saikai_buy = [g for g in ("emeraldelytra", "endorphinkit", "nebulizer") if g in PTH]
-            if saikai_buy:
-                buy_known({"buy": saikai_buy})
         for aff in keywordless + p.GIFTS:
             if not priority or not aff["sin"]:
                 if "checks" in aff:
@@ -1068,10 +1319,7 @@ def buy_some(rerolls=1, priority=False):
             win_click(1489, 177, tsize=(180, 53))
             connection()
             time.sleep(0.1)
-            if p.RUN_SCRIPT == "saikai_ryoshu":
-                saikai_skill_replace()          # Ryoshu only; never the generic path
-            else:
-                do_skill_replace()
+            do_skill_replace()
         elif balance() < 120: return
 
 def buy(missing):
@@ -1104,6 +1352,8 @@ def buy_loop(missing, floor1=False, keyword_ref=True):
     if getattr(p, "SKIP_EGO_BUYING", False):
         logging.info("Skipping buy_loop (Behaviour: Skip EGO buying).")
         return
+    if not getattr(p, "DEFAULT_MARKET_WORKFLOW", True):
+        return buy_configured_only()
     print("need", missing)
     result, missing = buy(missing)
     if not result or floor1:
@@ -1115,10 +1365,7 @@ def buy_loop(missing, floor1=False, keyword_ref=True):
                     action=confirm_affinity
                 )
                 connection()
-                if p.RUN_SCRIPT == "saikai_ryoshu":
-                    saikai_skill_replace()      # Ryoshu only; never the generic path
-                else:
-                    do_skill_replace()
+                do_skill_replace()
                 if p.EXTREME:
                     time.sleep(0.2)
                     for _ in range(1 + int(p.SUPER == "supershop")):
@@ -1130,10 +1377,7 @@ def buy_loop(missing, floor1=False, keyword_ref=True):
                 win_click(1489, 177, tsize=(180, 53))
                 connection()
                 time.sleep(0.1)
-                if p.RUN_SCRIPT == "saikai_ryoshu":
-                    saikai_skill_replace()      # Ryoshu only; never the generic path
-                else:
-                    do_skill_replace()
+                do_skill_replace()
                 if p.EXTREME:
                     time.sleep(0.2)
                     for _ in range(1 + int(p.SUPER == "supershop")):
@@ -1269,6 +1513,15 @@ def _skill_replace_cap_for_super(super_kind: str) -> int:
     return 2 if super_kind == "supershop" else 1
 
 
+def _offer_conf(stem, region):
+    """Best gray/RGB confidence for one offer label template in `region`."""
+    try:
+        return max(LocateGray.get_conf(PTH[stem], region=region),
+                   LocateRGB.get_conf(PTH[stem], region=region))
+    except Exception:
+        return 0.0
+
+
 def _scan_active_sinner_offer():
     """Probe for the first ACTIVE sinner whose offer is on screen and not yet
     swapped this visit. Returns (sinner_name, template_stem, box) or all-None."""
@@ -1289,6 +1542,28 @@ def _scan_active_sinner_offer():
         if box is None:
             box = LocateRGB.locate(PTH[tpl], conf=0.80)
         if box:
+            # The label strips share glyph runs ("Replace R...'s Skill"), so a
+            # near-name card can cross the 0.80 bar (Rodion's card matched
+            # srep_ryoshu). Accept only when the claimed sinner's template is
+            # the BEST match among all 12 at that spot; the true sinner's own
+            # label always outscores a lookalike there.
+            left, top, w, h = box
+            reg = (max(0, int(left) - 12), max(0, int(top) - 12),
+                   int(w) + 24, int(h) + 24)
+            claimed = _offer_conf(tpl, reg)
+            best_stem, best_conf = tpl, claimed
+            for other_stem in _SKILL_REPLACE_OFFERS.values():
+                if other_stem == tpl or other_stem not in PTH:
+                    continue
+                c = _offer_conf(other_stem, reg)
+                if c > best_conf:
+                    best_stem, best_conf = other_stem, c
+            if best_stem != tpl:
+                logging.info(
+                    "Skill replace scan: %s matched at %.2f but the card reads "
+                    "as %s (%.2f) - not %s's offer, skipping.",
+                    sinner_name, claimed, best_stem, best_conf, sinner_name)
+                continue
             return sinner_name, tpl, box
     logging.debug(
         "Skill replace scan: nothing matched. active=%d, pending=%s, "
@@ -1456,44 +1731,348 @@ def do_skill_replace():
     return swaps_taken
 
 
-def saikai_skill_replace():
-    """SAIKAI: take Ryoshu's S1 -> S3 swap once per run - the first thing done
-    at the rest shop. Hard-coded to Ryoshu (the generic do_skill_replace never
-    runs for SAIKAI). Locates her market skill-swap icon (ryoshuskillreplace),
-    opens it, and applies the S1 -> S3 swap (ryoshus1s3)."""
-    if getattr(p, "SAIKAI_S3_DONE", False):
-        return False
-    if "ryoshuskillreplace" not in PTH or "ryoshus1s3" not in PTH:
-        return False
+# --- Custom market (Default market workflow OFF) ----------------------------
+# Buys only the user's tagged gifts, fuses the tagged fuse targets (any keyword,
+# protected fuel pool), then upties the enhance targets. See custom_market().
 
-    # Click Ryoshu's skill-swap icon. wait=3 so the market shelf has time to
-    # render after the shop opens; wait=0 was missing it and skipping the swap.
-    if not tap_center("ryoshuskillreplace", tsize=(46, 22), wait=3):
-        return False
-    logging.info("SAIKAI: Ryoshu skill-swap icon found - applying S1 -> S3.")
-    time.sleep(0.6)
+# Safety net on per-target fusion attempts: fusion is random, so a wrong result
+# re-fuses from the remaining pool; the cap bounds that if verify keeps missing.
+_CUSTOM_FUSE_CAP = 6
 
-    if not tap_center("ryoshus1s3", tsize=(46, 22), wait=3):
-        logging.warning("SAIKAI: S1->S3 option not found after opening the "
-                        "swap menu; backing out.")
-        gui.press("escape"); time.sleep(0.4)
-        return False
 
-    time.sleep(0.5)
-    confirms = 0
-    for n in range(2):                      # packconfirm shows up twice
-        if not tap_center("packconfirm", tsize=(60, 22), wait=3):
-            logging.warning("SAIKAI: skill-replace confirm %d/2 not found.", n + 1)
+def _keyword_checks(keyword):
+    """The TEAMS 'checks' entry whose affinity tab matches a catalog gift's
+    keyword, used to pick the fuse keyword tab. None for keywordless/unknown."""
+    team = TEAMS.get(str(keyword or "").upper())
+    return team.get("checks") if team else None
+
+
+def _open_fuse_keyword(checks):
+    """Open the fuse menu and select the `checks` keyword tab (confirm_affinity
+    pattern, but for an arbitrary keyword and bounded). Returns True on select."""
+    chain_actions(shop_click, [
+        Action(p.SUPER, click=(410, 580), ver="fuse"),
+        lambda: time.sleep(0.1),
+        ClickAction((469, 602), ver="keywordSel"),
+    ])
+    win_moveTo(605, 612)
+    for _ in range(8):
+        click_rgb.button(checks[3], "affinity!")
+        win_click(1194, 841, tsize=(100, 30))
+        time.sleep(0.1)
+        if not now.button("notSelected"):
+            return True
+        ClickAction((469, 602), ver="keywordSel").execute(shop_click)
+    return False
+
+
+def _shelf_has_catalog(name):
+    """Scan the currently-open owned shelf (fuse or enhance menu) for catalog
+    gift `name`, paging from the top. Returns the first hit (x, y) or None."""
+    from .market_catalog import load_market_catalog
+    entry = load_market_catalog().get(name) or {}
+    if not entry.get("path"):
+        return None
+    reg = REG["fuse_shelf"]
+    hook_x = random.choice([1083, 1228, 1370, 1515])
+    while not now_rgb.button("scroll") and now_rgb.button("scroll", "scroll_full"):
+        browse_fast(hook_x, up=True)
+        time.sleep(0.3)
+    for _page in range(8):
+        hit = _market_scan(amplify(screenshot(region=reg)), reg, [name])
+        if hit:
+            return hit[name]
+        if now_rgb.button("scroll.0") or not now_rgb.button("scroll", "scroll_full"):
             break
-        confirms += 1
-        time.sleep(0.6)
+        browse_fast(hook_x)
+        time.sleep(0.3)
+    return None
 
-    if confirms == 0:
-        gui.press("escape"); time.sleep(0.4)    # fail-safe: never leave it open
-        return False
-    p.SAIKAI_S3_DONE = True
-    logging.info("SAIKAI: Ryoshu S1 -> S3 skill replace complete.")
-    return True
+
+def _fuel_deficit_buy(missing):
+    """Buy the {tier: count} fuse-fuel deficit off the buy shelf (T1-T3 only;
+    decide_fusion never asks for T4). Returns what could not be bought."""
+    remaining = {t: c for t, c in missing.items() if c > 0}
+    shelf = update_shelf()
+    for tier in sorted(remaining, reverse=True):
+        while remaining[tier] > 0:
+            try:
+                if balance() < 200:
+                    return {t: c for t, c in remaining.items() if c > 0}
+            except RuntimeError:
+                return {t: c for t, c in remaining.items() if c > 0}
+            pool = get_shop(shelf).get(tier) or []
+            if not pool:
+                break
+            win_click(pool[0])
+            conf_gift()
+            time.sleep(0.1)
+            remaining[tier] -= 1
+            shelf = update_shelf()
+    return {t: c for t, c in remaining.items() if c > 0}
+
+
+def _fuse_target(name, tier, checks):
+    """Fuse toward catalog gift `name` (tier `tier`, keyword tab `checks`).
+    Fuel comes from the protected pool that get_inventory returns; when Buy EGO
+    fuel is on, the deficit is bought off the shelf. Re-fuses on a wrong random
+    result until the target is crafted, fuel runs out, or the cap is hit."""
+    for _ in range(_CUSTOM_FUSE_CAP):
+        if not _open_fuse_keyword(checks):
+            close_panel()
+            return False
+        # Verify: catches "already owned" on entry and a crafted target after
+        # a fusion (fusion is random, so success is confirmed by re-scan).
+        if _shelf_has_catalog(name):
+            close_panel()
+            return True
+        try:
+            coords, coords_agg, have = get_inventory()
+        except Exception as exc:
+            logging.warning("Custom market: '%s' inventory scan failed: %s", name, exc)
+            close_panel()
+            return False
+        # SAIKAI: if Spiderweb wasn't located (and so not blacked out of the
+        # fuel pool), stop fusing rather than risk consuming it.
+        if p.RUN_SCRIPT == "saikai_ryoshu" and "spiderwebego" not in have:
+            logging.warning("SAIKAI: Spiderweb NOT found in fuse inventory - skipping "
+                            "fusion so it can never be used as fuel "
+                            "(check the template if this keeps firing).")
+            close_panel()
+            return False
+        # Fuel comes from the AGGREGATE pool: the plain `coords` drops every
+        # gift wearing a team-affinity badge (a reserve heuristic for the
+        # default recipe flow), which starves fuse targets whose fuel shares
+        # the run's keywords. Explicit protections (team gifts, keywordless,
+        # keep_fuse tags, Spiderweb, Elytra) are blacked out before the tier
+        # scan, so they are absent from BOTH pools. EXTREME keeps the
+        # conservative pool, matching fuse().
+        if p.EXTREME:
+            coords_agg = coords
+        if not coords_agg:
+            # SKIP_EGO_CHECK returns empty dicts; nothing to fuse from.
+            close_panel()
+            return False
+        _combo, missing = decide_fusion(tier, coords_agg)
+        if missing:
+            close_panel()
+            # SKIP_EGO_BUYING bans ALL shelf purchases, fuel included.
+            if (not getattr(p, "BUY_EGO_FUEL", False)
+                    or getattr(p, "SKIP_EGO_BUYING", False)):
+                return False
+            if _fuel_deficit_buy(missing):
+                return False   # shelf can't cover the fuel; give up this target
+            continue           # fuel bought: re-open, re-scan, fuse
+        actual_fuse(tier, coords_agg)
+        close_panel()
+    logging.info("Custom market: '%s' fuse hit the attempt cap.", name)
+    return False
+
+
+def _enhance_catalog(targets):
+    """Uptie each (name, levels) catalog gift on the enhance shelf, `levels`
+    times PER ATTEMPT (tracked in p.CUSTOM_ENHANCE_DONE, so later shop floors
+    only apply what is still owed, e.g. a target crafted or short-funded
+    earlier). Backs out of a gift once the balance can't cover its next uptie."""
+    from .market_catalog import load_market_catalog
+    cat = load_market_catalog()
+    done = getattr(p, "CUSTOM_ENHANCE_DONE", None)
+    if done is None:
+        done = p.CUSTOM_ENHANCE_DONE = {}
+    if not any(int(lv) - int(done.get(n, 0)) > 0 for n, lv in targets):
+        return
+    # Funds are read ONCE here, on the shop screen: the enhance overlay covers
+    # the money display, so a balance() inside the menu hangs to its 20s
+    # timeout on every call. Spend is tracked locally per verified uptie.
+    try:
+        funds = balance()
+    except RuntimeError:
+        logging.warning("Custom market: could not read the balance - "
+                        "skipping the enhance pass this shop.")
+        return
+    ClickAction((250, 581), ver="power").execute(click)
+    try:
+        for name, levels in targets:
+            owed = int(levels) - int(done.get(name, 0))
+            if owed <= 0:
+                continue
+            entry = cat.get(name) or {}
+            if not entry.get("sell_path"):
+                # No egogifts owned-shelf template: cannot locate it to uptie.
+                logging.info("Custom market: '%s' has no owned template - cannot enhance.", name)
+                continue
+            tier = int(entry.get("tier") or 0)
+            cost = enhance_cost.get(tier, 300)
+            for _ in range(owed):
+                if funds < cost:
+                    logging.info("Custom market: low funds - stop enhancing '%s'.", name)
+                    break
+                pos = _shelf_has_catalog(name)
+                if not pos:
+                    break
+                win_click(pos)
+                if not power_up_verified():
+                    # Missed click or maxed gift: no dialog, nothing spent.
+                    # Leave the level owed so a later floor retries.
+                    logging.info("Custom market: '%s' uptie did not confirm - "
+                                 "will retry at the next shop.", name)
+                    break
+                done[name] = int(done.get(name, 0)) + 1
+                funds -= cost
+                logging.info("Custom market: uptied '%s' (level %d of %d).",
+                             name, done[name], int(levels))
+                time.sleep(0.2)
+    finally:
+        close_panel()
+
+
+def custom_market():
+    """Market behaviour when Default market workflow is OFF: buy only the
+    tagged 'buy' gifts (with the configured reroll), fuse the 'fuse'-tagged
+    targets (buying deficit fuel when Buy EGO fuel is on), then uptie the
+    'enhance once'/'enhance twice' targets. Leaves at once when nothing is
+    tagged. Runs once per shop visit; shop() performs the final leave()."""
+    # Once per visit: the floor-1 block and the market block can both fire on
+    # floor 1 when Skip is off, which would double the buy/reroll/enhance.
+    if getattr(p, "CUSTOM_MARKET_DONE", False):
+        return
+    p.CUSTOM_MARKET_DONE = True
+    gifts = p.MARKET_GIFTS or {}
+    buy_names = gifts.get("buy") or []
+    fuse_names = gifts.get("fuse") or []
+    enh1 = gifts.get("enhance1") or []
+    enh2 = gifts.get("enhance2") or []
+    if not (buy_names or fuse_names or enh1 or enh2):
+        logging.info("Custom market: nothing configured - leaving shop.")
+        return
+
+    # Step 1: buy the tagged gifts, refreshing per the count / until-cost
+    # toggle. When refreshes are configured, each shelf is ALSO harvested for
+    # pending fuse-target fuel before the reroll discards it (the fuse step
+    # only ever sees the final shelf). Capped at the pending targets'
+    # from-scratch fuel needs; the fuse step's own deficit buy self-corrects
+    # against what is actually owned.
+    if buy_names and not getattr(p, "SKIP_EGO_BUYING", False):
+        refreshes = (getattr(p, "MARKET_REFRESH_UNTIL_COST", False)
+                     or int(getattr(p, "MARKET_REFRESH_COUNT", 0) or 0) > 0)
+        need = {}
+        if refreshes and fuse_names and getattr(p, "BUY_EGO_FUEL", False):
+            done_f = getattr(p, "CUSTOM_FUSE_DONE", None) or set()
+            from .market_catalog import load_market_catalog
+            _c = load_market_catalog()
+            for _n in fuse_names:
+                if _n in done_f:
+                    continue
+                _t = int((_c.get(_n) or {}).get("tier") or 0)
+                if _t not in fusion_ranges:
+                    continue
+                _combo, _miss = decide_fusion(_t, {1: [], 2: [], 3: [], 4: []})
+                for _tier, _cnt in (_miss or {}).items():
+                    need[_tier] = need.get(_tier, 0) + _cnt
+            if need:
+                logging.info("Custom market: harvesting fuse fuel %s "
+                             "across rerolls.", need)
+
+        def _shelf_pass():
+            nonlocal need
+            _buy_configured(buy_names)
+            if need:
+                need = _fuel_deficit_buy(need)
+
+        _shelf_pass()
+        if getattr(p, "MARKET_REFRESH_UNTIL_COST", False):
+            loops = 0
+            while balance() >= 200 and loops < _MARKET_REFRESH_CAP:
+                loops += 1
+                win_click(1489, 177, tsize=(180, 53))
+                connection()
+                time.sleep(0.1)
+                do_skill_replace()
+                _shelf_pass()
+        else:
+            for _ in range(int(getattr(p, "MARKET_REFRESH_COUNT", 0) or 0)):
+                if balance() < 200:
+                    break
+                win_click(1489, 177, tsize=(180, 53))
+                connection()
+                time.sleep(0.1)
+                do_skill_replace()
+                _shelf_pass()
+
+    # Protect the fuse targets (once crafted) and the enhance targets from being
+    # spent as fusion fuel: inventory_check blacks out keep_fuse gifts, so extend
+    # it for the duration and restore it after.
+    protect = list(dict.fromkeys(list(fuse_names) + list(enh1) + list(enh2)))
+    saved_keep = gifts.get("keep_fuse")
+    if protect:
+        gifts["keep_fuse"] = list(dict.fromkeys((saved_keep or []) + protect))
+    try:
+        # Steps 2-3: fuse each tagged target from the protected fuel pool.
+        if fuse_names and not getattr(p, "SKIP_EGO_FUSION", False):
+            from .market_catalog import load_market_catalog
+            cat = load_market_catalog()
+            done_fuse = getattr(p, "CUSTOM_FUSE_DONE", None)
+            if done_fuse is None:
+                done_fuse = p.CUSTOM_FUSE_DONE = set()
+            for name in fuse_names:
+                if name in done_fuse:
+                    # Confirmed crafted earlier this attempt: skip the whole
+                    # open-menu/verify pass at this and every later shop.
+                    logging.info("Custom market: '%s' already crafted this "
+                                 "run - skipping.", name)
+                    continue
+                entry = cat.get(name) or {}
+                tier = int(entry.get("tier") or 0)
+                checks = _keyword_checks(entry.get("keyword"))
+                # sell_path guarantees an egogifts owned-shelf template; without
+                # it the only art is a tight buy crop that never matches the
+                # owned thumbnail, so the craft verify could never confirm.
+                if tier not in fusion_ranges or checks is None or not entry.get("sell_path"):
+                    logging.info("Custom market: '%s' not fuseable (tier %s, keyword %s, "
+                                 "owned template %s) - skipping.", name, tier,
+                                 entry.get("keyword"), bool(entry.get("sell_path")))
+                    continue
+                try:
+                    if _fuse_target(name, tier, checks):
+                        done_fuse.add(name)
+                        logging.info("Custom market: crafted '%s'.", name)
+                    else:
+                        # Strictly sequential: a later target must not start
+                        # (and burn shared fuel) while an earlier one is
+                        # unconfirmed. The rest retry at the next shop.
+                        logging.info("Custom market: could not craft '%s' - "
+                                     "stopping the fuse pass here.", name)
+                        break
+                except gui.PauseException:
+                    raise
+                except Exception as exc:
+                    logging.warning("Custom market: fuse '%s' errored: %s - "
+                                    "stopping the fuse pass here.", name, exc)
+                    try:
+                        close_panel()
+                    except Exception:
+                        pass
+                    break
+
+        # Step 4: uptie the enhance targets (once = 1 level, twice = 2 levels).
+        targets = [(n, 1) for n in enh1] + [(n, 2) for n in enh2]
+        if targets and not getattr(p, "SKIP_EGO_ENHANCING", False):
+            try:
+                _enhance_catalog(targets)
+            except gui.PauseException:
+                raise
+            except Exception as exc:
+                logging.warning("Custom market: enhance errored: %s", exc)
+                try:
+                    close_panel()
+                except Exception:
+                    pass
+    finally:
+        if protect:
+            if saved_keep is None:
+                gifts.pop("keep_fuse", None)
+            else:
+                gifts["keep_fuse"] = saved_keep
 
 
 def shop():
@@ -1531,14 +2110,14 @@ def shop():
     # Per-visit reset (cap applies across refreshes within one visit).
     p.SKILL_REPLACE_USED_THIS_SHOP = 0
     p.SKILL_REPLACE_SINNERS_THIS_SHOP = set()
+    p.MARKET_CONFIGURED_DONE = False
+    p.CUSTOM_MARKET_DONE = False
     p.RUN_SHOP_VISITS = int(getattr(p, "RUN_SHOP_VISITS", 0) or 0) + 1
     logging.info("shop: entry (%s, run shop-count now %d)",
                  p.SUPER, p.RUN_SHOP_VISITS)
-    saikai = p.RUN_SCRIPT == "saikai_ryoshu"
-    if saikai:
-        saikai_skill_replace()                  # Ryoshu only; never the generic path
-    else:
-        do_skill_replace()
+    # Skill replacement follows the MD-tab config for every run type
+    # (SAIKAI included): nothing is bought unless the user configured it.
+    do_skill_replace()
 
     if now.button("Confirm"):
         if not input_with_fallback(
@@ -1550,12 +2129,17 @@ def shop():
             )
         ): return False
 
-    if p.DEAD > 0 and p.HARD:
+    # Revive/heal on any difficulty - a dead sinner costs every later battle.
+    if p.DEAD > 0:
         # SAIKAI runs solo Ryoshu and depends on the other six being down;
         # both revive and heal are banned.
         if p.RUN_SCRIPT == "saikai_ryoshu":
             logging.info("SAIKAI: %d sinner(s) down - skipping revive AND heal "
                          "(both banned for this run).", p.DEAD)
+        elif p.RUN_SCRIPT == "thrill" and not getattr(p, "THRILL_DONE", False):
+            # THRILL F1 must keep its whole budget for the mandatory craft;
+            # spending on revive/heal here can budget-out the run.
+            logging.info("THRILL: deferring revive/heal until Thrill is crafted.")
         else:
             revive_idiots()
             heal_all()
@@ -1576,6 +2160,9 @@ def shop():
             try:
                 if p.RUN_SCRIPT == "thrill":
                     thrill_market_f1()
+                elif not getattr(p, "DEFAULT_MARKET_WORKFLOW", True):
+                    close_panel()
+                    custom_market()
                 else:
                     enhance(p.GIFTS[0]["uptie1"], floor1=True)
                     buy_loop({3: 2}, floor1=True)
@@ -1585,6 +2172,24 @@ def shop():
             # bot was started midway; not the first floor
             p.LVL = 2
             close_panel()
+            if os.environ.get("WB_SCAN_DEBUG"):
+                # Debug: starting the bot AT a shop runs the gift scan right
+                # here, then stops WITHOUT leaving so the result can be
+                # inspected and the scan re-run at will.
+                logging.info("SCAN DEBUG: mid-start at a shop - running the "
+                             "gift scan here, then stopping (shop stays open).")
+                try:
+                    items = scan_run_gifts()
+                    logging.info("SCAN DEBUG: scan returned %d gift(s).",
+                                 len(items))
+                except gui.PauseException:
+                    raise
+                except Exception as exc:
+                    logging.warning("SCAN DEBUG: scan failed: %s", exc)
+                if p.APP:
+                    QMetaObject.invokeMethod(p.APP, "stop_execution",
+                                             Qt.ConnectionType.QueuedConnection)
+                raise StopExecution
     # Range includes the boss-prep floor (F5 Normal, F16 Extreme). Using `>`
     # excluded those, so SKIP=on would waste the last gear-up chance.
     if 5 + p.EXTREME*11 >= p.LVL > 1 or not p.SKIP:
@@ -1599,6 +2204,8 @@ def shop():
                     logging.warning("THRILL: F2 thrill enhance failed: %s", exc)
             else:
                 logging.info("THRILL: F%d market - no market actions.", p.LVL)
+        elif not getattr(p, "DEFAULT_MARKET_WORKFLOW", True):
+            custom_market()
         else:
             buy_some(rerolls=0, priority=True)
             fuse_loop()
@@ -1609,7 +2216,19 @@ def shop():
         time.sleep(0.1)
         for _ in range(1 + int(p.SUPER == "supershop")):
             buy_skill3()
-    
+
+    # End-of-run gift inventory: scan at the run's LAST shop floor (5, 16 on
+    # Extreme, or the SAIKAI stop floor), once per attempt.
+    _last_shop = int(getattr(p, "SAIKAI_STOP_FLOOR", 0) or 0) or (5 + p.EXTREME * 11)
+    if p.LVL == _last_shop and not getattr(p, "RUN_GIFTS_SCANNED", False):
+        p.RUN_GIFTS_SCANNED = True
+        try:
+            scan_run_gifts()
+        except gui.PauseException:
+            raise
+        except Exception as exc:
+            logging.warning("Gift scan failed: %s", exc)
+
     time.sleep(0.1)
     leave()
     return True

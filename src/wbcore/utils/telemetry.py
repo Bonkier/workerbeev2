@@ -119,6 +119,13 @@ def restart(duration):
     _emit({"kind": "restart", "duration": float(duration)})
 
 
+def gifts(items):
+    """End-of-run gift inventory from the floor-5 fuse shelf:
+    [(name, uptied_bool), ...]. Buffered by the GUI into the next run_result."""
+    _emit({"kind": "gifts",
+           "items": [{"name": str(n), "uptied": bool(u)} for n, u in items]})
+
+
 def reset():
     """Clear transient overlay state at run start/end."""
     _emit({"kind": "reset"})

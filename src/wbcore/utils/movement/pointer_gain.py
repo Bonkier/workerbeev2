@@ -52,16 +52,26 @@ def execute_trajectory(dev, raw_path, times, emit_func=None):
     scale = float(_POINTER_STATE["scale"])
     path_start = path[0].copy()
 
-    for i in range(1, n_points):
-        target_time = float(times[i])
-        next_time = start_time + target_time
+    i = 1
+    while i < n_points:
+        next_time = start_time + float(times[i])
 
         now = time.perf_counter()
-        while now < next_time:
-            remaining = next_time - now
-            if remaining > 0.002:
-                time.sleep(remaining - 0.001)
-            now = time.perf_counter()
+        if now < next_time:
+            while now < next_time:
+                remaining = next_time - now
+                if remaining > 0.002:
+                    time.sleep(remaining - 0.001)
+                now = time.perf_counter()
+        else:
+            # Behind schedule - the emit call itself can be the bottleneck
+            # (the bridge DLL blocks ~1ms per move, at or above the ~1ms
+            # point spacing). Fast-forward to the newest due point so the
+            # lag coalesces into one bigger step instead of emitting every
+            # stale point late, which froze the effective speed at the
+            # call-latency floor and made MOUSE_SPEED a no-op.
+            while i + 1 < n_points and start_time + float(times[i + 1]) <= now:
+                i += 1
 
         desired_total_raw = (path[i] - path_start) / scale
 
@@ -73,5 +83,7 @@ def execute_trajectory(dev, raw_path, times, emit_func=None):
         if raw_dx != 0 or raw_dy != 0:
             emit_func(dev, raw_dx, raw_dy)
             emitted_total += step_raw
+
+        i += 1
 
     return emitted_total

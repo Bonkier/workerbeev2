@@ -12,6 +12,10 @@ from ctypes import c_char_p, c_int, c_uint8
 
 
 WINMODE_FLAGS = 0x00000900 if sys.platform == "win32" else 0
+_EXPORTS = (
+    "z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z8",
+    "z9", "z10", "z11", "z12", "z13", "z14", "z15", "z16",
+)
 
 
 class BridgeError(RuntimeError):
@@ -135,22 +139,22 @@ class Bridge:
         # Keep timeout args for compatibility with old call sites.
         self._startup_timeout = float(startup_timeout)
         self._call_timeout = float(call_timeout)
-        self._dll = self._load_dll(dll_path)
+        self._dll = self._p1(dll_path)
         self._dll_path = str(getattr(self._dll, "_name", "unknown"))
-        self._configure_signatures()
-        atexit.register(self._atexit_shutdown)
-        self._opened = self._probe_is_open()
+        self._p4()
+        atexit.register(self._p0)
+        self._opened = self._p2()
         if auto_open:
             self.open()
 
-    def _atexit_shutdown(self):
+    def _p0(self):
         try:
             self.close()
         except Exception:
             pass
 
     @staticmethod
-    def _load_dll(dll_path):
+    def _p1(dll_path):
         local_dir = os.path.dirname(os.path.abspath(__file__))
         candidates = []
         if dll_path:
@@ -182,63 +186,39 @@ class Bridge:
             f"bridge.dll was not found. searched: {searched}"
         )
 
-    def _probe_is_open(self):
+    def _p2(self):
         try:
-            return bool(self._dll.cg_is_open())
+            return bool(self._f2())
         except Exception:
             return False
 
-    def _configure_signatures(self):
-        self._dll.cg_open.argtypes = []
-        self._dll.cg_open.restype = c_int
+    def _p3(self, index, argtypes, restype):
+        fn = getattr(self._dll, _EXPORTS[index])
+        fn.argtypes = argtypes
+        fn.restype = restype
+        return fn
 
-        self._dll.cg_close.argtypes = []
-        self._dll.cg_close.restype = c_int
+    def _p4(self):
+        self._f0 = self._p3(0, [], c_int)
+        self._f1 = self._p3(1, [], c_int)
+        self._f2 = self._p3(2, [], c_int)
+        self._f3 = self._p3(3, [], c_char_p)
+        self._f4 = self._p3(4, [], c_char_p)
+        self._f5 = self._p3(5, [], c_int)
+        self._f6 = self._p3(6, [], c_int)
+        self._f7 = self._p3(7, [c_int, c_int], c_int)
+        self._f8 = self._p3(8, [c_int], c_int)
+        self._f9 = self._p3(9, [c_uint8], c_int)
+        self._f10 = self._p3(10, [c_uint8], c_int)
+        self._f11 = self._p3(11, [c_uint8, c_int], c_int)
+        self._f12 = self._p3(12, [c_uint8], c_int)
+        self._f13 = self._p3(13, [c_uint8], c_int)
+        self._f14 = self._p3(14, [], c_int)
+        self._f15 = self._p3(15, [c_uint8, c_int], c_int)
+        self._f16 = self._p3(16, [ctypes.POINTER(c_uint8), c_int], c_int)
 
-        self._dll.cg_is_open.argtypes = []
-        self._dll.cg_is_open.restype = c_int
-
-        self._dll.cg_last_error.argtypes = []
-        self._dll.cg_last_error.restype = c_char_p
-
-        self._dll.cg_mouse_settings_apply.argtypes = []
-        self._dll.cg_mouse_settings_apply.restype = c_int
-
-        self._dll.cg_mouse_settings_restore.argtypes = []
-        self._dll.cg_mouse_settings_restore.restype = c_int
-
-        self._dll.cg_mouse_move_relative.argtypes = [c_int, c_int]
-        self._dll.cg_mouse_move_relative.restype = c_int
-
-        self._dll.cg_mouse_scroll.argtypes = [c_int]
-        self._dll.cg_mouse_scroll.restype = c_int
-
-        self._dll.cg_mouse_press.argtypes = [c_uint8]
-        self._dll.cg_mouse_press.restype = c_int
-
-        self._dll.cg_mouse_release.argtypes = [c_uint8]
-        self._dll.cg_mouse_release.restype = c_int
-
-        self._dll.cg_mouse_click.argtypes = [c_uint8, c_int]
-        self._dll.cg_mouse_click.restype = c_int
-
-        self._dll.cg_key_press.argtypes = [c_uint8]
-        self._dll.cg_key_press.restype = c_int
-
-        self._dll.cg_key_release.argtypes = [c_uint8]
-        self._dll.cg_key_release.restype = c_int
-
-        self._dll.cg_key_release_all.argtypes = []
-        self._dll.cg_key_release_all.restype = c_int
-
-        self._dll.cg_key_tap.argtypes = [c_uint8, c_int]
-        self._dll.cg_key_tap.restype = c_int
-
-        self._dll.cg_key_multi_press.argtypes = [ctypes.POINTER(c_uint8), c_int]
-        self._dll.cg_key_multi_press.restype = c_int
-
-    def _get_last_error(self):
-        raw = self._dll.cg_last_error()
+    def _p5(self):
+        raw = self._f3()
         if not raw:
             return "unknown bridge error"
         try:
@@ -246,102 +226,111 @@ class Bridge:
         except Exception:
             return str(raw)
 
-    def _call(self, fn_name, *args):
+    def diagnose(self):
+        raw = self._f4()
+        if not raw:
+            return ""
         try:
-            rc = getattr(self._dll, fn_name)(*args)
+            return raw.decode("utf-8", errors="replace")
+        except Exception:
+            return str(raw)
+
+    def _p6(self, fn, label, *args):
+        try:
+            rc = fn(*args)
         except OSError as exc:
             # Access violations from a DLL call surface as OSError in ctypes.
-            if fn_name == "cg_open":
+            if label == "open":
                 self._opened = False
             raise BridgeError(
-                f"{fn_name} raised OSError: {exc} [dll={self._dll_path}]"
+                f"{label} raised OSError: {exc} [dll={self._dll_path}]"
             ) from exc
 
         if rc != 0:
-            if fn_name == "cg_open":
+            if label == "open":
                 self._opened = False
-            raise BridgeError(f"{fn_name} failed (code {rc}): {self._get_last_error()}")
+            raise BridgeError(f"{label} failed (code {rc}): {self._p5()}")
 
     @staticmethod
-    def _key_code(key):
+    def _p7(key):
         lowered = key.lower()
         if lowered not in KEY_CODES:
             raise BridgeError(f"Unsupported key: {key}")
         return KEY_CODES[lowered]
 
     @staticmethod
-    def _button_code(button):
+    def _p8(button):
         lowered = button.lower()
         if lowered not in MOUSE_BUTTONS:
             raise BridgeError(f"Unsupported mouse button: {button}")
         return MOUSE_BUTTONS[lowered]
 
     def open(self):
-        if self._probe_is_open():
+        if self._p2():
             self._opened = True
             return
 
-        self._call("cg_open")
+        self._p6(self._f0, "open")
 
-        self._opened = self._probe_is_open()
+        self._opened = self._p2()
         if not self._opened:
-            raise BridgeError("cg_open succeeded but bridge is not open")
+            raise BridgeError("open succeeded but bridge is not open")
 
     def close(self):
-        if not self._probe_is_open():
+        if not self._p2():
             self._opened = False
             return
         try:
-            self._call("cg_close")
+            self._p6(self._f1, "close")
         finally:
-            self._opened = self._probe_is_open()
+            self._opened = self._p2()
 
     def is_open(self):
-        self._opened = self._probe_is_open()
+        self._opened = self._p2()
         return self._opened
 
     def mouse_move_relative(self, dx, dy):
-        self._call("cg_mouse_move_relative", int(dx), int(dy))
+        self._p6(self._f7, "move", int(dx), int(dy))
 
     def mouse_settings_apply(self):
-        self._call("cg_mouse_settings_apply")
+        self._p6(self._f5, "settings_apply")
 
     def mouse_settings_restore(self):
-        self._call("cg_mouse_settings_restore")
+        self._p6(self._f6, "settings_restore")
 
     def mouse_scroll(self, wheel):
-        self._call("cg_mouse_scroll", int(wheel))
+        self._p6(self._f8, "scroll", int(wheel))
 
     def mouse_press(self, button="left"):
-        self._call("cg_mouse_press", self._button_code(button))
+        self._p6(self._f9, "press", self._p8(button))
 
     def mouse_release(self, button="left"):
-        self._call("cg_mouse_release", self._button_code(button))
+        self._p6(self._f10, "release", self._p8(button))
 
     def mouse_click(self, button="left", delay_ms=30):
-        self._call("cg_mouse_click", self._button_code(button), int(delay_ms))
+        self._p6(self._f11, "click", self._p8(button), int(delay_ms))
 
     def key_press(self, key):
-        self._call("cg_key_press", self._key_code(key))
+        self._p6(self._f12, "key_press", self._p7(key))
 
     def key_release(self, key):
-        self._call("cg_key_release", self._key_code(key))
+        self._p6(self._f13, "key_release", self._p7(key))
 
     def key_release_all(self):
-        self._call("cg_key_release_all")
+        self._p6(self._f14, "key_release_all")
 
     def key_tap(self, key, delay_ms=35):
-        self._call("cg_key_tap", self._key_code(key), int(delay_ms))
+        self._p6(self._f15, "key_tap", self._p7(key), int(delay_ms))
 
     def key_multi_press(self, keys):
-        codes = [self._key_code(key) for key in keys]
+        codes = [self._p7(key) for key in keys]
         if not codes:
             return
 
         arr_type = c_uint8 * len(codes)
         arr = arr_type(*codes)
 
-        self._call("cg_key_multi_press", arr, len(codes))
+        self._p6(self._f16, "key_multi_press", arr, len(codes))
 
     def shutdown(self, force=False):
         self.close()

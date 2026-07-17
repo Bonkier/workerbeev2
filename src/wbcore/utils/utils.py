@@ -24,6 +24,7 @@ def _pipeline():
     from ..callsite import build_call_sites
     from ..detection import ColorMode
     from ..input import Mouse
+    from ..input.click_memory import MEMORY
     from ..pipeline import BackendAdapter
     from ..regionspec import WindowGeometry
     from ..verifier import Verifier
@@ -49,9 +50,13 @@ def _pipeline():
     finder_gray = _finder(ColorMode.GRAY)
     finder_edges = _finder(ColorMode.EDGES)
     mouse = Mouse(window=window, backend=adapter)
-    verifier_rgb = Verifier(finder=finder_rgb, mouse=mouse)
-    verifier_gray = Verifier(finder=finder_gray, mouse=mouse)
-    verifier_edges = Verifier(finder=finder_edges, mouse=mouse)
+    # Click muscle-memory: enabled per the user toggle (default on). It only
+    # pre-moves toward tightly-clustered learned spots and never changes the
+    # click target, so leaving it on is safe.
+    MEMORY.configure(enabled=bool(getattr(p, "MOUSE_MEMORY", True)))
+    verifier_rgb = Verifier(finder=finder_rgb, mouse=mouse, memory=MEMORY)
+    verifier_gray = Verifier(finder=finder_gray, mouse=mouse, memory=MEMORY)
+    verifier_edges = Verifier(finder=finder_edges, mouse=mouse, memory=MEMORY)
     bundle_gray = build_call_sites(finder_gray, mouse, verifier_gray)
     bundle_rgb = build_call_sites(finder_rgb, mouse, verifier_rgb)
 
@@ -163,8 +168,9 @@ def _shim_check(color_mode, template, image, region, conf, click, wait, error, *
         # One-shot finder override so method= actually switches algorithm.
         finder = _select_finder(color_mode, method=method)
         from ..verifier import Verifier
+        from ..input.click_memory import MEMORY
         verifier = Verifier(finder=finder, mouse=_pipeline().mouse,
-                            sleep=verifier.sleep)
+                            sleep=verifier.sleep, memory=MEMORY)
 
     if click:
         if isinstance(click, tuple) and len(click) == 2:
@@ -852,6 +858,18 @@ def is_grayscale(img, threshold=20):
     return saturation.mean() < threshold
 
 
+_COLOR_TPL_CACHE = {}
+
+
+def _imread_color_cached(path):
+    """BGR template cache for the SIFT color gate (hot pack() loop)."""
+    tpl = _COLOR_TPL_CACHE.get(path)
+    if tpl is None and path not in _COLOR_TPL_CACHE:
+        tpl = cv2.imread(path)
+        _COLOR_TPL_CACHE[path] = tpl
+    return tpl
+
+
 class SIFTMatcher:  # only works at 1920x1080
     def __init__(self, image=None, region=(0, 0, 1920, 1080), **sift_params):
         self.region = region
@@ -895,43 +913,74 @@ class SIFTMatcher:  # only works at 1920x1080
         else:
             raise TypeError(f"Unsupported template type: {type(template)}")
     
-    def _match_template(self, template, min_matches=40, inlier_ratio=0.25):
+    def _match_template(self, template, min_matches=40, inlier_ratio=0.25,
+                        color_threshold=0.55):
+        # Remember the path so the color gate below can load the BGR
+        # template lazily (only candidates that pass the geometry gates).
+        tpl_path = template if isinstance(template, str) else None
         template = SIFTMatcher._load_template(template)
 
         kp1, des1 = self.sift.detectAndCompute(template, None)
 
         if des1 is None or self.des_base is None: return None
-        
+
         bf = cv2.BFMatcher(cv2.NORM_L2)
         good = bf.match(des1, self.des_base)
-        
+
         if len(good) < min_matches: return None
 
         src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
         dst_pts = np.float32([self.kp_base[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-        
-        M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, maxIters=200)
+
+        try:
+            M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0,
+                                         maxIters=200)
+        except cv2.error:
+            return None
         if M is None or mask is None: return None
-        
+
         matches_mask = mask.ravel().tolist()
 
         if sum(matches_mask) < inlier_ratio * len(good): return None
-        
+
         h, w = template.shape
         pts = np.float32([[0, 0], [0, h], [w, h], [w, 0]]).reshape(-1, 1, 2)
         dst = cv2.perspectiveTransform(pts, M)
-        
+
         x_coords = dst[:, 0, 0]
         y_coords = dst[:, 0, 1]
         x_min, x_max = min(x_coords), max(x_coords)
         y_min, y_max = min(y_coords), max(y_coords)
-        
+
         if (x_max - x_min < 2 * w) and (y_max - y_min < 2 * h):
+            # Color verification (ported from upstream's pack-selection fix):
+            # keypoints alone can lock onto the wrong pack's art, so the
+            # matched crop must also resemble the template in color. FAIL
+            # CLOSED: a degenerate crop or matcher error rejects the match
+            # (those are exactly the bad-homography cases this guards).
+            if tpl_path is not None and color_threshold >= 0:
+                tpl_color = _imread_color_cached(tpl_path)
+                ok = False
+                if tpl_color is not None:
+                    cy0, cy1 = max(0, int(y_min)), min(self.base_image.shape[0], int(y_max))
+                    cx0, cx1 = max(0, int(x_min)), min(self.base_image.shape[1], int(x_max))
+                    crop = self.base_image[cy0:cy1, cx0:cx1]
+                    if crop.shape[0] >= 8 and crop.shape[1] >= 8:
+                        try:
+                            resized = cv2.resize(tpl_color,
+                                                 (crop.shape[1], crop.shape[0]))
+                            score = float(cv2.matchTemplate(
+                                crop, resized, cv2.TM_CCOEFF_NORMED)[0][0])
+                            ok = score >= color_threshold
+                        except cv2.error:
+                            ok = False
+                if not ok:
+                    return None
             x_full = int(x_min + self.region[0])
             y_full = int(y_min + self.region[1])
             width = int(x_max - x_min)
             height = int(y_max - y_min)
-            
+
             return (x_full, y_full, width, height)
     
     def locate(self, template, **kwargs):
@@ -1013,7 +1062,18 @@ class LocatePreset:
                 if isinstance(ver, str):
                     condition = lambda: not self.button(ver, wait=False, click=False, error=False)
                 else:
-                    condition = lambda: LocateGray.check(state0, image=screenshot(region=ver), wait=False, conf=0.98, method=1)
+                    # window=None: state0 was captured at window scale, so it
+                    # must NOT be window-scaled again like an FHD-authored
+                    # template - below FHD the double shrink could never match
+                    # and the verify always "passed".
+                    def condition(state0=state0, ver=ver):
+                        frame = screenshot(region=ver)
+                        if (frame.shape[0] < state0.shape[0]
+                                or frame.shape[1] < state0.shape[1]):
+                            # Window resized mid-verify: treat as changed.
+                            return False
+                        return LocateGray.check(state0, image=frame, wait=False,
+                                                conf=0.98, method=1, window=None)
 
                 verified = wait_while_condition(condition, interval=0.1, timer=3)
                 if not verified:
@@ -1051,20 +1111,40 @@ now_rgb   = loc_rgb(wait=False)
 
 
 def tap_center(name, region=(0, 0, 1920, 1080), tsize=(34, 16), wait=4.0,
-               cl=LocateGray):
+               cl=LocateGray, conf=None):
     """Locate `name` (PTH key) and click its centre with a tight jitter.
-    Unlike click.button, this won't overshoot a small button."""
+    Unlike click.button, this won't overshoot a small button.
+    `conf` overrides the matcher's default floor (detailed gift art needs it)."""
     if name not in PTH:
         return False
+    from ..input.click_memory import MEMORY
+    mem = MEMORY if MEMORY.enabled else None
+    started = time.time()
     box = None
-    for _ in range(max(1, int(wait * 5))):
-        box = cl.locate(PTH[name], region=region)
+    _kw = {} if conf is None else {"conf": conf}
+    for i in range(max(1, int(wait * 5))):
+        box = cl.locate(PTH[name], region=region, **_kw)
         if box:
             break
+        if i == 0 and mem is not None:
+            # Anticipatory pre-move toward the learned spot while we keep
+            # polling; the real match below is still what gets clicked.
+            point = mem.predict(name)
+            if point is not None:
+                try:
+                    win_moveTo(*point)
+                except Exception:
+                    pass
         time.sleep(0.2)
     if not box:
         return False
-    win_click(*gui.center(box), tsize=tsize)
+    center = gui.center(box)
+    win_click(*center, tsize=tsize)
+    if mem is not None:
+        try:
+            mem.record(name, center, time.time() - started)
+        except Exception:
+            pass
     return True
 
 

@@ -94,6 +94,21 @@ class AutomationController(QObject):
             except Exception:
                 pass
 
+    def toggle_pause(self):
+        """Hotkey pause/resume: toggle pause_event (set = running). Best-effort;
+        the focus watchdog re-arms pause_event while Limbus is focused, so Stop
+        is the reliable halt."""
+        if self._params is None:
+            return
+        try:
+            if self._params.pause_event.is_set():
+                self._params.pause_event.clear()
+                self.bot_paused.emit()
+            else:
+                self._params.pause_event.set()
+        except Exception:
+            pass
+
     def _setup_run_state(self):
         """Install the threading events the bot's pause/stop logic uses."""
         import wbcore.utils.params as params

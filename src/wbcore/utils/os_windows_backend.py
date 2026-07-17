@@ -1,5 +1,6 @@
 import ctypes
 from ctypes import wintypes
+import logging
 import time
 import math
 import random
@@ -23,16 +24,52 @@ _bridge_init_error = None
 _mouse_settings_active = False
 
 
+def _warn_lghub_version():
+    """One-shot G Hub version check at bridge init. The bridge targets one
+    G Hub build; on others the driver accepts input but misapplies relative
+    moves (cursor drifts to a screen edge), so surface it loudly."""
+    try:
+        from bridge.lghub_check import (EXPECTED_LGHUB_VERSION,
+                                        installed_lghub_version,
+                                        lghub_version_ok)
+        found = installed_lghub_version()
+    except Exception:
+        return
+    if found is None:
+        logging.info("LGHub version: not detected (non-default install?)")
+    elif lghub_version_ok(found):
+        logging.info("LGHub version: %s (matches the input driver)", found)
+    else:
+        logging.warning(
+            "LGHub %s detected but the input driver targets %s - mouse "
+            "input may drift. Roll back G Hub and disable its auto-update.",
+            found, EXPECTED_LGHUB_VERSION)
+
+
 def _get_bridge():
     global _bridge, _bridge_init_error
     with _bridge_lock:
         if _bridge is None:
+            b = None
             try:
-                _bridge = Bridge(auto_open=True)
-                _bridge_init_error = None
+                b = Bridge(auto_open=False)
+                b.open()
             except Exception as exc:
-                _bridge_init_error = RuntimeError(f"Bridge initialization failed: {exc}")
+                # The DLL's diagnose() names the actual problem (e.g. a wrong
+                # G Hub version) - fold it into the raised error.
+                diag = ""
+                if b is not None:
+                    try:
+                        diag = b.diagnose()
+                    except Exception:
+                        pass
+                _bridge_init_error = RuntimeError(
+                    f"Bridge initialization failed: {exc}"
+                    + (f" [{diag}]" if diag else ""))
                 raise _bridge_init_error
+            _bridge = b
+            _bridge_init_error = None
+            _warn_lghub_version()
         return _bridge
 
 
