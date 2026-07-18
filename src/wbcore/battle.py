@@ -890,12 +890,14 @@ def fight(lux=False):
                 if p.RUN_SCRIPT == "saikai_ryoshu":
                     saikai_turn += 1
                     s3_only = bool(getattr(p, "SAIKAI_S3_ONLY", False))
+                    deployed = int(getattr(p, "SAIKAI_DEPLOYED", 7) or 7)
                     if (not s3_only and
-                            int(getattr(p, "SAIKAI_TURN_TOTAL", 0)) >=
-                            int(getattr(p, "SAIKAI_EVADE_TURNS", 0))):
-                        # HoS turn order: the evade phase (ceil(deployed/2)
-                        # COMMITTED turns, counted across battles) is over -
-                        # plain winrate for the rest of the run.
+                            int(getattr(p, "DEAD", 0) or 0) >= max(1, deployed - 1)):
+                        # Solo: every House of Spiders ally is down (p.DEAD,
+                        # refreshed on the move screen before this battle), so
+                        # the kill phase is over - plain winrate from here.
+                        logging.info("SAIKAI: solo (%d/%d allies down) - "
+                                     "plain winrate.", p.DEAD, deployed - 1)
                         raise gui.ImageNotFoundException
                     # Park the mouse off the slot row (cursor tooltips break detection).
                     win_moveTo(960, 160)
@@ -914,16 +916,14 @@ def fight(lux=False):
                                          gear_start[1]-46+80, slots[0][1])
                         except Exception as _e:
                             logging.debug("clean capture failed: %s", _e)
-                    # Legacy "Choose Skill 3 only": battle 1 turns 1-2 evade EVERY
-                    # slot, then S3 forcing with evades on the non-S3 columns.
-                    # Default (HoS turn order): during the evade phase, evade ONE
-                    # slot per turn (prefer a non-top-S3 column) and let the rest
-                    # attack via the chain's own picks. Either way, an evaded
-                    # column MUST have its BOTTOM skill selected in the chain -
-                    # the card click puts the evade on the bottom slot, so a
-                    # top-selected column would attack instead of evading.
-                    evade_all_now = (s3_only and p.SAIKAI_BATTLE <= 1
-                                     and saikai_turn <= 2)
+                    # Kill phase (allies still up): battle 1 turns 1-2 evade
+                    # EVERY slot (no S3), then force S3 on her columns (top
+                    # chip / bottom gem) and evade the rest, so her AoE cuts
+                    # the House of Spiders allies down (+10 sanity each). An
+                    # evaded column MUST have its BOTTOM skill selected in the
+                    # chain - the card click puts the evade on the bottom
+                    # slot, so a top-selected column would attack instead.
+                    evade_all_now = (p.SAIKAI_BATTLE <= 1 and saikai_turn <= 2)
                     evade_slots = slots
                     force_offsets = {}
                     debug_suspect = False
@@ -937,40 +937,24 @@ def fight(lux=False):
                             top_s3 = {col for col in
                                       _ryoshu_top_s3_columns(background, gear_start, skill_num)
                                       if col in ryoshu_cols}
-                        if s3_only:
-                            for col in ryoshu_cols:
-                                force_offsets[col] = (_SAIKAI_S3_UPPER_OFF if col in top_s3
-                                                      else _SAIKAI_S3_BOTTOM_OFF)
-                        else:
-                            # Pick the evade column BEFORE the drag (top-chip
-                            # knowledge only; the bottom gems aren't readable
-                            # yet) and force its bottom skill selected.
-                            non_s3 = [col for col in sorted(ryoshu_cols)
-                                      if col not in top_s3]
-                            pick = non_s3[0] if non_s3 else sorted(ryoshu_cols)[0]
-                            force_offsets[pick] = _SAIKAI_S3_BOTTOM_OFF
-                            evade_slots = [ryoshu_cols[pick]]
-                            logging.info(
-                                "SAIKAI: evade phase turn %d/%d - evading col %d "
-                                "(%s), bottom skill forced.", p.SAIKAI_TURN_TOTAL,
-                                int(getattr(p, "SAIKAI_EVADE_TURNS", 0)), pick,
-                                "non-top-S3" if non_s3 else "top-S3-only slots")
+                        for col in ryoshu_cols:
+                            force_offsets[col] = (_SAIKAI_S3_UPPER_OFF if col in top_s3
+                                                  else _SAIKAI_S3_BOTTOM_OFF)
                         chain(gear_start, gear_end, background, execute=False,
                               force_offsets=force_offsets)
                         time.sleep(0.35)
                         # No park: cursor sits below the gem read band post-chain.
-                        if s3_only:
-                            bottom_s3 = set()
-                            if not evade_all_now:
-                                bottom_s3 = _ryoshu_bottom_s3_columns(ryoshu_cols, top_s3)
-                            attack_cols = top_s3 | bottom_s3
-                            evade_slots = [ryoshu_cols[col] for col in sorted(ryoshu_cols)
-                                           if col not in attack_cols]
-                            for col in sorted(ryoshu_cols):
-                                kind = ("top S3" if col in top_s3 else
-                                        "bottom S3" if col in bottom_s3 else "evade")
-                                logging.info("SAIKAI: col %d -> %s.", col, kind)
-                            debug_suspect = (not evade_all_now and not attack_cols)
+                        bottom_s3 = set()
+                        if not evade_all_now:
+                            bottom_s3 = _ryoshu_bottom_s3_columns(ryoshu_cols, top_s3)
+                        attack_cols = top_s3 | bottom_s3
+                        evade_slots = [ryoshu_cols[col] for col in sorted(ryoshu_cols)
+                                       if col not in attack_cols]
+                        for col in sorted(ryoshu_cols):
+                            kind = ("top S3" if col in top_s3 else
+                                    "bottom S3" if col in bottom_s3 else "evade")
+                            logging.info("SAIKAI: col %d -> %s.", col, kind)
+                        debug_suspect = (not evade_all_now and not attack_cols)
                     else:
                         chain(gear_start, gear_end, background, execute=False,
                               force_offsets=force_offsets)
@@ -979,7 +963,7 @@ def fight(lux=False):
                         evaded = evade_all_ryoshu_slots(evade_slots)
                         if not evaded:
                             logging.warning("SAIKAI: Ryoshu evade failed.")
-                    elif s3_only:
+                    else:
                         logging.info("SAIKAI: every one of her slots has S3 - all attacking.")
                     if _SAIKAI_DEBUG_CAPTURE and slots:
                         try:
@@ -1004,9 +988,6 @@ def fight(lux=False):
                         raise StopExecution
                     logging.info("SAIKAI: turn %d done - pressing Enter to execute.", saikai_turn)
                     gui.press("enter", 1, 0.1)
-                    # Tick the run-wide turn counter only on COMMIT (a pause
-                    # before the Enter re-enters this turn without burning it).
-                    p.SAIKAI_TURN_TOTAL = int(getattr(p, "SAIKAI_TURN_TOTAL", 0)) + 1
                     time.sleep(1)
                 elif p.RUN_SCRIPT == "thrill" and getattr(p, "THRILL_DONE", False):
                     # THRILL non-focused battles after Thrill is crafted. Do NOT
@@ -1043,9 +1024,6 @@ def fight(lux=False):
 
                     if not lux and not p.SKIP_EGO_BATTLE: select_ego()
                     gui.press("enter", 1, 0.1)
-                    if p.RUN_SCRIPT == "saikai_ryoshu":
-                        # Focused and post-phase winrate turns commit here.
-                        p.SAIKAI_TURN_TOTAL = int(getattr(p, "SAIKAI_TURN_TOTAL", 0)) + 1
                     time.sleep(1)
 
         if now_rgb.button("event"):

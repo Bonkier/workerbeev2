@@ -796,11 +796,11 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
     p.RUN_SCRIPT = settings.get('run_script', '') or ''
     p.SAIKAI_BATTLE = 0
     p.SAIKAI_S3_ONLY = bool(settings.get('saikai_s3_only', False))
-    p.SAIKAI_TURN_TOTAL = 0
-    # HoS evade phase length: ceil(deployed/2) from the scripted team's order,
-    # clamped to the MD squad cap (the order grid allows up to 12 picks).
-    _dep = min(len((teams.get(0) or {}).get("sinners") or []) or 7, 7)
-    p.SAIKAI_EVADE_TURNS = (_dep + 1) // 2
+    # Full pick-order count (grid allows up to 12): the kill phase runs until
+    # DEPLOYED - 1 allies are down. NOT clamped to a per-battle cap - benched
+    # spiders deploy into later battles as earlier ones die, and every one of
+    # them has to go.
+    p.SAIKAI_DEPLOYED = min(len((teams.get(0) or {}).get("sinners") or []) or 7, 12)
     p.SAIKAI_STOP_FLOOR = int(settings.get('saikai_stop_floor', 0) or 0)
     p.SAIKAI_LEAVE_CLAIM = False
     p.THRILL_EXCLUDE = list(settings.get('thrill_exclude', []) or [])
@@ -948,8 +948,10 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
                     # new dungeon, so the SAIKAI evade phase, battle
                     # numbering, and the end-of-run gift scan all start
                     # over with it.
-                    p.SAIKAI_TURN_TOTAL = 0
                     p.SAIKAI_BATTLE = 0
+                    # Stale from the LAST run otherwise; the SAIKAI solo gate
+                    # reads it before the first move screen refreshes it.
+                    p.DEAD = 0
                     p.RUN_GIFTS_SCANNED = False
                     p.CUSTOM_ENHANCE_DONE = {}
                     p.CUSTOM_FUSE_DONE = set()

@@ -633,10 +633,10 @@ class SettingsPage(QWidget):
         self._stk_s3_only.toggled.connect(self._on_stk_changed)
         self._stk_s3_only_row = SettingRow(
             "Choose Skill 3 only",
-            "SAIKAI only: legacy battle style - force Skill 3 picks and evade "
-            "on her other slots every turn. Off (default): evade one slot per "
-            "turn for the first ceil(deployed/2) turns across battles, then "
-            "plain winrate for the rest of the run.",
+            "SAIKAI only: keep forcing Skill 3 picks (evading her other "
+            "slots) for the WHOLE run. Off (default): force Skill 3 while "
+            "her House of Spiders allies are still up so they get cut down, "
+            "then plain winrate once she is solo.",
             self._stk_s3_only, parent=section)
         section.body.addWidget(self._stk_s3_only_row)
 

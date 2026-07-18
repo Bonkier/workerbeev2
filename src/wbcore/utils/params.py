@@ -49,15 +49,15 @@ HARD_TARGET = False
 HARD_FROM_FLOOR = 1
 # Scripted preset run id (e.g. "saikai_ryoshu"); "" = ordinary run.
 RUN_SCRIPT = ""
-# SAIKAI: 1-indexed battle number within the run. First battle's turns 1-2
-# evade everything; every later turn/battle selects S3.
+# SAIKAI: 1-indexed battle number within the run. Battle 1 turns 1-2 evade
+# everything (no S3), then her S3s cut down the House of Spiders allies.
 SAIKAI_BATTLE = 0
-# HoS turn order. Default: evade ONE slot per turn for the first
-# SAIKAI_EVADE_TURNS turns (ceil(deployed/2), counted across battles), then
-# plain winrate. SAIKAI_S3_ONLY restores the legacy S3-forcing behaviour.
+# HoS battle style. Default: the kill phase (forced S3s + evades) runs while
+# any ally is still up (p.DEAD, refreshed on each move screen); once solo,
+# plain winrate. SAIKAI_S3_ONLY keeps forcing S3 for the whole run.
 SAIKAI_S3_ONLY = False
-SAIKAI_TURN_TOTAL = 0
-SAIKAI_EVADE_TURNS = 4
+# Sinners deployed by the scripted team (allies dead == DEPLOYED - 1 -> solo).
+SAIKAI_DEPLOYED = 7
 # Set once the end-of-run gift scan has run for the current attempt.
 RUN_GIFTS_SCANNED = False
 # SAIKAI "Go to floor 10": >0 = run the Infinite MD and leave after this floor,
