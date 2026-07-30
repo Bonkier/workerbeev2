@@ -21,12 +21,15 @@ import random
 import time
 from typing import Iterable, Optional
 
+import cv2
+
 from .pack_search_catalog import PACK_SEARCH_KEYS
 from .runtime import ops, state
 from .teams import HARD as HARD_TEAMS, TEAMS
 from .utils import telemetry as tele
 from .utils.paths import FLOORS, HARD_FLOORS, PTH, REG
 from .utils.utils import (
+    LocateGray,
     SIFTMatcher,
     dump_template_diag,
     floor_limit,
@@ -79,10 +82,92 @@ def _drop_pack_from_future_floors(level: int, name: str) -> None:
     """Once a pack has been picked, remove it from every later floor's
     priority list so we don't try to pick it again. Matches the
     historical behaviour of `remove_pack`."""
+    names = {name, _SECTION_BASE.get(name)} | set(_PACK_SECTIONS.get(name, ()))
     for upper in range(level, floor_limit()):
         bucket = state.PICK[f"floor{upper}"]
-        if name in bucket:
-            bucket.remove(name)
+        for nm in names:
+            if nm and nm in bucket:
+                bucket.remove(nm)
+
+
+# ------------------------------------------------------- pack sections
+# Some packs ship two card arts that differ ONLY in a trailing section
+# number and give different fights (Masquerade Line 4 - Section #3 vs #4).
+# Each section is its OWN pack in the picker; the key below is not a pack,
+# just the shared banner template used to find the cards. Their banners are
+# ~95% identical, so SIFT matches either art on either card and the section
+# is resolved by pixel-matching the digit crop immediately right of the
+# banner's match box.
+_PACK_SECTIONS = {
+    "Line4": ("Line4Sec3", "Line4Sec4"),
+}
+_SECTION_BASE = {v: base for base, vs in _PACK_SECTIONS.items() for v in vs}
+# The winning digit must beat the other by this much, and clear this floor,
+# or the card stays generic (behaviour then matches the pre-section builds).
+_SECTION_MIN_MARGIN = 0.03
+_SECTION_MIN_CONF = 0.45
+
+
+def _classify_section(base: str, box, image=None) -> Optional[str]:
+    """Resolve `base`'s section variant from the card located at `box`
+    (the base template's match). Returns the variant key, or None when the
+    digits cannot be told apart."""
+    variants = [v for v in _PACK_SECTIONS.get(base, ()) if v in PTH]
+    if len(variants) < 2:
+        return None
+    x, y, w, h = box
+    # Window just right of the base match, padded for the per-slot scale
+    # and perspective drift the pack cards have along the floor bar.
+    pad = max(6, h // 4)
+    reg = (int(x + w - pad), int(y - pad), int(2 * pad + 40), int(h + 2 * pad))
+    win = None
+    if image is not None:
+        # Locate's _prepare_image only honours `region` when it screenshots,
+        # so an offline image has to be cropped here to match live behaviour.
+        win = image[reg[1]:reg[1] + reg[3], reg[0]:reg[0] + reg[2]]
+        if win.size == 0:
+            return None
+    scores = {}
+    for key in variants:
+        try:
+            scores[key] = LocateGray.get_conf(PTH[key], image=win, region=reg)
+        except (cv2.error, ValueError) as exc:
+            # Only matcher-level failures degrade to "generic"; anything else
+            # is a real bug and must not hide as an ambiguous read.
+            logging.warning("Pack sections: %s scoring failed: %s", key, exc)
+    if len(scores) < 2:
+        return None
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    (best, best_c), (_second, second_c) = ranked[0], ranked[1]
+    if best_c < _SECTION_MIN_CONF or best_c - second_c < _SECTION_MIN_MARGIN:
+        logging.info("Pack sections: %s ambiguous (%s) - staying generic.",
+                     base, {k: round(v, 3) for k, v in scores.items()})
+        return None
+    logging.info("Pack sections: %s -> %s (%s).", base, best,
+                 {k: round(v, 3) for k, v in scores.items()})
+    return best
+
+
+def _pack_hit(pref: str, packs: dict) -> Optional[str]:
+    """The detected pack key that satisfies preference `pref`: itself, or
+    one of its section variants (asking for the base accepts either)."""
+    if pref in packs:
+        return pref
+    for variant in _PACK_SECTIONS.get(pref, ()):
+        if variant in packs:
+            return variant
+    return None
+
+
+def _pack_banned(pack: str, banned) -> bool:
+    """A banned base bans its section variants too."""
+    return pack in banned or _SECTION_BASE.get(pack) in banned
+
+
+def _in_pool(key: str, pool) -> bool:
+    """Is `key` offered on this floor? A section base counts as present
+    when either of its sections is (the base is not a pack itself)."""
+    return key in pool or any(v in pool for v in _PACK_SECTIONS.get(key, ()))
 
 
 # ---------------------------------------------------------- pack eval
@@ -90,7 +175,8 @@ def _drop_pack_from_future_floors(level: int, name: str) -> None:
 def _evaluate_packs(level: int,
                    regions: list[tuple[int, int, int, int]],
                    skip: int, skips: int,
-                   strict: bool = False) -> Optional[int]:
+                   strict: bool = False,
+                   only: Optional[str] = None) -> Optional[int]:
     """Score the packs visible on the floor screen and return the index
     of the chosen one (or None to mean "refresh and try again").
 
@@ -116,9 +202,35 @@ def _evaluate_packs(level: int,
             region=(161, 630, 1632, 140),
             nfeatures=3000, contrastThreshold=0.00,
         )
+        # Section bases are scanned once per pass, not once per section.
+        seen_bases: set[str] = set()
         for pack in pool:
             if len(packs) >= len(regions):
                 break
+            base = _SECTION_BASE.get(pack)
+            if base is not None:
+                # Section packs are found through their SHARED banner, once
+                # per base: both sections can sit on the floor bar at the same
+                # time, so keep locating + masking until every card is seen
+                # and classify each by its section digit.
+                if base in seen_bases or base not in PTH:
+                    continue
+                seen_bases.add(base)
+                for _dup in range(len(regions)):
+                    box = sift.locate(PTH[base])
+                    if box is None:
+                        break
+                    # Classify BEFORE masking: the digit sits just outside the
+                    # matched box, but only just.
+                    name = _classify_section(base, box) or base
+                    sift.mask(box)
+                    slot = _region_index_for_x(box[0] + box[2] // 2, regions)
+                    if slot is None or slot in packs.values():
+                        continue
+                    packs[name] = slot
+                    if len(packs) >= len(regions):
+                        break
+                continue
             box = sift.locate(PTH[pack])
             if box is None:
                 continue
@@ -132,16 +244,24 @@ def _evaluate_packs(level: int,
     # Two-pass priority match: first pass = floor-specific pinned
     # picks; on miss in pass 1 (and we still have refreshes left),
     # widen to the global pick-all list and try again.
-    candidates = priority
+    # `only` (this floor's configured Pack Search pack) outranks the lot:
+    # nothing else may be accepted while we still have refreshes and the
+    # search window left, or a merely-prioritised pack that happens to be
+    # on offer wins and the configured pack is never hunted.
+    candidates = [only] if only else priority
     for pass_idx in (0, 1):
         if not candidates:
             break
         for pref in candidates:
-            if pref in packs:
-                logging.info("Pack: %s", pref)
-                tele.floor(level, pref)
-                _drop_pack_from_future_floors(level, pref)
-                return packs[pref]
+            # A base preference (e.g. Line4) accepts either section variant.
+            hit = _pack_hit(pref, packs)
+            if hit is not None:
+                logging.info("Pack: %s", hit)
+                tele.floor(level, hit)
+                _drop_pack_from_future_floors(level, hit)
+                return packs[hit]
+        if only:
+            break
         if pass_idx == 0 and skip == skips:
             candidates = state.PICK_ALL[f"floor{level}"]
         else:
@@ -152,8 +272,9 @@ def _evaluate_packs(level: int,
         # caller to fall through to Pack Search.
         return None
 
-    # Filter out the explicitly-banned packs.
-    filtered = {pack: i for pack, i in packs.items() if pack not in banned}
+    # Filter out the explicitly-banned packs (banning a base bans its sections).
+    filtered = {pack: i for pack, i in packs.items()
+                if not _pack_banned(pack, banned)}
 
     if not filtered and skip != skips:
         # All visible packs are banned but we have refreshes left.
@@ -400,7 +521,7 @@ def _configured_search_candidates(level):
         return []
     key = PACK_SEARCH_KEYS[name]
     pool = HARD_FLOORS[format_lvl(level)] if state.HARD else FLOORS[format_lvl(level)]
-    if key not in pool or ("ps_" + name) not in PTH:
+    if not _in_pool(key, pool) or ("ps_" + name) not in PTH:
         return []
     return [("ps_" + name, key)]
 
@@ -505,11 +626,15 @@ def pack() -> bool:
     # like ordinary runs - the script's priorities still steer the pick and
     # the refresh hunt, but the search window opens only when the user
     # configured this floor. THRILL keeps managing its own packs.
-    custom_search = (
-        state.RUN_SCRIPT != "thrill"
-        and bool(_configured_search_candidates(state.LVL))
-    )
+    _cands = _configured_search_candidates(state.LVL)
+    custom_search = (state.RUN_SCRIPT != "thrill" and bool(_cands))
     strict = custom_search
+    # The configured pack itself: while hunting it (refreshes + the search
+    # window) it is the ONLY acceptable pick on this floor.
+    want = _cands[0][1] if _cands else None
+    if want:
+        logging.info("PackSearch: floor %d wants %s - refreshing for it, "
+                     "then Pack Search.", state.LVL, want)
 
     do_search = bool(getattr(state, "PACK_SEARCH", True))
 
@@ -520,7 +645,8 @@ def pack() -> bool:
         # never refreshes. The configured Pack Search fallback still
         # applies: a strict pass first, then the search window on a miss.
         time.sleep(0.2)
-        slot = _evaluate_packs(state.LVL, regions, 0, 0, strict=custom_search)
+        slot = _evaluate_packs(state.LVL, regions, 0, 0, strict=custom_search,
+                               only=want)
         if custom_search and slot is None:
             if _configured_pack_search(state.LVL):
                 time.sleep(1.0)
@@ -529,7 +655,7 @@ def pack() -> bool:
         for skip in range(refresh_budget + 1):
             time.sleep(0.2)
             slot = _evaluate_packs(state.LVL, regions, skip, refresh_budget,
-                                  strict=strict)
+                                  strict=strict, only=want)
             if slot is not None:
                 break
             if skip != refresh_budget:

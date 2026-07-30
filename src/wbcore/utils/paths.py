@@ -316,7 +316,11 @@ PACKS = {
     'Line1'                       : ((), (5,)),
     'Line2'                       : ((), (4, 5)),
     'Line3'                       : ((), (5, 15)),
-    'Line4'                       : ((), (5, 15)),
+    # Line 4 is two separate packs with different fights. 'Line4' itself is
+    # NOT a pack: its banner is only the shared anchor the section digit is
+    # read from (see pack.py). Old configs naming 'Line4' still match either.
+    'Line4Sec3'                   : ((), (5, 15)),
+    'Line4Sec4'                   : ((), (5, 15)),
     'MiracleinDistrict20BokGak'   : ((), (4, 5)),
     'FullStoppedbyaBullet'        : ((4,), (3, 4)),
     'LCBRegularCheckup'           : ((5,), (5,)),
@@ -421,7 +425,8 @@ BANNED = [
 
 HARD_BANNED = [
     "TheNoonofViolet", "MurderontheWARPExpress", "FullStoppedbyaBullet", "TimekillingTime", 
-    "NocturnalSweeping", 'Line4', 'Line3', 'toClaimTheirBonesBokGak', 'TheEvilDefining', 
+    "NocturnalSweeping", 'Line4', 'Line4Sec3', 'Line4Sec4', 'Line3',
+    'toClaimTheirBonesBokGak', 'TheEvilDefining',
     'SinkingDeluge', 'PoisedBreathing', 'InertSloth', 'EmotionalFlood', 'CrawlingAbyss', 
     'TreadwheelSloth', 'VainPride', 'PitifulEnvy', 'TyrannicalPride', 'UnrelentingMight', 
     'Line5', 'TheSurrenderedWitnessing', 'ImpenetrablePath', "TheDuskofAmber", 

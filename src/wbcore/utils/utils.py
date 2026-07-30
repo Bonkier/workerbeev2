@@ -983,6 +983,21 @@ class SIFTMatcher:  # only works at 1920x1080
 
             return (x_full, y_full, width, height)
     
+    def mask(self, box):
+        """Blank an already-matched box in the base image and recompute the
+        keypoints, so the next locate() finds the NEXT instance of a template
+        instead of the same one. Used where one pack art can appear on more
+        than one card at once (the Line 4 sections)."""
+        x, y, w, h = box
+        x0 = max(0, int(x - self.region[0]))
+        y0 = max(0, int(y - self.region[1]))
+        # _prepare_image hands back a VIEW when built from an ndarray, so copy
+        # first: masking must never scribble on the caller's own image.
+        self.base_image = self.base_image.copy()
+        self.base_image[y0:y0 + int(h), x0:x0 + int(w)] = 0
+        self.kp_base, self.des_base = self.sift.detectAndCompute(
+            self.base_image, None)
+
     def locate(self, template, **kwargs):
         return self._match_template(template, **kwargs)
     

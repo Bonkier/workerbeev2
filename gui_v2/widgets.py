@@ -1501,9 +1501,18 @@ class TriChip(_AnimatedChip):
         return self._cols(self.STATES[self._idx])
 
 
+# Keys the CamelCase splitter cannot render readably.
+_PACK_LABELS = {
+    "Line4Sec3": "Line4 - Section 3",
+    "Line4Sec4": "Line4 - Section 4",
+}
+
+
 def humanize_pack(name: str) -> str:
     """CamelCase pack key -> spaced label. 'TheForgotten' ->
     'The Forgotten', 'toClaimTheirBones' -> 'To Claim Their Bones'."""
+    if name in _PACK_LABELS:
+        return _PACK_LABELS[name]
     import re
     s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name)
     s = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", s)

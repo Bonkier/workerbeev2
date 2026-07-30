@@ -962,15 +962,14 @@ def power_up():
         wait_while_condition(lambda: not now.button("power"), lambda: gui.press("space"), timer=1.5)
 
 def power_up_verified():
-    """power_up, but reports whether the uptie confirm dialog actually appeared,
-    so callers tracking enhance counts never count a missed click. The second
-    round only runs after a confirmed first dialog (same protocol, faster on a
-    miss or an already-maxed gift)."""
+    """Perform EXACTLY ONE uptie and report whether it happened. power_up runs
+    two rounds (team gifts go straight to +2), but the custom enhance loop wants
+    one level per call so it can count "once" vs "twice" precisely - a single
+    call doing two upties made "enhance twice" land +2 in-game while logging,
+    billing, and tracking only +1. Returns True if the confirm dialog appeared
+    (a maxed gift or a missed click leaves it up, so nothing is miscounted)."""
     opened = bool(wait_while_condition(lambda: not now.button("Confirm.2"), lambda: gui.press("space"), timer=1.5))
     wait_while_condition(lambda: not now.button("power"), lambda: gui.press("space"), timer=1.5)
-    if opened:
-        wait_while_condition(lambda: not now.button("Confirm.2"), lambda: gui.press("space"), timer=1.5)
-        wait_while_condition(lambda: not now.button("power"), lambda: gui.press("space"), timer=1.5)
     return opened
 
 def get_uptie_inventory(gift_list):
@@ -1789,15 +1788,17 @@ def _shelf_has_catalog(name):
     return None
 
 
-def _fuel_deficit_buy(missing):
+def _fuel_deficit_buy(missing, keep=0):
     """Buy the {tier: count} fuse-fuel deficit off the buy shelf (T1-T3 only;
-    decide_fusion never asks for T4). Returns what could not be bought."""
+    decide_fusion never asks for T4). `keep` is a module floor to leave
+    untouched (the configured upties' reserve). Returns what could not be
+    bought."""
     remaining = {t: c for t, c in missing.items() if c > 0}
     shelf = update_shelf()
     for tier in sorted(remaining, reverse=True):
         while remaining[tier] > 0:
             try:
-                if balance() < 200:
+                if balance() < 200 + int(keep or 0):
                     return {t: c for t, c in remaining.items() if c > 0}
             except RuntimeError:
                 return {t: c for t, c in remaining.items() if c > 0}
@@ -1946,6 +1947,32 @@ def custom_market():
         logging.info("Custom market: nothing configured - leaving shop.")
         return
 
+    # Modules the still-owed upties need. The speculative fuel harvest below
+    # must not spend these: it runs FIRST and used to leave the enhance pass
+    # (which runs last) with nothing, so "enhance twice" only ever landed one
+    # level. The fuse step's own deficit buy is left unreserved - a craft in
+    # progress has to be able to finish.
+    _enh_targets = [(n, 1) for n in enh1] + [(n, 2) for n in enh2]
+    enh_reserve = 0
+    if _enh_targets and not getattr(p, "SKIP_EGO_ENHANCING", False):
+        from .market_catalog import load_market_catalog as _lmc
+        _cat0 = _lmc()
+        _done0 = getattr(p, "CUSTOM_ENHANCE_DONE", None) or {}
+        _crafted = getattr(p, "CUSTOM_FUSE_DONE", None) or set()
+        for _n, _lv in _enh_targets:
+            _owed = int(_lv) - int(_done0.get(_n, 0))
+            if _owed <= 0:
+                continue
+            if _n in fuse_names and _n not in _crafted:
+                # Not crafted yet, so it cannot be uptied this visit either:
+                # leave those modules free for the fuel that crafts it.
+                continue
+            _t0 = int((_cat0.get(_n) or {}).get("tier") or 0)
+            enh_reserve += _owed * enhance_cost.get(_t0, 300)
+        if enh_reserve:
+            logging.info("Custom market: reserving %d modules for the "
+                         "configured upties.", enh_reserve)
+
     # Step 1: buy the tagged gifts, refreshing per the count / until-cost
     # toggle. When refreshes are configured, each shelf is ALSO harvested for
     # pending fuse-target fuel before the reroll discards it (the fuse step
@@ -1977,7 +2004,7 @@ def custom_market():
             nonlocal need
             _buy_configured(buy_names)
             if need:
-                need = _fuel_deficit_buy(need)
+                need = _fuel_deficit_buy(need, keep=enh_reserve)
 
         _shelf_pass()
         if getattr(p, "MARKET_REFRESH_UNTIL_COST", False):
@@ -2055,7 +2082,7 @@ def custom_market():
                     break
 
         # Step 4: uptie the enhance targets (once = 1 level, twice = 2 levels).
-        targets = [(n, 1) for n in enh1] + [(n, 2) for n in enh2]
+        targets = _enh_targets
         if targets and not getattr(p, "SKIP_EGO_ENHANCING", False):
             try:
                 _enhance_catalog(targets)
