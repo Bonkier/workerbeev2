@@ -1,11 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Reusable building blocks for the v2 main UI."""
 
+import math
+import random
+
 from PySide6.QtCore import (
-    Property, QEasingCurve, QParallelAnimationGroup, QPoint,
-    QPropertyAnimation, QRect, QRectF, QSize, Qt, Signal,
+    Property, QEasingCurve, QEvent, QParallelAnimationGroup, QPoint,
+    QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal,
 )
-from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QPen
+from PySide6.QtGui import (
+    QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPen, QPixmap,
+    QRegion,
+)
 from PySide6.QtWidgets import (
     QAbstractButton, QFrame, QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel, QLayout,
@@ -132,6 +138,18 @@ def _page_gradient_qss() -> str:
             f"stop:1 {Colors.BG_WINDOW_BOT});")
 
 
+def page_fill_qss() -> str:
+    """Backdrop for a tab page inside an AnimatedStack. On voxel the page is
+    left CLEAR so PageBackdrop's pixel grid reads through it - an opaque fill
+    here is a solid slab over the whole tab. The slide snapshot gets its
+    opacity from AnimatedStack.set_surface instead, which is what the fill was
+    guarding against in the first place."""
+    from .skins import is_voxel
+    if is_voxel():
+        return "background: transparent;"
+    return _page_gradient_qss()
+
+
 class AnimatedStack(QStackedWidget):
     """QStackedWidget with a horizontal slide between pages. Animates two
     snapshot overlays so the layout is never fought and text stays sharp."""
@@ -140,6 +158,7 @@ class AnimatedStack(QStackedWidget):
         super().__init__(parent)
         self._group: QParallelAnimationGroup | None = None
         self._overlays: list = []
+        self._hidden = None
         # Backdrop QSS for the slide snapshots. None = themed page gradient;
         # override via set_surface when the stack lives inside a Card.
         self._surface_qss = None
@@ -166,14 +185,21 @@ class AnimatedStack(QStackedWidget):
         direction = 1 if index > old_idx else -1
         w, h = self.width(), self.height()
 
-        old_pix = cur.grab()
+        old_pix = self._snapshot(cur)
         super().setCurrentIndex(index)
         nxt = self.currentWidget()
-        new_pix = nxt.grab()
+        new_pix = self._snapshot(nxt)
 
         old_lbl = self._make_overlay(old_pix, 0, w, h)
         new_lbl = self._make_overlay(new_pix, direction * w, w, h)
         self._overlays = [old_lbl, new_lbl]
+        # The incoming page is already current and sitting at its final
+        # position. The overlays no longer hide it (they are transparent so the
+        # backdrop reads through), so leaving it visible shows the page twice
+        # mid-slide - once live, once in the sliding snapshot. Park it until
+        # the animation is done.
+        nxt.hide()
+        self._hidden = nxt
 
         a_old = QPropertyAnimation(old_lbl, b"pos", self)
         a_old.setDuration(Motion.NORMAL)
@@ -193,9 +219,32 @@ class AnimatedStack(QStackedWidget):
         self._group.finished.connect(self._cleanup)
         self._group.start()
 
+    def _snapshot(self, widget) -> QPixmap:
+        """Slide snapshot. On voxel the page itself is transparent so the
+        PageBackdrop grid can read through it, so the snapshot is taken WITHOUT
+        the window background: it keeps its alpha and the live backdrop (grid
+        and twinkle included) shows through the sliding page. grab() would bake
+        an opaque fill in and the background would go blank for the length of
+        the animation."""
+        from .skins import is_voxel
+        if self._surface_qss is not None or not is_voxel():
+            return widget.grab()
+        pix = QPixmap(widget.size())
+        pix.fill(Qt.GlobalColor.transparent)
+        widget.render(pix, QPoint(0, 0), QRegion(),
+                      QWidget.RenderFlag.DrawChildren)
+        return pix
+
+    def _surface(self) -> str:
+        if self._surface_qss is not None:
+            return self._surface_qss
+        from .skins import is_voxel
+        return ("background: transparent;" if is_voxel()
+                else _page_gradient_qss())
+
     def _make_overlay(self, pix, x: int, w: int, h: int) -> QLabel:
         lbl = QLabel(self)
-        lbl.setStyleSheet(self._surface_qss or _page_gradient_qss())
+        lbl.setStyleSheet(self._surface())
         lbl.setPixmap(pix)
         lbl.setGeometry(x, 0, w, h)
         lbl.show()
@@ -206,8 +255,13 @@ class AnimatedStack(QStackedWidget):
         if self._group is not None:
             self._group.stop()
             self._group = None
+        if self._hidden is not None:
+            if self._hidden is self.currentWidget():
+                self._hidden.show()
+            self._hidden = None
         for lbl in self._overlays:
             lbl.hide()
+            lbl.setParent(None)
             lbl.deleteLater()
         self._overlays = []
 
@@ -247,6 +301,183 @@ class Section(QWidget):
         outer.addLayout(self.body)
 
 
+def _rad(value: float) -> float:
+    """Corner radius for CUSTOM-PAINTED widgets. These draw themselves and so
+    never see the stylesheet, which is why toggles, tabs, segmented controls
+    and chips stayed rounded pills on the voxel skin. Square them there.
+
+    Deliberately not wrapped in try/except: a swallowed failure here restores
+    rounded pills across the whole app, which is the exact defect this exists
+    to prevent."""
+    from .skins import is_voxel
+    return 0.0 if is_voxel() else value
+
+
+def _title_label(text: str, parent, pixel: int = 2, section: bool = True):
+    """Panel/page title. On the voxel skin these are drawn in the 5x7 pixel
+    face (that is what makes the UI read as pixel art); on the legacy skin
+    they stay ordinary QLabels with their original object names."""
+    try:
+        from .skins import is_voxel
+        if is_voxel():
+            from .voxel import PixelLabel
+            col = Colors.TEXT_SECONDARY if section else Colors.TEXT_PRIMARY
+            # Section titles reserve room for the filled band the voxel sheet
+            # paints behind them (#sectionLabel).
+            inset = (7, 5, 8, 5) if section else (0, 0, 0, 0)
+            lbl = PixelLabel(text, pixel=pixel, color=col, parent=parent,
+                             inset=inset)
+            lbl.setObjectName("sectionLabel" if section else "pageTitle")
+            return lbl
+    except Exception:
+        pass
+    lbl = QLabel(text, parent)
+    lbl.setObjectName("sectionLabel" if section else "pageTitle")
+    return lbl
+
+
+class _Folder:
+    """Height fold shared by CollapsibleSection and a collapsible Card, so the
+    two cannot drift apart."""
+
+    _UNCAPPED = 16777215
+
+    def __init__(self, host: QWidget, owner: QWidget, expanded: bool = True):
+        self.host = host
+        self._expanded = expanded
+        self.anim = QPropertyAnimation(host, b"maximumHeight", owner)
+        self.anim.setDuration(Motion.QUICK)
+        self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.anim.finished.connect(self._settle)
+        if not expanded:
+            host.setMaximumHeight(0)
+
+    def set(self, expand: bool):
+        self._expanded = expand
+        self.anim.stop()
+        start = self.host.maximumHeight()
+        if start >= self._UNCAPPED:
+            start = self.host.height()
+        self.anim.setStartValue(start)
+        self.anim.setEndValue(self.host.sizeHint().height() if expand else 0)
+        self.anim.start()
+
+    def _settle(self):
+        # Release the cap once open, or a later change to the contents would
+        # be clipped at whatever height the animation happened to end on.
+        if self._expanded:
+            self.host.setMaximumHeight(self._UNCAPPED)
+
+
+class _SectionHeader(QAbstractButton):
+    """Clickable band for a CollapsibleSection: the section title on the left,
+    a stepped chevron on the right. Paints its own band in the same colour the
+    voxel sheet gives #sectionLabel, so the two read as one continuous strip
+    rather than a chip sitting inside a bar."""
+
+    _UNIT = 2
+    _DOWN = ("#####",
+             " ### ",
+             "  #  ")
+    _UP = ("  #  ",
+           " ### ",
+           "#####")
+
+    def __init__(self, title: str, parent: QWidget | None = None,
+                 trailing: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("sectionHeader")
+        self.setCheckable(True)
+        self.setChecked(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, Sizing.SPACE_SM, 0)
+        row.setSpacing(Sizing.SPACE_SM)
+        self._label = _title_label(title, self, pixel=2, section=True)
+        row.addWidget(self._label)
+        row.addStretch(1)
+        if trailing is not None:
+            # A child widget gets its own mouse events, so the card's action
+            # still works while the rest of the band toggles the fold.
+            trailing.setParent(self)
+            row.addWidget(trailing)
+        # Chevron gutter: its own width plus a gap, so a trailing control
+        # cannot end up flush against it.
+        row.addSpacing(len(self._DOWN[0]) * self._UNIT + Sizing.SPACE_SM)
+
+    def sizeHint(self) -> QSize:
+        return QSize(self._label.sizeHint().width() + 40,
+                     max(self._label.sizeHint().height(), 20))
+
+    def refresh_theme(self):
+        self.update()
+
+    def paintEvent(self, _event):
+        from .skins import is_voxel
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        if is_voxel():
+            # Read the sheet's own value, not the theme token: they differ,
+            # and any difference shows as a seam where the title chip ends.
+            from .style import voxel_band_color
+            p.fillRect(self.rect(), QColor(*voxel_band_color()))
+        rows = self._UP if self.isChecked() else self._DOWN
+        u = self._UNIT
+        w = len(rows[0]) * u
+        h = len(rows) * u
+        x0 = self.width() - w - Sizing.SPACE_SM
+        y0 = (self.height() - h) // 2
+        col = QColor(Colors.TEXT_PRIMARY if self.underMouse()
+                     else Colors.TEXT_SECONDARY)
+        for ry, row in enumerate(rows):
+            for rx, cell in enumerate(row):
+                if cell == "#":
+                    p.fillRect(x0 + rx * u, y0 + ry * u, u, u, col)
+        p.end()
+
+
+class CollapsibleSection(QWidget):
+    """A titled group that folds away. Add content to `self.body`.
+
+    The whole header is the hit target, so there is no small chevron to aim
+    at, and the fold is animated rather than a snap so it is obvious which
+    section moved."""
+
+    toggled = Signal(bool)
+
+    def __init__(self, title: str, parent: QWidget | None = None,
+                 expanded: bool = True):
+        super().__init__(parent)
+        self.plain_title = self.shown_title = title
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+
+        self.header = _SectionHeader(title, self)
+        self.header.setChecked(expanded)
+        self.header.toggled.connect(self._on_toggled)
+        col.addWidget(self.header)
+
+        self._body_host = QWidget(self)
+        self.body = QVBoxLayout(self._body_host)
+        self.body.setContentsMargins(0, Sizing.SPACE_XXS, 0, 0)
+        self.body.setSpacing(0)
+        col.addWidget(self._body_host)
+
+        self._folder = _Folder(self._body_host, self, expanded)
+
+    def is_expanded(self) -> bool:
+        return self.header.isChecked()
+
+    def set_expanded(self, on: bool):
+        self.header.setChecked(bool(on))
+
+    def _on_toggled(self, on: bool):
+        self._folder.set(on)
+        self.header.update()
+        self.toggled.emit(on)
+
+
 class Card(QFrame):
     """Elevated surface panel: lighter background, soft border, rounded
     corners, drop shadow. Add content to `self.body`."""
@@ -255,43 +486,222 @@ class Card(QFrame):
                  parent: QWidget | None = None,
                  trailing: QWidget | None = None,
                  padding: int | None = None,
-                 fill: bool = False):
+                 fill: bool = False,
+                 collapsible: bool = False):
         super().__init__(parent)
         self.setObjectName("card")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-
         pad = Sizing.SPACE_LG if padding is None else padding
         outer = QVBoxLayout(self)
         outer.setContentsMargins(pad, pad, pad, pad)
         outer.setSpacing(Sizing.SPACE_MD)
-
+        self.header = None
+        self._folder = None
+        # The name as written and as shown (a season can restyle it).
+        self.plain_title = title
         if title is not None:
+            from . import seasonal
+            title = seasonal.title(title)
+        self.shown_title = title
+
+        if title is not None and collapsible:
+            self.header = _SectionHeader(title, self, trailing=trailing)
+            self.header.toggled.connect(self._on_collapse)
+            outer.addWidget(self.header)
+        elif title is not None:
             head = QHBoxLayout()
             head.setContentsMargins(0, 0, 0, 0)
             head.setSpacing(Sizing.SPACE_SM)
-            lbl = QLabel(title, self)
-            lbl.setObjectName("sectionLabel")
+            lbl = _title_label(title, self, pixel=2, section=True)
             head.addWidget(lbl)
             head.addStretch(1)
             if trailing is not None:
                 head.addWidget(trailing)
             outer.addLayout(head)
 
-        self.body = QVBoxLayout()
-        self.body.setContentsMargins(0, 0, 0, 0)
-        self.body.setSpacing(Sizing.SPACE_SM)
-        # fill=True lets the body soak the card's extra height.
-        outer.addLayout(self.body, 1 if fill else 0)
+        if collapsible:
+            # The body has to live in a widget, not a bare layout, for its
+            # height to be animatable.
+            self._body_host = QWidget(self)
+            self.body = QVBoxLayout(self._body_host)
+            self.body.setContentsMargins(0, 0, 0, 0)
+            self.body.setSpacing(Sizing.SPACE_SM)
+            outer.addWidget(self._body_host, 1 if fill else 0)
+            self._folder = _Folder(self._body_host, self)
+        else:
+            self.body = QVBoxLayout()
+            self.body.setContentsMargins(0, 0, 0, 0)
+            self.body.setSpacing(Sizing.SPACE_SM)
+            # fill=True lets the body soak the card's extra height.
+            outer.addLayout(self.body, 1 if fill else 0)
         # Keep content pinned to the top when the card stretches taller.
         if not fill:
             outer.addStretch(1)
 
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(26)
-        shadow.setXOffset(0)
-        shadow.setYOffset(6)
-        shadow.setColor(QColor(0, 0, 0, 120))
-        self.setGraphicsEffect(shadow)
+        # A graphics effect routes the whole card through an offscreen cache,
+        # and the voxel skin's transparent pixel titles then composite over
+        # stale cached pixels (doubled, border-sliced headers). Square panels
+        # get their separation from the border instead.
+        from .skins import is_voxel
+        if not is_voxel():
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(26)
+            shadow.setXOffset(0)
+            shadow.setYOffset(6)
+            shadow.setColor(QColor(0, 0, 0, 120))
+            self.setGraphicsEffect(shadow)
+
+    def is_expanded(self) -> bool:
+        return self.header is None or self.header.isChecked()
+
+    def set_expanded(self, on: bool):
+        if self.header is not None:
+            self.header.setChecked(bool(on))
+
+    def _on_collapse(self, on: bool):
+        if self._folder is not None:
+            self._folder.set(on)
+        self.header.update()
+
+
+class PageBackdrop(QWidget):
+    """Container that tiles a faint pixel grid over its stylesheet background
+    on the voxel skin. Large flat areas otherwise read as a dead black void;
+    the grid gives them the graph-paper texture the skin is built around."""
+
+    _STEP = 8          # px between dots
+    _MAJOR = 4         # every Nth dot is brighter
+    _SPARKS = 30       # dots lit at any one time
+    _TICK = 60         # ms between frames
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._tile = None
+        self._sparks = []
+        self._timer = QTimer(self)
+        self._timer.setInterval(self._TICK)
+        self._timer.timeout.connect(self._advance)
+        self.refresh_theme()
+
+    # --- twinkle ----------------------------------------------------
+    def _spawn(self):
+        """A dot on the grid, with a phase that runs 0..1 and dies."""
+        cols = max(1, self.width() // self._STEP)
+        rows = max(1, self.height() // self._STEP)
+        return [random.randrange(cols) * self._STEP,
+                random.randrange(rows) * self._STEP,
+                0.0,
+                random.uniform(0.015, 0.05)]
+
+    def _dirty(self, spark):
+        return QRect(spark[0] - 1, spark[1] - 1, 4, 4)
+
+    def _advance(self):
+        # Nothing repaints while the user is in the game: the bot runs for
+        # hours with this window in the background, and a idling animation
+        # has no business taking frames from it.
+        if not self.isVisible() or not self.window().isActiveWindow():
+            return
+        for sp in self._sparks:
+            self.update(self._dirty(sp))
+            sp[2] += sp[3]
+            if sp[2] >= 1.0:
+                sp[:] = self._spawn()
+            self.update(self._dirty(sp))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._tile is not None:
+            self._timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._timer.stop()
+
+    def refresh_theme(self):
+        from .skins import is_voxel
+        if not is_voxel():
+            self._tile = None
+            self._sparks = []
+            self._timer.stop()
+            self.update()
+            return
+        span = self._STEP * self._MAJOR
+        tile = QPixmap(span, span)
+        tile.fill(Qt.GlobalColor.transparent)
+        p = QPainter(tile)
+        for y in range(0, span, self._STEP):
+            for x in range(0, span, self._STEP):
+                major = (x == 0 and y == 0)
+                size = 2 if major else 1
+                p.fillRect(x, y, size, size,
+                           QColor(255, 255, 255, 34 if major else 13))
+        p.end()
+        self._tile = tile
+        self._sparks = [self._spawn() for _ in range(self._SPARKS)]
+        if self.isVisible():
+            self._timer.start()
+        self.update()
+
+    def paintEvent(self, event):
+        # The stylesheet background is already painted by the time we get
+        # here (WA_StyledBackground); this only lays the grid over it.
+        super().paintEvent(event)
+        if self._tile is None:
+            return
+        area = event.rect()
+        p = QPainter(self)
+        p.drawTiledPixmap(area, self._tile, QPoint(area.x(), area.y()))
+        # Sparks are drawn per-frame, but each one only ever dirties a 4x4
+        # rect, so a frame repaints ~300px total rather than the whole page.
+        for x, y, phase, _speed in self._sparks:
+            if not area.intersects(QRect(x - 1, y - 1, 4, 4)):
+                continue
+            glow = math.sin(math.pi * phase)
+            p.fillRect(x, y, 2, 2, QColor(255, 255, 255, int(130 * glow)))
+
+
+class ElidedLabel(QLabel):
+    """Single-line label that shortens with an ellipsis when the space runs
+    out. A plain QLabel does not: it clips, slicing the last glyph in half,
+    and its full text width becomes a hard layout minimum that can push a
+    whole page wider than the window."""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None,
+                 mode=Qt.TextElideMode.ElideRight, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._full = ""
+        self._mode = mode
+        self.setText(text)
+
+    def setText(self, text: str):
+        self._full = text or ""
+        self.setToolTip(self._full)
+        self.updateGeometry()
+        self._elide()
+
+    def full_text(self) -> str:
+        return self._full
+
+    def sizeHint(self) -> QSize:
+        fm = QFontMetrics(self.font())
+        return QSize(fm.horizontalAdvance(self._full), fm.height())
+
+    def minimumSizeHint(self) -> QSize:
+        # Small but non-zero, and the size POLICY stays Preferred. A policy of
+        # Ignored also makes the layout place the next widget as if this label
+        # were zero-wide, so the label then overpaints its neighbour.
+        fm = QFontMetrics(self.font())
+        return QSize(fm.horizontalAdvance("..."), fm.height())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self):
+        fm = QFontMetrics(self.font())
+        QLabel.setText(self, fm.elidedText(
+            self._full, self._mode, max(0, self.width())))
 
 
 class HRule(QFrame):
@@ -445,6 +855,22 @@ class KeyCaptureButton(QPushButton):
         self._binding = binding
         self._render()
 
+    def event(self, event):
+        # While recording, the keys belong to this button: without this a
+        # window shortcut (the search bar's Ctrl+K) fires instead and the
+        # combination can never be bound.
+        # Qt calls event() while the button is still being constructed.
+        if (getattr(self, "_capturing", False)
+                and event.type() == QEvent.Type.ShortcutOverride):
+            event.accept()
+            return True
+        return super().event(event)
+
+    def focusOutEvent(self, event):
+        if getattr(self, "_capturing", False):
+            self._stop_capture()
+        super().focusOutEvent(event)
+
     def keyPressEvent(self, event):
         if not self._capturing:
             return super().keyPressEvent(event)
@@ -488,8 +914,9 @@ class PageHeader(QWidget):
         row.setContentsMargins(0, 0, 0, Sizing.SPACE_LG)
         row.setSpacing(Sizing.SPACE_MD)
 
-        self._title = QLabel(title, self)
-        self._title.setObjectName("pageTitle")
+        from . import seasonal
+        self._title = _title_label(seasonal.title(title), self, pixel=3,
+                                   section=False)
         row.addWidget(self._title)
         row.addStretch(1)
 
@@ -569,9 +996,21 @@ class SettingRow(QWidget):
 
     def __init__(self, title: str, subtitle: str, control: QWidget,
                  parent: QWidget | None = None,
-                 leading_icon=None):
+                 leading_icon=None, rail: int | None = None):
         super().__init__(parent)
         self.setObjectName("settingRow")
+        self.title_text = title
+        self.subtitle_text = subtitle or ""
+        # `rail` fixes the row's width so every trailing control lands on the
+        # same vertical line instead of the panel's right edge. Without it a
+        # wide panel opens a 200-400px gap between a label and its own switch
+        # and the eye re-acquires the pairing on every row. A MINIMUM, not a
+        # maximum: a label longer than the rail pushes the row out rather than
+        # being clipped, which matters at larger font scales.
+        if rail:
+            self.setMinimumWidth(int(rail))
+            self.setSizePolicy(QSizePolicy.Policy.Fixed,
+                               QSizePolicy.Policy.Preferred)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, Sizing.SPACE_SM, 0, Sizing.SPACE_SM)
         outer.setSpacing(2)
@@ -594,6 +1033,15 @@ class SettingRow(QWidget):
         title_lbl.setObjectName("settingTitle")
         title_row.addWidget(title_lbl, stretch=1)
         title_row.addWidget(control, alignment=Qt.AlignmentFlag.AlignVCenter)
+        # AlignVCenter stops the row growing to the control, so state the
+        # height the control needs. sizeHint() is -1 on a control sized with
+        # setFixedSize (Toggle), and Qt uses an explicit minimumHeight in
+        # place of minimumSizeHint, so reading sizeHint alone floors the row
+        # BELOW its own content instead of above it.
+        self.setMinimumHeight(max(control.sizeHint().height(),
+                                  control.minimumSizeHint().height(),
+                                  control.minimumHeight())
+                              + 2 * Sizing.SPACE_SM)
         outer.addLayout(title_row)
 
         if subtitle:
@@ -604,9 +1052,11 @@ class SettingRow(QWidget):
 
 
 class Toggle(QAbstractButton):
-    """Sliding switch: painted track + animated circular thumb."""
+    """Sliding switch: painted track + animated thumb."""
 
     _W, _H, _MARGIN = 46, 26, 3
+    # Voxel runs a tighter grid, so the switch shrinks with it.
+    _VOX_W, _VOX_H, _VOX_MARGIN = 34, 18, 3
 
     def __init__(self, default: bool = False,
                  parent: QWidget | None = None):
@@ -614,7 +1064,7 @@ class Toggle(QAbstractButton):
         self.setObjectName("toggle")
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(self._W, self._H)
+        self._apply_metrics()
 
         self._pos = 1.0 if default else 0.0
         self.setChecked(default)
@@ -630,11 +1080,30 @@ class Toggle(QAbstractButton):
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.toggled.connect(self._animate)
 
+    def _apply_metrics(self):
+        from .skins import is_voxel
+        if is_voxel():
+            self._w, self._h, self._margin = (
+                self._VOX_W, self._VOX_H, self._VOX_MARGIN)
+        else:
+            self._w, self._h, self._margin = self._W, self._H, self._MARGIN
+        self.setFixedSize(self._w, self._h)
+        self.updateGeometry()
+
+    def sizeHint(self) -> QSize:
+        # setFixedSize alone leaves sizeHint at QSize(-1, -1), which any row
+        # that sizes itself from its control reads as "no height needed".
+        return QSize(self._w, self._h)
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
     def refresh_theme(self):
         """Re-read theme colours after a live theme change."""
         self._track_off = QColor(Colors.BG_HOVER)
         self._thumb_off = QColor(Colors.TEXT_TERTIARY)
         self._thumb_on = QColor(Colors.BG_BASE)
+        self._apply_metrics()
         self.update()
 
     def _animate(self, checked: bool):
@@ -657,17 +1126,26 @@ class Toggle(QAbstractButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
 
-        radius = self._H / 2.0
+        # Paint the rect we were actually given: painting the class constants
+        # instead means a short row slices the control flat.
+        box = QRectF(self.rect())
+        radius = box.height() / 2.0
         track = _lerp_color(self._track_off, self._track_on, self._pos)
         p.setBrush(track)
-        p.drawRoundedRect(QRectF(0, 0, self._W, self._H), radius, radius)
+        p.drawRoundedRect(box, _rad(radius), _rad(radius))
 
-        thumb_d = self._H - 2 * self._MARGIN
-        travel = self._W - 2 * self._MARGIN - thumb_d
-        x = self._MARGIN + self._pos * travel
+        thumb_d = box.height() - 2 * self._margin
+        travel = box.width() - 2 * self._margin - thumb_d
+        x = box.x() + self._margin + self._pos * travel
+        y = box.y() + self._margin
         thumb = _lerp_color(self._thumb_off, self._thumb_on, self._pos)
         p.setBrush(thumb)
-        p.drawEllipse(QRectF(x, self._MARGIN, thumb_d, thumb_d))
+        # A round knob inside a square track looks like a mistake, so the
+        # voxel skin squares the knob too.
+        if _rad(radius):
+            p.drawEllipse(QRectF(x, y, thumb_d, thumb_d))
+        else:
+            p.drawRect(QRectF(x, y, thumb_d, thumb_d))
 
 
 class IconlessTabBar(QWidget):
@@ -697,6 +1175,7 @@ class IconlessTabBar(QWidget):
         """Rebuild the tab buttons (for dynamic tab sets)."""
         for btn in self._buttons.values():
             self._row.removeWidget(btn)
+            btn.setParent(None)
             btn.deleteLater()
         self._buttons = {}
 
@@ -762,7 +1241,7 @@ class IconlessTabBar(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(Colors.ACCENT))
-        p.drawRoundedRect(self._underline, 1, 1)
+        p.drawRoundedRect(self._underline, _rad(1), _rad(1))
 
     def selected(self) -> str:
         for label, btn in self._buttons.items():
@@ -775,6 +1254,7 @@ class Segmented(QWidget):
     """Mutually-exclusive selector: rounded track + sliding highlight pill."""
 
     selection_changed = Signal(str)
+    locked_clicked = Signal(str)     # a click on a locked option
 
     _INSET = 3  # gap between track edge and pill
 
@@ -789,8 +1269,11 @@ class Segmented(QWidget):
                                self._INSET, self._INSET)
         row.setSpacing(0)
         self._buttons: dict[str, QPushButton] = {}
+        self._locked: set[str] = set()
         self._current: str | None = None
         self._pill = QRectF()
+        self._pill_fill = "#e8e8ea"
+        self.refresh_theme()
 
         for label in options:
             btn = QPushButton(label, self)
@@ -812,7 +1295,41 @@ class Segmented(QWidget):
             self._buttons[target].setChecked(True)
             self._current = target
 
+    def refresh_theme(self):
+        """A white pill is the v2 look; on voxel the selected segment is the
+        accent block, which is the only saturated shape in the skin."""
+        from .skins import is_voxel
+        self._pill_fill = Colors.ACCENT if is_voxel() else "#e8e8ea"
+        self.update()
+
+    def set_locked(self, label: str, tooltip: str = ""):
+        """Make one option unselectable. It stays in place, dimmed, and a
+        click on it is reported through `locked_clicked` instead of
+        selecting it."""
+        btn = self._buttons.get(label)
+        if btn is None:
+            return
+        self._locked.add(label)
+        btn.setStyleSheet(f"color: {Colors.TEXT_TERTIARY};")
+        btn.setCursor(Qt.CursorShape.ForbiddenCursor)
+        if tooltip:
+            btn.setToolTip(tooltip)
+        if self._current == label:
+            other = next((k for k in self._buttons
+                          if k not in self._locked), None)
+            if other is not None:
+                self._buttons[other].setChecked(True)
+                self._current = other
+                self._pill = self._pill_rect(other)
+                self.update()
+
     def _on_click(self, label: str):
+        if label in self._locked:
+            # The button toggled itself on the click; put the mark back.
+            if self._current in self._buttons:
+                self._buttons[self._current].setChecked(True)
+            self.locked_clicked.emit(label)
+            return
         if label == self._current:
             return
         self._current = label
@@ -861,15 +1378,16 @@ class Segmented(QWidget):
         # control height (which scales with the font at high display scaling)
         # and clip the labels. A fixed radius keeps a constant, small inset.
         track = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        track_r = min(track.height() / 2.0, 11.0)
+        track_r = min(track.height() / 2.0, float(Sizing.RADIUS_PILL or 11))
         p.setBrush(QColor(Colors.BG_OVERLAY))
-        p.drawRoundedRect(track, track_r, track_r)
+        p.drawRoundedRect(track, _rad(track_r), _rad(track_r))
 
         # Sliding pill.
         if not self._pill.isNull():
-            pill_r = min(self._pill.height() / 2.0, 9.0)
-            p.setBrush(QColor("#e8e8ea"))
-            p.drawRoundedRect(self._pill, pill_r, pill_r)
+            pill_r = min(self._pill.height() / 2.0,
+                         float(Sizing.RADIUS_PILL or 11) - 2)
+            p.setBrush(QColor(self._pill_fill))
+            p.drawRoundedRect(self._pill, _rad(pill_r), _rad(pill_r))
 
     def selected(self) -> str:
         for label, btn in self._buttons.items():
@@ -878,6 +1396,8 @@ class Segmented(QWidget):
         return ""
 
     def set_selected(self, label: str):
+        if label in self._locked:
+            return
         if label in self._buttons and label != self._current:
             self._buttons[label].setChecked(True)
             self._current = label
@@ -982,12 +1502,12 @@ class _AnimatedChip(QAbstractButton):
             bd = bd.lighter(130)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(bg)
-        p.drawRoundedRect(r, radius, radius)
+        p.drawRoundedRect(r, _rad(radius), _rad(radius))
         pen = QPen(bd)
         pen.setWidthF(1.0)
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(r, radius, radius)
+        p.drawRoundedRect(r, _rad(radius), _rad(radius))
         f = self.font()
         f.setWeight(QFont.Weight.DemiBold if self._bold
                     else QFont.Weight.Medium)
@@ -1062,10 +1582,12 @@ class ClickOrderGrid(QWidget):
     renumbers every higher-ranked chip down by 1 so the order stays
     1..N with no gaps.
 
-    Layout is `rows x cols` (default 2x6). `names` is a flat list filled
-    row-major; if it is shorter than rows*cols the remaining cells stay
-    empty. `max_picks=None` means no cap; an explicit cap reverts any
-    click that would push the count past it."""
+    `names` is a flat list laid out left-to-right and wrapped to the width
+    available; `rows`/`cols` are kept as the caller's shape hint but no
+    longer pin a minimum width (a fixed column count made the last column
+    unreachable off the right edge on narrow windows). `max_picks=None`
+    means no cap; an explicit cap reverts any click that would push the
+    count past it."""
 
     changed = Signal()
 
@@ -1083,23 +1605,12 @@ class ClickOrderGrid(QWidget):
         self._order: list[str] = []
         self._restoring = False  # suppress changed emits during set_order
 
-        grid = QGridLayout(self)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(Sizing.SPACE_SM)
-        grid.setVerticalSpacing(Sizing.SPACE_XS)
-
-        flat = list(names)
-        for r in range(self._rows):
-            for c in range(self._cols):
-                i = r * self._cols + c
-                if i >= len(flat):
-                    break
-                name = flat[i]
-                chip = _OrderChip(name, self)
-                chip.clicked.connect(lambda _c=False, n=name:
-                                     self._toggle(n))
-                grid.addWidget(chip, r, c)
-                self._chips[name] = chip
+        flow = FlowLayout(self, spacing=Sizing.SPACE_XS)
+        for name in list(names)[:self._rows * self._cols]:
+            chip = _OrderChip(name, self)
+            chip.clicked.connect(lambda _c=False, n=name: self._toggle(n))
+            flow.addWidget(chip)
+            self._chips[name] = chip
 
     def _toggle(self, name: str):
         chip = self._chips.get(name)
@@ -1220,7 +1731,7 @@ class _GridChipDelegate(QStyledItemDelegate):
             if checked:
                 painter.setPen(QPen(QColor("#d8d8dc"), 1))
                 painter.setBrush(QColor("#d8d8dc"))
-                painter.drawRoundedRect(box, 4, 4)
+                painter.drawRoundedRect(box, _rad(4), _rad(4))
                 painter.setPen(QPen(QColor(Colors.BG_BASE), 2))
                 painter.drawLine(box.left() + 3, box.center().y() + 1,
                                  box.center().x(), box.bottom() - 3)
@@ -1229,7 +1740,7 @@ class _GridChipDelegate(QStyledItemDelegate):
             else:
                 painter.setPen(QPen(QColor(Colors.BORDER_STRONG), 1))
                 painter.setBrush(QColor(Colors.BG_OVERLAY))
-                painter.drawRoundedRect(box, 4, 4)
+                painter.drawRoundedRect(box, _rad(4), _rad(4))
             text_left = box.right() + 8
 
         # Label, word-wrapped, vertically centred. Excluded (unchecked)
@@ -1502,10 +2013,60 @@ class TriChip(_AnimatedChip):
 
 
 # Keys the CamelCase splitter cannot render readably.
+# Pack keys are CamelCase with the lowercase joining words glued on
+# ("NestWorkshopandTechnology"), which no case-boundary rule can split - it
+# cannot tell "Workshopand" from a real word. These are spelled out rather than
+# guessed at; everything else humanize_pack derives correctly.
 _PACK_LABELS = {
     "Line4Sec3": "Line4 - Section 3",
     "Line4Sec4": "Line4 - Section 4",
+    "NestWorkshopandTechnology": "Nest Workshop and Technology",
+    "DregsoftheManor": "Dregs of the Manor",
+    "FourHousesandGreed": "Four Houses and Greed",
+    "BladeandArtwork": "Blade and Artwork",
+    "MiracleinDistrict20": "Miracle in District 20",
+    "MiracleinDistrict20BokGak": "Miracle in District 20 Bok Gak",
+    "MurderontheWARPExpress": "Murder on the WARP Express",
+    "TheNoonofViolet": "The Noon of Violet",
+    "FullStoppedbyaBullet": "Full Stopped by a Bullet",
+    "HatredandDespair": "Hatred and Despair",
+    "TheDuskofAmber": "The Dusk of Amber",
+    "TobeCleaved": "To be Cleaved",
+    "TobePierced": "To be Pierced",
+    "TobeCrushed": "To be Crushed",
+    "SeasonoftheFlame": "Season of the Flame",
+    "MountainofCorpsesSeaofBlood": "Mountain of Corpses Sea of Blood",
+    "ThunderandLightning": "Thunder and Lightning",
+    "BridleofInfinity": "Bridle of Infinity",
+    "BearersofWeight": "Bearers of Weight",
+    "PilgrimageofCompassion": "Pilgrimage of Compassion",
+    "MidspringDream2": "Midspring Dream 2",
 }
+
+
+def tag_chip_qss(accent: str, locked: bool = False) -> str:
+    """Removable/selectable tag chip. These are built with per-widget
+    stylesheets, which the global sheet cannot reach, so they have to pick
+    their own shape for the active skin: voxel gets a square block with a
+    colour-coded left edge (the same idiom as #sectionLabel), legacy keeps
+    the original outlined pill."""
+    from .skins import is_voxel
+    hover = ("" if locked else
+             f"QPushButton:hover{{background:{accent};"
+             f"color:{Colors.BG_BASE};}}")
+    if is_voxel():
+        return (
+            f"QPushButton{{background:{Colors.BG_OVERLAY};"
+            f"color:{Colors.TEXT_PRIMARY};"
+            f"border:1px solid {Colors.BORDER_SUBTLE};"
+            f"border-left:3px solid {accent};"
+            f"border-radius:0px;padding:3px 9px;}}" + hover
+        )
+    return (
+        f"QPushButton{{background:{Colors.BG_OVERLAY};"
+        f"color:{Colors.TEXT_PRIMARY};border:1px solid {accent};"
+        f"border-radius:{Sizing.RADIUS_PILL}px;padding:3px 9px;}}" + hover
+    )
 
 
 def humanize_pack(name: str) -> str:
@@ -1672,6 +2233,7 @@ class FloorPacks(QWidget):
         while self._stack.count():
             w = self._stack.widget(0)
             self._stack.removeWidget(w)
+            w.setParent(None)
             w.deleteLater()
         self._floor_order = sorted(floor_data)
         # "Global" first, then compact "F1".."F15" floor labels.

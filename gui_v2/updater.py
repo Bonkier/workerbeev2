@@ -148,14 +148,18 @@ def check_latest_release() -> dict:
 
 
 def _parse_version(v: str) -> tuple:
-    """`'2.0.1'` -> `(2, 0, 1)`. Non-numeric chunks become 0 so weird
-    tags compare sensibly without raising."""
+    """`'2.0.1'` -> `(2, 0, 1)`. A chunk counts by its leading digits, so an
+    edition letter does not change the number: `'2.4.2e'` -> `(2, 4, 2)`.
+    A chunk with no leading digit becomes 0, so weird tags compare sensibly
+    without raising."""
     out = []
-    for chunk in str(v).lstrip("v").lstrip("V").split("."):
-        try:
-            out.append(int(chunk))
-        except ValueError:
-            out.append(0)
+    for chunk in str(v).strip().lstrip("v").lstrip("V").split("."):
+        digits = ""
+        for ch in chunk.strip():
+            if not ch.isdigit():
+                break
+            digits += ch
+        out.append(int(digits) if digits else 0)
     return tuple(out)
 
 

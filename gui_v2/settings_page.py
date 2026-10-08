@@ -14,13 +14,17 @@ import logging
 import os
 import sys
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QThread, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
+    QGraphicsOpacityEffect,
     QColorDialog, QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 
+from .lghub_help import (
+    DiagnoseWorker, FindingsView, copy_report, headline, level_color,
+)
 from .settings import load_section, save_section
 from .theme import Colors, Sizing
 from .widgets import (
@@ -29,46 +33,6 @@ from .widgets import (
 )
 
 _SECTION = "app_settings"
-
-
-class _BridgeProbe(QObject):
-    """Off-thread LGHub liveness probe. open() is a no-op when the
-    bridge is already up but raises / blocks when LGHub is gone, so it
-    catches both cold-start and mid-session disconnects without freezing
-    the GUI thread."""
-
-    done = Signal(bool, str)
-
-    @Slot()
-    def run(self):
-        b = None
-        try:
-            base = _project_root()
-            for p in (base, os.path.join(base, "src")):
-                if p not in sys.path:
-                    sys.path.insert(0, p)
-            from bridge.bridge import Bridge
-            b = Bridge(auto_open=False)
-            b.open()
-            ok = bool(b.is_open())
-            if ok:
-                # Detail carries the installed G Hub version ("" = undetected).
-                from bridge.lghub_check import installed_lghub_version
-                self.done.emit(True, installed_lghub_version() or "")
-            else:
-                self.done.emit(False, self._diag(b, "bridge reported not open"))
-        except Exception as exc:
-            self.done.emit(False, self._diag(b, f"{type(exc).__name__}: {exc}"))
-
-    @staticmethod
-    def _diag(b, msg: str) -> str:
-        """Append the DLL's diagnose() text (names e.g. a G Hub version
-        problem) to a failure message when available."""
-        try:
-            d = b.diagnose() if b is not None else ""
-        except Exception:
-            d = ""
-        return f"{msg} [{d}]" if d else msg
 
 
 # Bindable actions (key, label, default combo). exp/threads runners were
@@ -97,6 +61,9 @@ _TEAM_TYPES = (
     # Luxcavation sin affinities (EXP runs targeting a specific sin).
     "Wrath", "Lust", "Sloth", "Gluttony", "Gloom", "Pride", "Envy",
 )
+# Hollow heals one sinner other than Faust on floors 1 to 3.
+_HOLLOW_HEAL_NAMES = tuple(n for n in _SINNER_NAMES if n != "Faust")
+_HOLLOW_HEAL_DEFAULT = "Yi Sang"
 # Statuses with a Mirror Dungeon team-select icon (the SAIKAI/THRILL keyword).
 _STK_STATUSES = (
     "Burn", "Bleed", "Tremor", "Rupture", "Sinking", "Poise", "Charge",
@@ -211,6 +178,17 @@ class SettingsPage(QWidget):
             "Pick a colour theme, or customise the accent and background "
             "with the colour picker. Changes apply instantly."))
 
+        from . import skins
+        self._legacy_ui = Toggle(default=(skins.current_skin() == skins.LEGACY),
+                                 parent=section)
+        self._legacy_ui.toggled.connect(self._on_legacy_ui)
+        section.body.addWidget(SettingRow(
+            "Legacy v2 UI",
+            "Off: the v2.4 voxel look (blocky panels, animated voxel bee). "
+            "On: the original v2 interface. Applies instantly.",
+            self._legacy_ui, parent=section,
+        ))
+
         cur = themes.current_theme()
         names = list(themes.PRESETS.keys()) + ["Custom"]
         self._theme_combo = _combo(names, section)
@@ -273,7 +251,14 @@ class SettingsPage(QWidget):
         btn.setStyleSheet(
             f"QPushButton#colorSwatch {{ background-color:{hex_color}; "
             f"color:{fg}; border:1px solid rgba(255,255,255,0.25); "
-            f"border-radius:6px; font-size:10pt; font-weight:600; }}")
+            f"border-radius:{Sizing.RADIUS_SM}px; font-size:10pt; "
+            f"font-weight:600; }}")
+
+    def _on_legacy_ui(self, on: bool):
+        if self._loading:
+            return
+        from . import skins
+        skins.set_skin(skins.LEGACY if on else skins.VOXEL)
 
     def _on_theme_preset(self, name: str):
         if self._loading or name == "Custom":
@@ -339,7 +324,8 @@ class SettingsPage(QWidget):
             ("good_pc", "Good PC mode",
              "Trim transition waits - only if your PC keeps up."),
             ("debug_matches", "Debug image matches",
-             "Save match debug images while running."),
+             "Log every image match's confidence vs its threshold, misses "
+             "included. Verbose - turn on to diagnose detection, then off."),
             ("grayscale", "Grayscale speed-boost",
              "Match in grayscale for a small speed gain."),
             ("reconnect_online", "Reconnect only when online",
@@ -376,6 +362,30 @@ class SettingsPage(QWidget):
             tog = Toggle(default=(key == "hud"), parent=section)
             self._overlay_toggles[key] = tog
             section.body.addWidget(SettingRow(title, subtitle, tog, parent=section))
+
+        op_cluster = QWidget(section)
+        opc = QHBoxLayout(op_cluster)
+        opc.setContentsMargins(0, 0, 0, 0)
+        opc.setSpacing(Sizing.SPACE_MD)
+        self._overlay_opacity = QSlider(Qt.Orientation.Horizontal, op_cluster)
+        self._overlay_opacity.setObjectName("slider")
+        self._overlay_opacity.setRange(20, 100)
+        self._overlay_opacity.setValue(85)
+        self._overlay_opacity.setFixedWidth(200)
+        opc.addWidget(self._overlay_opacity)
+        self._overlay_opacity_lbl = QLabel("85%", op_cluster,
+                                           objectName="inlineMeta")
+        self._overlay_opacity_lbl.setFixedWidth(48)
+        opc.addWidget(self._overlay_opacity_lbl)
+        self._overlay_opacity.valueChanged.connect(
+            lambda v: self._overlay_opacity_lbl.setText(f"{v}%"))
+        self._overlay_opacity.valueChanged.connect(self._save_state)
+        section.body.addWidget(SettingRow(
+            "Overlay background",
+            "How solid the overlay panel is over the game. Lower lets more "
+            "of the game through; the text stays fully opaque either way.",
+            op_cluster, parent=section,
+        ))
         return section
 
     def overlay_settings(self) -> dict:
@@ -401,12 +411,21 @@ class SettingsPage(QWidget):
         row.setSpacing(Sizing.SPACE_MD)
         self._lghub_status = QLabel("Not checked yet", self,
                                     objectName="settingTitle")
-        row.addWidget(self._lghub_status)
-        row.addStretch(1)
+        self._lghub_status.setWordWrap(True)
+        row.addWidget(self._lghub_status, stretch=1)
+        self._lghub_copy = GhostButton("Copy report", self)
+        self._lghub_copy.setVisible(False)
+        self._lghub_copy.clicked.connect(self._copy_lghub_report)
+        row.addWidget(self._lghub_copy)
         refresh = GhostButton("Check connection", self)
         refresh.clicked.connect(self._check_lghub)
         row.addWidget(refresh)
         section.body.addLayout(row)
+
+        # What is wrong and the steps that fix it, filled in by a check.
+        self._lghub_report = {}
+        self._lghub_findings = FindingsView(self)
+        section.body.addWidget(self._lghub_findings)
         return section
 
     def _wrap_hint(self, text: str) -> QLabel:
@@ -420,39 +439,51 @@ class SettingsPage(QWidget):
         self._lghub_status.setText("Checking LGHub connection…")
         self._lghub_status.setStyleSheet(f"color: {Colors.TEXT_SECONDARY};")
         self._probe_thread = QThread(self)
-        self._probe = _BridgeProbe()
+        self._probe = DiagnoseWorker()
         self._probe.moveToThread(self._probe_thread)
         self._probe.done.connect(self._on_lghub_done)
         self._probe_thread.started.connect(self._probe.run)
         self._probe_thread.start()
 
-    def _on_lghub_done(self, ok: bool, detail: str):
-        if ok:
-            from bridge.lghub_check import (EXPECTED_LGHUB_VERSION,
-                                            lghub_version_ok)
-            if detail and not lghub_version_ok(detail):
-                self._lghub_status.setText(
-                    f"Connected, but G Hub is v{detail} - WorkerBee needs "
-                    f"v{EXPECTED_LGHUB_VERSION} (mouse input may drift)"
-                )
-                self._lghub_status.setStyleSheet(f"color: {Colors.WARNING};")
-            else:
-                ver = f" (v{detail})" if detail else ""
-                self._lghub_status.setText(f"Connected to LGHub{ver}")
-                self._lghub_status.setStyleSheet(f"color: {Colors.SUCCESS};")
-        else:
-            if detail:
-                logging.warning("LGHub probe failed: %s", detail)
+    def _on_lghub_done(self, report: dict):
+        from bridge import lghub_check
+        self._lghub_report = report
+        found = lghub_check.findings(report) if report else []
+        top = headline(found)
+        if top is None:
             self._lghub_status.setText(
-                "Not reachable - start LGHub, then check again"
-            )
+                "Not reachable - start LGHub, then check again")
             self._lghub_status.setStyleSheet(f"color: {Colors.WARNING};")
+        else:
+            # The findings below carry their own titles; the status line only
+            # names the state, so the headline is not printed twice.
+            state = {"fail": "Not connected - see below",
+                     "warn": "Connected, with a warning - see below"}
+            self._lghub_status.setText(state.get(top["level"], top["title"]))
+            self._lghub_status.setStyleSheet(
+                f"color: {level_color(top['level'])};")
+        self._lghub_findings.set_findings(
+            [f for f in found if f["level"] != "ok"],
+            lghub_check.checks(report) if report else [])
+        self._lghub_copy.setVisible(bool(report))
+        if any(f["level"] == "fail" for f in found):
+            # In the log too, so a log sent in for help already says why.
+            for line in lghub_check.format_report(report).splitlines():
+                logging.warning("LGHub: %s", line)
         if self._probe_thread is not None:
             self._probe_thread.quit()
             self._probe_thread.wait()
             self._probe_thread.deleteLater()
         self._probe = None
         self._probe_thread = None
+
+    def _copy_lghub_report(self):
+        if not self._lghub_report:
+            return
+        copy_report(self._lghub_report)
+        self._lghub_copy.setText("Copied")
+        QTimer.singleShot(
+            1500, self, lambda: self._lghub_copy.setText("Copy report"))
 
     # --- Keyboard shortcuts ---------------------------------------
     def _build_shortcuts(self) -> QWidget:
@@ -567,29 +598,33 @@ class SettingsPage(QWidget):
 
     # --- SAIKAI / THRILL teams -----------------------------------
     def _build_saikai_thrill(self) -> QWidget:
-        section = Card("SAIKAI / THRILL TEAMS", self)
-        # Kept so the shell's "Go to SAIKAI / Thrill settings" button can scroll
+        section = Card("CUSTOM RUN TEAMS", self)
+        # Kept so the shell's "Go to custom run settings" button can scroll
         # this card into view after switching to the Settings tab.
         self._stk_card = section
         section.body.addWidget(self._wrap_hint(
-            "Sinner pick order and team keyword for the SAIKAI and Thrill "
-            "scripted runs. Choose a run, set its order, and the keyword the "
-            "team is saved under in-game."))
+            "Sinner pick order and team keyword for the SAIKAI, Thrill and "
+            "Hollow scripted runs. Choose a run, set its order, and the "
+            "keyword the team is saved under in-game."))
         self._stk_loading = True
         self._stk_states = {
             "SAIKAI": {"order": [], "exclude": [], "keyword": "Poise",
                        "only_hard": False, "full_normal": False,
                        "floor10": False, "s3_only": False},
             "Thrill": {"order": [], "exclude": [], "keyword": "Rupture"},
+            "Hollow": {"order": [], "exclude": [], "keyword": "Poise",
+                       "heal": _HOLLOW_HEAL_DEFAULT},
         }
         self._stk_run = "SAIKAI"
 
         row = QHBoxLayout()
         row.setSpacing(Sizing.SPACE_SM)
         row.addWidget(QLabel("Run", self, objectName="settingTitle"))
-        self._stk_seg = Segmented(["SAIKAI", "Thrill"], default="SAIKAI",
-                                  parent=section)
+        self._stk_seg = Segmented(["SAIKAI", "Thrill", "Hollow"],
+                                  default="SAIKAI", parent=section)
         self._stk_seg.selection_changed.connect(self._on_stk_run)
+        self._stk_seg.set_locked("Thrill", "W.I.P")
+        self._stk_seg.locked_clicked.connect(self._on_locked_stk)
         row.addWidget(self._stk_seg)
         row.addStretch(1)
         section.body.addLayout(row)
@@ -640,22 +675,37 @@ class SettingsPage(QWidget):
             self._stk_s3_only, parent=section)
         section.body.addWidget(self._stk_s3_only_row)
 
-        section.body.addWidget(QLabel("Sinner order", self,
-                                      objectName="subSectionLabel"))
+        self._stk_heal = _combo(list(_HOLLOW_HEAL_NAMES), section)
+        self._stk_heal.currentTextChanged.connect(self._on_stk_changed)
+        self._stk_heal_row = SettingRow(
+            "Sinner to heal",
+            "Hollow only: who the floor 1 shop heals to 45 SP for the skill "
+            "checks (they never fight, so it keeps). Faust herself is healed "
+            "on floors 4 and 5.", self._stk_heal, parent=section)
+        section.body.addWidget(self._stk_heal_row)
+
+        self._stk_order_label = QLabel("Sinner order", self,
+                                       objectName="subSectionLabel")
+        section.body.addWidget(self._stk_order_label)
         self._stk_order = ClickOrderGrid(list(_SINNER_NAMES), rows=2, cols=6,
                                          max_picks=12, parent=section)
         self._stk_order.changed.connect(self._on_stk_changed)
         section.body.addWidget(self._stk_order)
 
-        section.body.addWidget(QLabel("Swap exclusion", self,
-                                      objectName="subSectionLabel"))
-        section.body.addWidget(self._wrap_hint(
+        self._stk_exclude_box = QWidget(section)
+        exclude_col = QVBoxLayout(self._stk_exclude_box)
+        exclude_col.setContentsMargins(0, 0, 0, 0)
+        exclude_col.setSpacing(Sizing.SPACE_SM)
+        exclude_col.addWidget(QLabel("Swap exclusion", self,
+                                     objectName="subSectionLabel"))
+        exclude_col.addWidget(self._wrap_hint(
             "Sinners to keep out of the max-energy swap (only acts when "
             "Behaviour > Swap for max energy is on)."))
         self._stk_exclude = ClickOrderGrid(list(_SINNER_NAMES), rows=2, cols=6,
                                            max_picks=12, parent=section)
         self._stk_exclude.changed.connect(self._on_stk_changed)
-        section.body.addWidget(self._stk_exclude)
+        exclude_col.addWidget(self._stk_exclude)
+        section.body.addWidget(self._stk_exclude_box)
 
         self._stk_apply("SAIKAI")
         self._stk_loading = False
@@ -671,21 +721,46 @@ class SettingsPage(QWidget):
             st["full_normal"] = self._stk_normal.isChecked()
             st["floor10"] = self._stk_floor10.isChecked()
             st["s3_only"] = self._stk_s3_only.isChecked()
+        elif self._stk_run == "Hollow":
+            st["heal"] = self._stk_heal.currentText()
 
     def _stk_apply(self, run):
         prev = self._stk_loading
         self._stk_loading = True
         try:
             st = self._stk_states[run]
+            saikai = (run == "SAIKAI")
+            hollow = (run == "Hollow")
+            if hollow:
+                # Faust is the run; she cannot also be her own fallback.
+                st["order"] = [n for n in st["order"] if n != "Faust"]
+            faust = self._stk_order._chips.get("Faust")
+            if faust is not None:
+                faust.setEnabled(not hollow)
+                faust.setToolTip("Faust is the run; she cannot be her own "
+                                 "fallback." if hollow else "")
+                if hollow:
+                    dim = QGraphicsOpacityEffect(faust)
+                    dim.setOpacity(0.35)
+                    faust.setGraphicsEffect(dim)
+                else:
+                    faust.setGraphicsEffect(None)
             self._stk_order.set_order(st["order"])
             self._stk_exclude.set_order(st["exclude"])
             if st["keyword"] in _STK_STATUSES:
                 self._stk_keyword.setCurrentText(st["keyword"])
-            saikai = (run == "SAIKAI")
             self._stk_hard_row.setVisible(saikai)
             self._stk_normal_row.setVisible(saikai)
             self._stk_floor10_row.setVisible(saikai)
             self._stk_s3_only_row.setVisible(saikai)
+            self._stk_heal_row.setVisible(hollow)
+            self._stk_order_label.setText(
+                "Fallback sinners" if hollow else "Sinner order")
+            self._stk_exclude_box.setVisible(not hollow)
+            if hollow:
+                heal = st.get("heal")
+                if heal in _HOLLOW_HEAL_NAMES:
+                    self._stk_heal.setCurrentText(heal)
             if saikai:
                 self._stk_hard.setChecked(bool(st.get("only_hard")))
                 self._stk_normal.setChecked(bool(st.get("full_normal")))
@@ -718,11 +793,17 @@ class SettingsPage(QWidget):
         if on and self._stk_hard.isChecked():
             self._stk_hard.setChecked(False)
 
+    def _on_locked_stk(self, _label: str):
+        from .dialogs import show_notice
+        show_notice(self, "Thrill runs are still being built, so they are "
+                    "switched off for now.", title="W.I.P")
+
     def saikai_thrill_config(self) -> dict:
         """Flat md_state keys for run_config; merged in by the coordinator."""
         self._stk_sync()
         s = self._stk_states["SAIKAI"]
         t = self._stk_states["Thrill"]
+        h = self._stk_states["Hollow"]
         return {
             "saikai_order": list(s["order"]),
             "saikai_exclude": list(s["exclude"]),
@@ -734,6 +815,9 @@ class SettingsPage(QWidget):
             "thrill_order": list(t["order"]),
             "thrill_exclude": list(t["exclude"]),
             "thrill_status": t["keyword"],
+            "hollow_order": [n for n in h["order"] if n != "Faust"],
+            "hollow_status": h["keyword"],
+            "hollow_heal": h.get("heal") or _HOLLOW_HEAL_DEFAULT,
         }
 
     def _restore_stk(self, stk):
@@ -760,6 +844,14 @@ class SettingsPage(QWidget):
                     st.get("floor10"))
                 self._stk_states["SAIKAI"]["s3_only"] = bool(
                     st.get("s3_only"))
+            if run == "Hollow":
+                heal = st.get("heal")
+                self._stk_states["Hollow"]["heal"] = (
+                    heal if heal in _HOLLOW_HEAL_NAMES
+                    else _HOLLOW_HEAL_DEFAULT)
+                self._stk_states["Hollow"]["order"] = [
+                    n for n in self._stk_states["Hollow"]["order"]
+                    if n != "Faust"]
         if hasattr(self, "_stk_apply"):
             self._stk_apply(self._stk_run)
 
@@ -827,6 +919,7 @@ class SettingsPage(QWidget):
             "advanced": {k: t.isChecked() for k, t in self._advanced.items()},
             "overlay": {k: t.isChecked()
                         for k, t in self._overlay_toggles.items()},
+            "overlay_opacity": self._overlay_opacity.value(),
             "shortcuts": {k: b.binding() for k, b in self._shortcuts.items()},
             "sinners": sinners,
             "saikai_thrill": {k: v for k, v in self._stk_states.items()},
@@ -870,6 +963,8 @@ class SettingsPage(QWidget):
                 for k, v in (s.get("overlay") or {}).items():
                     if k in self._overlay_toggles:
                         self._overlay_toggles[k].setChecked(bool(v))
+                if isinstance(s.get("overlay_opacity"), int):
+                    self._overlay_opacity.setValue(s["overlay_opacity"])
                 for k, v in (s.get("shortcuts") or {}).items():
                     if k in self._shortcuts and isinstance(v, str):
                         self._shortcuts[k].set_binding(v)
@@ -949,7 +1044,7 @@ class SettingsPage(QWidget):
         # being eaten by the frameless main window and never appeared).
         self._config_combo = _combo([], section)
         self._config_combo.setEditable(True)
-        self._config_combo.setMinimumWidth(220)
+        self._config_combo.setMinimumWidth(160)
         self._config_combo.setInsertPolicy(
             QComboBox.InsertPolicy.NoInsert)   # editing doesn't auto-add
         self._config_combo.lineEdit().setPlaceholderText(
@@ -1225,12 +1320,14 @@ class SettingsPage(QWidget):
         row.setContentsMargins(0, Sizing.SPACE_XXS, 0, Sizing.SPACE_XXS)
         row.setSpacing(Sizing.SPACE_MD)
         lbl = QLabel(label, wrap, objectName="settingTitle")
-        lbl.setFixedWidth(110)
+        lbl.setMinimumWidth(110)
         row.addWidget(lbl)
+        # Minimums, not fixed widths: a fixed 110+340 pushed the row past a
+        # narrow window and the field was drawn off the right edge.
         if isinstance(widget, QLineEdit):
-            widget.setFixedWidth(340)
-        row.addWidget(widget)
-        row.addStretch(1)
+            widget.setMinimumWidth(200)
+            widget.setMaximumWidth(340)
+        row.addWidget(widget, 1)
         return wrap
 
     def _discord_paths(self):

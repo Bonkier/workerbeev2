@@ -229,3 +229,54 @@ def test_saikai_run_uses_saikai_slot():
     normal = build_settings({"market_gifts": {"buy": ["X"]},
                              "market_gifts_saikai": custom})["market_gifts"]
     assert normal == {"buy": ["X"]}
+
+
+def test_hollow_gets_an_empty_slot_and_a_cleared_gift_search(page):
+    from gui_v2.run_config import HOLLOW_LABEL, HOLLOW_SEARCH_GIFTS, build_settings
+    g = page._market_gallery
+    if "Clear Mirror, Calm Water" not in g._tiles:
+        pytest.skip("market catalog unavailable")
+    page._custom_run.setChecked(True)
+    page._apply_custom_run(True)
+    page._custom_strategy.set_selected("F3 Hard")
+    page._update_gift_lock()
+    g.reset()
+    g._mode_btns["buy"].click()
+    other = next(n for n in g._tiles if n != "Clear Mirror, Calm Water")
+    g._tiles[other].click()
+    normal_cfg = g.config()
+    assert other in normal_cfg["buy"]
+    gifts = page._gift_gallery
+    pick = next(n for n in gifts._tiles if n not in HOLLOW_SEARCH_GIFTS)
+    gifts.set_selected([pick])
+    assert gifts.selected() == [pick]
+
+    page._loading = False                  # an interactive pick of Hollow
+    try:
+        page._custom_strategy.set_selected(HOLLOW_LABEL)
+        page._update_gift_lock()
+    finally:
+        page._loading = True
+    assert page._market_slot == "hollow" and g.config()["buy"] == []
+    assert set(gifts.selected()) == set(HOLLOW_SEARCH_GIFTS)   # the pick is gone
+    assert pick not in gifts.selected()
+    assert "Hollow" in page._market_slot_hint.text()
+    g._tiles[other].click()
+    st = page.state()
+    assert st["market_gifts"] == normal_cfg
+    assert st["market_gifts_hollow"]["buy"] == [other]
+    assert build_settings(st)["market_gifts"]["buy"] == [other]
+    # Back to normal: the normal tags return; Hollow's edits stay in its slot.
+    page._custom_strategy.set_selected("F3 Hard")
+    page._update_gift_lock()
+    assert g.config() == normal_cfg
+    assert page._market_slots["hollow"]["buy"] == [other]
+    assert build_settings(page.state())["market_gifts"] == normal_cfg
+    # Picking Hollow again does not clear what is now its own config.
+    page._loading = False
+    try:
+        page._custom_strategy.set_selected(HOLLOW_LABEL)
+        page._update_gift_lock()
+    finally:
+        page._loading = True
+    assert g.config()["buy"] == [other]

@@ -15,9 +15,10 @@ import threading
 import time
 
 from PySide6.QtCore import QObject, Signal, Qt
-from PySide6.QtWidgets import QMessageBox
 
 from .automation_controller import AutomationController
+from .dialogs import show_notice
+from .resolution_help import show_resolution_help
 from .overlay import RunOverlay
 from .run_config import build_md_run, build_lux_run
 from .settings import load_section
@@ -66,28 +67,32 @@ class RunCoordinator(QObject):
         self._wait_timer.setSingleShot(True)
         self._wait_timer.timeout.connect(self._sched_advance)
 
-        # Button-start countdown: gives the user time to tab into Limbus
-        # before the bot grabs input. Hotkeys skip this since the user is
-        # already in the game when they trigger them.
+        # Start countdown: shows what is about to run and gives the user
+        # time to tab into Limbus before the bot grabs input. Buttons and
+        # start hotkeys both go through it (over the game, the summary is
+        # drawn by the run overlay). The scheduler and Discord starts skip
+        # it: nobody is there to read it.
         self._countdown_timer = _QTimer(self)
         self._countdown_timer.setInterval(1000)
         self._countdown_timer.timeout.connect(self._on_countdown_tick)
         self._countdown_remaining = 0
         self._countdown_action = None
         self._countdown_page = None
-        self._BUTTON_START_DELAY_S = 5
+        self._BUTTON_START_DELAY_S = 10
+        self._start_overlay = None
 
         # Page -> controller.
         main_ui.start_requested.connect(
-            lambda: self._arm_button_start(self._start_md, self._md))
+            lambda: self._arm_button_start(self._start_md, self._md, "md"))
         main_ui.stop_requested.connect(self._stop)
         if self._lux is not None:
             self._lux.start_exp_requested.connect(
                 lambda: self._arm_button_start(
-                    lambda: self._start_lux("exp"), self._lux))
+                    lambda: self._start_lux("exp"), self._lux, "exp"))
             self._lux.start_thread_requested.connect(
                 lambda: self._arm_button_start(
-                    lambda: self._start_lux("thread"), self._lux))
+                    lambda: self._start_lux("thread"), self._lux,
+                    "thread"))
             self._lux.stop_requested.connect(self._stop)
         if self._scheduler is not None:
             self._scheduler.run_requested.connect(self._scheduler_start)
@@ -133,6 +138,8 @@ class RunCoordinator(QObject):
         settings["rhythm"] = bool(app.get("rhythm", True))
         settings["skip_ego_battle"] = bool(
             (app.get("advanced") or {}).get("skip_ego_battle", False))
+        settings["debug_matches"] = bool(
+            (app.get("advanced") or {}).get("debug_matches", False))
 
     def _md_state(self) -> dict:
         """MD page state with the SAIKAI/THRILL team config (now edited in the
@@ -196,7 +203,7 @@ class RunCoordinator(QObject):
         if self._controller.is_running():
             self._stop()
         else:
-            self._start_md()
+            self._arm_button_start(self._start_md, self._md, "md")
 
     def _toggle_lux(self, mode: str):
         """Hotkey: start the given Lux mode, or stop if a run is active."""
@@ -205,19 +212,100 @@ class RunCoordinator(QObject):
             return
         if self._controller.is_running():
             self._stop()
-        else:
-            self._start_lux(mode)
+        elif self._lux is not None:
+            self._arm_button_start(lambda: self._start_lux(mode),
+                                   self._lux, mode)
 
     # --- button-start countdown ------------------------------------------
-    def _arm_button_start(self, start_callable, page):
-        """Arm a delayed start so the user can tab into Limbus first."""
+    def _arm_button_start(self, start_callable, page, kind=None):
+        """Arm a delayed start (a Start button or a start hotkey): show what
+        is about to run, and count down so the user can tab into Limbus
+        first. Pressing the hotkey again, or Stop, cancels it."""
         if self._controller.is_running() or self._countdown_timer.isActive():
             return
+        if kind == "md" and not self._hollow_fallback_ok():
+            return
+        summary = self._pending_summary(kind) if kind else None
+        if kind and summary is None:
+            return                      # cannot start; already reported
         self._countdown_action = start_callable
         self._countdown_page = page
         self._countdown_remaining = self._BUTTON_START_DELAY_S
+        if summary is not None:
+            self._open_start_overlay(summary)
         self._apply_arming(self._countdown_remaining)
         self._countdown_timer.start()
+
+    def _pending_summary(self, kind):
+        """What the start overlay shows, or None when the run
+        cannot start. Building the summary dry-runs the run config, so a
+        setup that cannot start says so now, not after the countdown."""
+        from . import run_summary
+        app = load_section("app_settings") or {}
+        try:
+            sinners = (self._settings.sinner_selection()
+                       if self._settings else {})
+            if kind == "md":
+                excl = (self._settings.sinner_exclusion()
+                        if self._settings else {})
+                md = self._md_state()
+                build_md_run(md, sinners, excl)
+                summary = run_summary.md_start(md, app)
+            else:
+                lux = self._lux.state()
+                build_lux_run(kind, lux, self._md.state(), sinners)
+                summary = run_summary.lux_start(kind, lux, app)
+        except ValueError as exc:
+            self._on_warning(str(exc))
+            return None
+        except Exception as exc:
+            self._on_warning(f"Could not build run: {exc}")
+            return None
+        return summary
+
+    def _hollow_fallback_ok(self) -> bool:
+        """Hollow fields its fallback squad on the miniboss node; a run set
+        up without one is asked about first. True to go on."""
+        try:
+            md = self._md_state()
+        except Exception:
+            return True
+        from .run_config import HOLLOW_LABEL
+        if not (md.get("custom_run")
+                and md.get("custom_strategy") == HOLLOW_LABEL):
+            return True
+        if [n for n in (md.get("hollow_order") or []) if n != "Faust"]:
+            return True
+        from .dialogs import ask_choice
+        choice = ask_choice(
+            self._ui,
+            "Hollow requires a fallback team for the miniboss node. If no "
+            "fallback team is equipped, you may fail the run or end up in a "
+            "loop. Do you want to continue?",
+            title="Hollow", primary="Continue",
+            secondary="Go to HOLLOW settings")
+        if choice == "primary":
+            return True
+        if choice == "secondary":
+            reveal = getattr(self._ui, "_reveal_stk_settings", None)
+            if callable(reveal):
+                reveal("Hollow")
+        return False
+
+    def _open_start_overlay(self, summary):
+        if self._start_overlay is None:
+            from .start_overlay import StartOverlay
+            self._start_overlay = StartOverlay(self._ui)
+            self._start_overlay.start_now.connect(self._fire_pending_start)
+            self._start_overlay.cancelled.connect(self._cancel_countdown)
+        self._start_overlay.open(summary, self._countdown_remaining)
+        # And over the game, for when the user tabs into it: that overlay
+        # cannot take clicks, so it names the stop hotkey as the way out.
+        game = getattr(self, "_overlay", None)
+        if game is not None:
+            keys = (load_section("app_settings") or {}).get("shortcuts") or {}
+            game.set_pending(summary, self._countdown_remaining,
+                             keys.get("stop") or "F2")
 
     def _on_countdown_tick(self):
         self._countdown_remaining -= 1
@@ -248,6 +336,18 @@ class RunCoordinator(QObject):
         page = self._countdown_page
         if page is not None and hasattr(page, "set_arming"):
             page.set_arming(seconds)
+        overlay = self._start_overlay
+        if overlay is not None:
+            if seconds > 0:
+                overlay.set_remaining(seconds)
+            else:
+                overlay.close_overlay()
+        game = getattr(self, "_overlay", None)
+        if game is not None:
+            if seconds > 0:
+                game.set_pending_remaining(seconds)
+            else:
+                game.clear_pending()
 
     # --- scheduler ------------------------------------------------------
     # The scheduler page emits `run_requested(list)` with the full task
@@ -497,11 +597,23 @@ class RunCoordinator(QObject):
 
     def _on_warning(self, msg: str):
         logging.warning("%s", msg)
+        if str(msg).startswith("Game window ("):
+            # Advice, not a failure: no Discord "stuck" ping, and it must
+            # not take focus from the game. A modal box did; the bot
+            # paused on the focus loss, and resuming raised it again.
+            show_resolution_help(self._ui, msg)
+            return
         # Discord ping first: unattended users never see the message box.
         reason = next((ln for ln in str(msg or "").splitlines() if ln.strip()),
                       "unknown")
         self._discord_stuck(reason[:300])
-        QMessageBox.warning(self._ui, "WorkerBee", msg)
+        from .lghub_help import is_bridge_failure, show_lghub_help
+        if is_bridge_failure(msg):
+            # The raw text is a driver error and a traceback. Show what
+            # is wrong with G Hub and the steps that fix it instead.
+            show_lghub_help(self._ui, msg)
+            return
+        show_notice(self._ui, msg)
 
     # --- run stats -------------------------------------------------
     def _on_tele_for_stats(self, event: dict):

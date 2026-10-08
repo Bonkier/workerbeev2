@@ -447,11 +447,11 @@ def _init_uinput_devices():
                 local_mouse = clone_device(mouse_path)
             except Exception as ex:
                 print(f"[!] Mouse clone failed ({mouse_path}): {ex}")
-                print("No mouse found – using fallback.")
+                print("No mouse found - using fallback.")
                 local_mouse = UInput(**MOUSE_FALLBACK)
                 _print_device_data(MOUSE_FALLBACK)
         else:
-            print("No mouse found – using fallback.")
+            print("No mouse found - using fallback.")
             local_mouse = UInput(**MOUSE_FALLBACK)
             _print_device_data(MOUSE_FALLBACK)
 
@@ -461,11 +461,11 @@ def _init_uinput_devices():
                 local_keyboard = clone_device(keyboard_path)
             except Exception as ex:
                 print(f"[!] Keyboard clone failed ({keyboard_path}): {ex}")
-                print("No keyboard found – using fallback.")
+                print("No keyboard found - using fallback.")
                 local_keyboard = UInput(**KEYBOARD_FALLBACK)
                 _print_device_data(KEYBOARD_FALLBACK)
         else:
-            print("No keyboard found – using fallback.")
+            print("No keyboard found - using fallback.")
             local_keyboard = UInput(**KEYBOARD_FALLBACK)
             _print_device_data(KEYBOARD_FALLBACK)
 
@@ -866,6 +866,9 @@ def check_window():
         raise WindowError("Window is partially or completely out of screen bounds!")
 
 
+_advised_window_size = None
+
+
 def set_window():
     """Center a 16:9 region inside the LIMBUS_NAME client area (mirrors Windows)."""
     w = _find_window_by_name(p.LIMBUS_NAME)
@@ -899,7 +902,12 @@ def set_window():
     p.SCREEN = get_virtual_screen_bounds()
     check_window()
 
-    if int(client_width / 16) != int(client_height / 9):
+    # set_window() re-runs on every resume and stuck recovery. Raise the
+    # advice once per window size, not each time.
+    global _advised_window_size
+    if (int(client_width / 16) != int(client_height / 9)
+            and _advised_window_size != (client_width, client_height)):
+        _advised_window_size = (client_width, client_height)
         p.WARNING(f"Game window ({client_width} x {client_height}) is not 16:9\nIt is recommended to set the game to either\n1920 x 1080 or 1280 x 720")
 
     print("WINDOW:", p.WINDOW)

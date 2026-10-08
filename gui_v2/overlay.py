@@ -12,6 +12,7 @@ Incoming coords are LOGICAL 1920x1080, scaled to the live window at paint.
 
 import collections
 import ctypes
+import ctypes.wintypes
 import logging
 import math
 import random
@@ -20,7 +21,8 @@ import time
 
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF
 from PySide6.QtGui import (
-    QColor, QFont, QGuiApplication, QPainter, QPen, QPolygonF,
+    QColor, QFont, QFontMetricsF, QGuiApplication, QLinearGradient,
+    QPainter, QPen, QPolygonF,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -49,25 +51,37 @@ def _c(hex_str: str, alpha: int = 255) -> QColor:
 
 class RunOverlay(QWidget):
 
-    def __init__(self, owner_hwnd_getter=None):
+    def __init__(self, owner_hwnd_getter=None, preview: bool = False):
         super().__init__(None)
         self._owner_hwnd = owner_hwnd_getter or (lambda: 0)
+        # Preview: an ordinary window with a backdrop, so the HUD can be looked
+        # at without starting a run and without a game to pin to.
+        self._preview = bool(preview)
 
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-            | Qt.WindowType.WindowTransparentForInput
-            | Qt.WindowType.WindowDoesNotAcceptFocus
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        if preview:
+            self.setWindowTitle("WorkerBee overlay preview")
+            self.resize(900, 560)
+        else:
+            self.setWindowFlags(
+                Qt.WindowType.FramelessWindowHint
+                | Qt.WindowType.WindowStaysOnTopHint
+                | Qt.WindowType.Tool
+                | Qt.WindowType.WindowTransparentForInput
+                | Qt.WindowType.WindowDoesNotAcceptFocus
+            )
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+            self.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         self._show_hud = True
         self._show_vision = False
         self._show_path = False
         self._run_active = False
+        # A start that is counting down: {summary, remaining,
+        # cancel_key}. Drawn over the game so the summary and the time
+        # left follow the user when they tab into it.
+        self._pending = None
         self._capture_excluded = False
 
         # Capture self-test: SetWindowDisplayAffinity should hide us from
@@ -102,6 +116,13 @@ class RunOverlay(QWidget):
         self._bee_face_target = 1.0
         self._bee_tilt = 0.0          # smoothed vertical lean, radians
 
+        self._alpha_cache = 218
+        self._refresh_alpha()
+        self._alpha_timer = QTimer(self)
+        self._alpha_timer.setInterval(1500)
+        self._alpha_timer.timeout.connect(self._refresh_alpha)
+        self._alpha_timer.start()
+
         self._geo_timer = QTimer(self)
         self._geo_timer.setInterval(150)
         self._geo_timer.timeout.connect(self._track)
@@ -112,12 +133,105 @@ class RunOverlay(QWidget):
         self._paint_timer.timeout.connect(self._tick)
         self._paint_timer.start()
 
+    def _panel_alpha(self) -> int:
+        """Panel opacity, 0-255, from Settings. Cached: paint runs at 20fps and
+        this would otherwise be a file read per frame. Refreshed on a slow
+        timer so moving the slider still reaches the live overlay."""
+        return self._alpha_cache
+
+    # Fade profile for the panel: full strength behind the wordmark, thinning
+    # toward the last row. Stepped rather than smoothly interpolated, so it
+    # reads as pixel art like everything else on the HUD, and the steps land
+    # on the row grid so each readout line sits on one flat tint.
+    _FADE_FLOOR = 0.34      # bottom edge keeps this much of the set opacity
+    _FADE_CURVE = 1.5       # >1 holds the top strong, then drops away
+
+    def _fade(self, rect, top_alpha: float, hex_str: str = "#0e1013",
+              head_h: float = 0.0, pitch: float = 0.0):
+        """Top-to-bottom banded fade of one colour across rect.
+
+        head_h is a first band held at full strength (the wordmark row);
+        pitch is the height of each band after it. With pitch 0 the whole
+        rect is one band, i.e. the old flat fill."""
+        grad = QLinearGradient(rect.left(), rect.top(),
+                               rect.left(), rect.bottom())
+        h = max(1.0, rect.height())
+        edges = [0.0]
+        if pitch > 0.0:
+            y = head_h
+            while y < h - 0.5:
+                edges.append(min(y / h, 1.0))
+                y += pitch
+        edges.append(1.0)
+
+        n = max(1, len(edges) - 1)
+        for i in range(n):
+            t = 0.0 if n == 1 else i / (n - 1.0)
+            k = 1.0 - (1.0 - self._FADE_FLOOR) * (t ** self._FADE_CURVE)
+            col = _c(hex_str, int(round(top_alpha * k)))
+            # Two stops per band so the step is hard, not interpolated.
+            grad.setColorAt(edges[i], col)
+            grad.setColorAt(max(edges[i], edges[i + 1] - 0.0001), col)
+        return grad
+
+    def _refresh_alpha(self):
+        try:
+            from .settings import load_settings
+            pct = (load_settings().get("app_settings") or {}).get(
+                "overlay_opacity", 85)
+            value = max(20, min(255, int(round(float(pct) * 2.55))))
+        except Exception:
+            value = 218
+        if value != self._alpha_cache:
+            self._alpha_cache = value
+            self._dirty = True
+
+    def load_demo(self):
+        """Plausible sample state, so the preview shows a populated HUD."""
+        self._phase = "Floor 3"
+        self._floor = "3"
+        self._pack = "Hatred and Despair"
+        self._run = (2, 5)
+        self._run_start = time.time() - 754
+        self._target = (1284, 622)
+        self._actions.clear()
+        for text in ("Picked pack: Hatred and Despair",
+                     "Skill 2 -> Skill 3 (Ryoshu)",
+                     "Won clash 4/4", "Claimed floor bonus",
+                     "Entering Floor 3"):
+            self._actions.append(text)
+        self._show_hud = True
+        self._dirty = True
+
     # --- external API ----------------------------------------------
     def set_toggles(self, hud: bool, vision: bool, path: bool):
         self._show_hud = bool(hud)
         self._show_vision = bool(vision)
         self._show_path = bool(path)
         self._dirty = True
+
+    def set_pending(self, summary, seconds, cancel_key="F2"):
+        """A start is counting down: show what will run and the time left.
+        `summary` is the dict run_summary.md_start / lux_start builds."""
+        self._pending = {"summary": dict(summary or {}),
+                         "remaining": int(seconds),
+                         "cancel_key": str(cancel_key or "F2")}
+        self._dirty = True
+        self._track()
+        self.update()
+
+    def set_pending_remaining(self, seconds: int):
+        if self._pending is not None:
+            self._pending["remaining"] = int(seconds)
+            self._dirty = True
+            self.update()
+
+    def clear_pending(self):
+        if self._pending is not None:
+            self._pending = None
+            self._dirty = True
+            self._track()
+            self.update()
 
     def set_run_active(self, active: bool):
         self._run_active = bool(active)
@@ -196,15 +310,24 @@ class RunOverlay(QWidget):
 
     # --- geometry + visibility -------------------------------------
     def _track(self):
-        win = self._game_rect()
-        wants = (
-            self._run_active
-            and (self._show_hud or self._show_vision or self._show_path)
-            and win is not None
-            and not self._workerbee_focused()
-            # Self-test found the bot can see us: stay hidden.
-            and self._capturable is not True
-        )
+        if self._preview:
+            return        # no game window to pin to
+        pending = self._pending is not None
+        if pending:
+            # No run has started, so p.WINDOW is unset or stale: read the
+            # game window live, and only cover it while it has focus.
+            win = self._live_game_rect() if self._game_focused() else None
+            wants = win is not None
+        else:
+            win = self._game_rect()
+            wants = (
+                self._run_active
+                and (self._show_hud or self._show_vision or self._show_path)
+                and win is not None
+                and not self._workerbee_focused()
+                # Self-test found the bot can see us: stay hidden.
+                and self._capturable is not True
+            )
         if not wants:
             if self.isVisible():
                 self.hide()
@@ -219,7 +342,9 @@ class RunOverlay(QWidget):
             self.show()
         # First time up over the game: schedule the capture self-test
         # (needs the window shown + composited first).
-        if self._capturable is None and not self._probe_scheduled:
+        # Not while a start is pending: the probe flashes a sentinel block.
+        if (self._capturable is None and not self._probe_scheduled
+                and not pending):
             self._probe_scheduled = True
             QTimer.singleShot(300, self._run_capture_probe)
 
@@ -331,6 +456,42 @@ class RunOverlay(QWidget):
             return None
         return x, y, w, h
 
+    @staticmethod
+    def _game_hwnd() -> int:
+        try:
+            import wbcore.utils.params as p
+            return int(ctypes.windll.user32.FindWindowW(None, p.LIMBUS_NAME)
+                       or 0)
+        except Exception:
+            return 0
+
+    def _game_focused(self) -> bool:
+        try:
+            hwnd = self._game_hwnd()
+            return bool(hwnd) and int(
+                ctypes.windll.user32.GetForegroundWindow()) == hwnd
+        except Exception:
+            return False
+
+    def _live_game_rect(self):
+        """The game's client area in physical px, read from the window
+        itself. Unlike _game_rect this needs no run to have set p.WINDOW."""
+        try:
+            user32 = ctypes.windll.user32
+            hwnd = self._game_hwnd()
+            if not hwnd or user32.IsIconic(hwnd):
+                return None
+            rect = ctypes.wintypes.RECT()
+            user32.GetClientRect(hwnd, ctypes.byref(rect))
+            pt = ctypes.wintypes.POINT(0, 0)
+            user32.ClientToScreen(hwnd, ctypes.byref(pt))
+            w, h = rect.right - rect.left, rect.bottom - rect.top
+            if w <= 1 or h <= 1:
+                return None
+            return int(pt.x), int(pt.y), int(w), int(h)
+        except Exception:
+            return None
+
     def _workerbee_focused(self) -> bool:
         try:
             fg = ctypes.windll.user32.GetForegroundWindow()
@@ -364,7 +525,25 @@ class RunOverlay(QWidget):
             painter.fillRect(self._probe_rect(), QColor(255, 0, 255, 255))
             return
         w, h = self.width(), self.height()
+        if self._preview:
+            # Stand-in for the game behind the HUD, so the panel's translucency
+            # and edge can actually be judged. It carries a bright band because
+            # a flat dark backdrop is within a few values of the panel's own
+            # fill, which hides exactly what this is here to show.
+            back = QLinearGradient(0, 0, w * 0.25, h)
+            back.setColorAt(0.0, QColor("#141014"))
+            back.setColorAt(0.55, QColor("#3b352c"))
+            back.setColorAt(1.0, QColor("#6a5c44"))
+            painter.fillRect(0, 0, w, h, back)
+            for gx in range(0, w, 32):
+                painter.fillRect(gx, 0, 1, h, QColor(255, 255, 255, 8))
+            for gy in range(0, h, 32):
+                painter.fillRect(0, gy, w, 1, QColor(255, 255, 255, 8))
         sx, sy = w / _LOGICAL_W, h / _LOGICAL_H
+        if self._pending is not None:
+            # Nothing is running yet: the summary stands alone.
+            self._paint_pending(painter)
+            return
         if self._show_vision:
             self._paint_matches(painter, sx, sy)
         if self._show_path:
@@ -372,6 +551,192 @@ class RunOverlay(QWidget):
         if self._show_hud:
             self._paint_hud(painter)
             self._paint_bee(painter)
+
+    def _pending_rows(self, painter, sections, x, y, width) -> float:
+        """Lay the summary out in two columns and return its height. With
+        painter None it only measures, so the panel can be sized first."""
+        from .voxel import draw_pixel_text
+        gap, label_w = 30.0, 132.0
+        col_w = (width - gap) / 2.0
+        font = QFont(_SANS, 10)
+        fm = QFontMetricsF(font)
+        wrap = int(Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignLeft
+                   | Qt.AlignmentFlag.AlignTop)
+        def section(paint, cx, cy, caption, rows) -> float:
+            if paint is not None:
+                draw_pixel_text(paint, cx, cy, str(caption).upper(), 2,
+                                Colors.TEXT_TERTIARY)
+            used = 14.0 + 7.0
+            for label, value in rows:
+                value = str(value)
+                need = fm.boundingRect(
+                    QRectF(0, 0, col_w - label_w, 2000), wrap, value)
+                rh = max(fm.height(), need.height())
+                if paint is not None:
+                    paint.setFont(font)
+                    paint.setPen(QColor(Colors.TEXT_SECONDARY))
+                    paint.drawText(QRectF(cx, cy + used, label_w, rh),
+                                   wrap, str(label))
+                    paint.setPen(QColor(Colors.TEXT_PRIMARY))
+                    paint.drawText(
+                        QRectF(cx + label_w, cy + used, col_w - label_w, rh),
+                        wrap, value)
+                used += rh + 3.0
+            return used
+
+        # Sections pair up across the two columns, and each pair starts on
+        # the same line however tall the one beside it is.
+        per_col = max(1, (len(sections) + 1) // 2)
+        total = 0.0
+        for r in range(per_col):
+            pair = [sections[i] for i in (r, r + per_col) if i < len(sections)]
+            if r:
+                total += 16.0
+            tall = max(section(None, 0, 0, cap, rows) for cap, rows in pair)
+            if painter is not None:
+                for c, (cap, rows) in enumerate(pair):
+                    section(painter, x + c * (col_w + gap), y + total,
+                            cap, rows)
+            total += tall
+        return total
+
+    def _pending_gifts(self, painter, groups, x, y, width) -> float:
+        """The gift art row: named tiles for the gifts searched for, bare
+        thumbnails for market targets. Returns its height; with painter None
+        it only measures."""
+        from .voxel import draw_pixel_text
+        from .start_overlay import (GIFT_THUMB, GIFT_TILE, GIFT_TILE_W,
+                                    gift_image)
+        gap = 30.0
+        col_w = (width - gap) / 2.0
+        font = QFont(_SANS, 9)
+        fm = QFontMetricsF(font)
+        centre = int(Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignHCenter
+                     | Qt.AlignmentFlag.AlignTop)
+        tallest = 0.0
+        for c, group in enumerate(groups[:2]):
+            cx = x + c * (col_w + gap)
+            if painter is not None:
+                draw_pixel_text(painter, cx, y, str(group.get("caption", "")),
+                                2, Colors.TEXT_TERTIARY)
+                painter.setFont(font)
+            top = y + 14.0 + 7.0
+            names = list(group.get("names") or [])
+            named = bool(group.get("named"))
+            if not names:
+                if painter is not None:
+                    painter.setPen(QColor(Colors.TEXT_SECONDARY))
+                    painter.drawText(QRectF(cx, top, col_w, fm.height()),
+                                     int(Qt.AlignmentFlag.AlignLeft), "None")
+                tallest = max(tallest, 21.0 + fm.height())
+                continue
+
+            size = GIFT_TILE if named else GIFT_THUMB
+            step = (GIFT_TILE_W + 8) if named else (GIFT_THUMB + 6)
+            limit = 3 if named else 8
+            text_h = 0.0
+            for i, name in enumerate(names[:limit]):
+                tx = cx + i * step
+                ax = tx + ((GIFT_TILE_W - size) / 2.0 if named else 0.0)
+                if painter is not None:
+                    art = gift_image(name, size)
+                    if art is not None:
+                        painter.drawImage(
+                            int(ax + (size - art.width()) / 2),
+                            int(top + (size - art.height()) / 2), art)
+                    else:
+                        painter.setPen(QPen(QColor(Colors.BORDER_STRONG), 1))
+                        painter.setBrush(Qt.BrushStyle.NoBrush)
+                        painter.drawRect(QRectF(ax + 0.5, top + 0.5,
+                                                size - 1, size - 1))
+                if named:
+                    box = QRectF(tx, top + size + 4, GIFT_TILE_W, 2000)
+                    need = fm.boundingRect(box, centre, name).height()
+                    text_h = max(text_h, need)
+                    if painter is not None:
+                        painter.setPen(QColor(Colors.TEXT_PRIMARY))
+                        painter.drawText(
+                            QRectF(tx, top + size + 4, GIFT_TILE_W, need),
+                            centre, name)
+            if len(names) > limit and painter is not None:
+                painter.setPen(QColor(Colors.TEXT_SECONDARY))
+                painter.drawText(
+                    QRectF(cx + limit * step, top, 60, size),
+                    int(Qt.AlignmentFlag.AlignLeft
+                        | Qt.AlignmentFlag.AlignVCenter),
+                    "+%d" % (len(names) - limit))
+            tallest = max(tallest,
+                          21.0 + size + ((4 + text_h) if named else 0.0))
+        return tallest
+
+    def _paint_pending(self, painter: QPainter):
+        """The start overlay, over the game: the same summary and countdown
+        the WorkerBee window shows, for a user who has already tabbed in.
+        It cannot take clicks (the overlay is input-transparent), so the
+        way out it names is the stop hotkey."""
+        from .voxel import draw_pixel_text, pixel_text_width
+        from .start_overlay import pixel_safe
+        pend = self._pending
+        summary = pend["summary"]
+        title = pixel_safe(summary.get("title", "")).upper()
+        sub = pixel_safe(summary.get("subtitle") or "").upper()
+        gifts = list(summary.get("gifts") or [])[:2]
+        sections = list(summary.get("sections") or [])
+        w, h = self.width(), self.height()
+        if not self._preview:
+            painter.fillRect(0, 0, w, h, QColor(0, 0, 0, 96))
+
+        pad = 24.0
+        # Wide enough that values rarely wrap, never wider than the game.
+        pw = float(min(max(780, w * 0.46), 900, w - 40))
+        inner = pw - 2 * pad
+
+        # The kind of run is the largest text on the panel: the countdown
+        # is a size down, and the title only shrinks if it would not fit.
+        count = str(max(0, int(pend["remaining"])))
+        count_px = 5
+        count_w = pixel_text_width("00", count_px)
+        title_px = next((px for px in (6, 5, 4)
+                         if pixel_text_width(title, px)
+                         <= inner - count_w - 24), 4)
+        title_h, sub_h, hint_h = 7.0 * title_px, 21.0, 20.0
+        head_h = 14 + 10 + title_h + ((10 + sub_h) if sub else 0)
+        gifts_h = (self._pending_gifts(None, gifts, 0, 0, inner)
+                   if gifts else 0.0)
+        body_h = self._pending_rows(None, sections, 0, 0, inner)
+        ph = (pad + head_h + 12 + hint_h + ((14 + gifts_h) if gifts else 0)
+              + 16 + body_h + pad)
+        px, py = round((w - pw) / 2.0), round((h - ph) / 2.0)
+
+        painter.setPen(QPen(_c(Colors.ACCENT, 170), 1))
+        painter.setBrush(_c("#0e1013", 240))
+        painter.drawRect(QRectF(px + 0.5, py + 0.5, pw - 1, ph - 1))
+
+        x, y = px + pad, py + pad
+        draw_pixel_text(painter, x, y, "STARTING IN", 2, Colors.TEXT_SECONDARY)
+        draw_pixel_text(painter, x, y + 14 + 10, title, title_px,
+                        Colors.TEXT_PRIMARY)
+        if sub:
+            draw_pixel_text(painter, x, y + 14 + 10 + title_h + 10, sub, 3,
+                            Colors.ACCENT)
+        draw_pixel_text(painter,
+                        px + pw - pad - pixel_text_width(count, count_px),
+                        y, count, count_px, Colors.ACCENT)
+
+        y += head_h + 12
+        painter.setFont(QFont(_SANS, 10))
+        painter.setPen(QColor(Colors.TEXT_SECONDARY))
+        painter.drawText(
+            QRectF(x, y, inner, hint_h),
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+            "The run starts when the countdown ends. Press %s to cancel."
+            % pend["cancel_key"])
+        y += hint_h
+        if gifts:
+            y += 14
+            self._pending_gifts(painter, gifts, x, y, inner)
+            y += gifts_h
+        self._pending_rows(painter, sections, x, y + 16, inner)
 
     def _paint_matches(self, painter: QPainter, sx: float, sy: float):
         now = time.time()
@@ -429,42 +794,59 @@ class RunOverlay(QWidget):
                              QPointF(tx, ty + radius + 6))
 
     def _paint_hud(self, painter: QPainter):
+        """Square panel, 1px edge, a filled header band with the wordmark in
+        the 5x7 pixel face: the same shapes the app itself uses, so the HUD
+        does not read as a different program sitting on the game."""
         margin = 16
-        pad = 12
+        pad = 10
         pw = 330
         line_h = 20
+        band_h = 22
 
-        rows = 7  # header, phase, floor, pack, target, tracer, run time
+        rows = 6  # phase, floor, pack, target, tracer, run time
         show_actions = len(self._actions) > 0
         if show_actions:
             rows += 1 + len(self._actions)
-        panel_h = 2 * pad + rows * line_h
+        panel_h = pad + band_h + rows * line_h + pad
 
         panel = QRectF(margin, margin, pw, panel_h)
         self._panel_rect = panel
-        painter.setPen(QPen(_c(Colors.ACCENT, 110), 1))
-        painter.setBrush(_c("#0c0c0e", 210))
-        painter.drawRoundedRect(panel, 10, 10)
+        painter.setPen(Qt.PenStyle.NoPen)
+        head_h = pad + band_h
+        painter.setBrush(self._fade(panel, self._panel_alpha(),
+                                    head_h=head_h, pitch=line_h))
+        painter.drawRect(panel)
+
+        # No header band: the wordmark sits straight on the panel, with the
+        # run counter opposite it.
+        from .voxel import draw_pixel_text, pixel_text_width
+        head_y = panel.y() + pad
+        from . import seasonal
+        if seasonal.is_halloween():
+            used = draw_pixel_text(painter, panel.x() + pad, head_y,
+                                   "EVIL", 2, seasonal.RED)
+            draw_pixel_text(painter, panel.x() + pad + used + 2, head_y,
+                            "BEE", 2, seasonal.BONE)
+        else:
+            draw_pixel_text(painter, panel.x() + pad, head_y,
+                            "WORKERBEE", 2, Colors.TEXT_PRIMARY)
+        if self._run:
+            run_txt = f"RUN {self._run[0]}/{self._run[1]}"
+            draw_pixel_text(
+                painter,
+                panel.right() - pad - pixel_text_width(run_txt, 2),
+                head_y, run_txt, 2, Colors.ACCENT)
+
+        # 1px edge last, so it sits over the fill.
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        edge = panel.adjusted(0.5, 0.5, -0.5, -0.5)
+        painter.setPen(QPen(self._fade(edge, 235, "#2b323a",
+                                       head_h=head_h, pitch=line_h), 1))
+        painter.drawRect(edge)
 
         x = margin + pad
         inner_w = pw - 2 * pad
-        y = margin + pad
-
-        head = QFont(_SANS, 11)
-        head.setBold(True)
-        painter.setFont(head)
-        painter.setPen(_c(Colors.ACCENT, 255))
-        painter.drawText(QRectF(x, y, inner_w, line_h),
-                         Qt.AlignmentFlag.AlignVCenter
-                         | Qt.AlignmentFlag.AlignLeft, "WorkerBee")
-        if self._run:
-            painter.setFont(QFont(_MONO, 10))
-            painter.setPen(_c(Colors.TEXT_SECONDARY, 255))
-            painter.drawText(QRectF(x, y, inner_w, line_h),
-                             Qt.AlignmentFlag.AlignVCenter
-                             | Qt.AlignmentFlag.AlignRight,
-                             f"Run {self._run[0]} / {self._run[1]}")
-        y += line_h
+        y = margin + pad + band_h
 
         self._hud_row(painter, x, y, inner_w, "Phase",
                       self._phase or "-", Colors.TEXT_PRIMARY)
@@ -492,11 +874,8 @@ class RunOverlay(QWidget):
         y += line_h
 
         if show_actions:
-            painter.setFont(QFont(_SANS, 8))
-            painter.setPen(_c(Colors.TEXT_TERTIARY, 255))
-            painter.drawText(QRectF(x, y, inner_w, line_h),
-                             Qt.AlignmentFlag.AlignVCenter
-                             | Qt.AlignmentFlag.AlignLeft, "RECENT")
+            draw_pixel_text(painter, x, y + 4, "RECENT", 2,
+                            Colors.TEXT_TERTIARY)
             y += line_h
             painter.setFont(QFont(_SANS, 9))
             for text in self._actions:
@@ -616,6 +995,37 @@ class RunOverlay(QWidget):
             r = 1.2 + 0.7 * frac
             painter.drawEllipse(QPointF(tx, ty), r, r)
 
+    # Bee sprite on a block grid, drawn from a bitmap so it stays square at
+    # any scale. Columns run tail -> head; "." is empty.
+    _BEE_ROWS = (
+        "....WW.WW....",
+        "...WWWWWWW...",
+        ".SBBYYBBYYHH.",
+        "SSBBYYBBYYHE.",
+        ".SBBYYBBYYHH.",
+    )
+    _BEE_PAL = {
+        "Y": Colors.ACCENT,     # stripe
+        "B": "#1a1608",         # stripe
+        "H": "#1a1608",         # head
+        "E": "#ffffff",         # eye, so the black head still reads
+        "S": "#1a1608",         # stinger
+        "W": "#dbe9ff",         # wing
+    }
+    # October: red and black, under a pair of scalloped bat wings.
+    _BAT_ROWS = (
+        "..W.W.W.W.W..",
+        "..WWWWWWWWW..",
+        ".SBBYYBBYYHH.",
+        "SSBBYYBBYYHE.",
+        ".SBBYYBBYYHH.",
+    )
+    _BAT_PAL = {
+        "Y": "#e01e2f", "B": "#14060a", "H": "#14060a",
+        "E": "#ffb000", "S": "#14060a", "W": "#7a1422",
+    }
+    _BEE_UNIT = 3
+
     def _draw_bee(self, painter: QPainter, x: float, y: float):
         painter.save()
         painter.translate(x, y)
@@ -624,46 +1034,91 @@ class RunOverlay(QWidget):
         painter.rotate(math.degrees(self._bee_tilt) * sign)
         sx = self._bee_face if abs(self._bee_face) > 0.14 else 0.14 * sign
         painter.scale(sx, 1.0)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         painter.setPen(Qt.PenStyle.NoPen)
-        flap = 3.0 + 3.0 * abs(math.sin(self._bee_phase))
-        painter.setBrush(_c("#ffffff", 150))
-        painter.drawEllipse(QPointF(-1, -7), 6.0, flap)
-        painter.drawEllipse(QPointF(5, -7), 6.0, flap)
-        painter.setBrush(_c("#1a1a1a", 255))
-        painter.drawPolygon(QPolygonF([
-            QPointF(-10, -2), QPointF(-15, 0), QPointF(-10, 2)]))
-        painter.setBrush(_c(Colors.ACCENT, 255))
-        painter.drawEllipse(QRectF(-10, -6, 20, 12))
-        painter.setBrush(_c("#1a1a1a", 255))
-        painter.drawRect(QRectF(-3, -6, 3, 12))
-        painter.drawRect(QRectF(3, -6, 3, 12))
-        painter.drawEllipse(QRectF(7, -5, 10, 10))
-        pen = QPen(_c("#1a1a1a", 255))
-        pen.setWidthF(1.2)
-        painter.setPen(pen)
-        painter.drawLine(QPointF(14, -4), QPointF(18, -10))
-        painter.drawLine(QPointF(15, -3), QPointF(20, -8))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(_c("#ffffff", 235))
-        painter.drawEllipse(QPointF(13.0, -1.0), 1.6, 1.6)
+
+        from . import seasonal
+        evil = seasonal.is_halloween()
+        u = self._BEE_UNIT
+        rows = self._BAT_ROWS if evil else self._BEE_ROWS
+        pal = self._BAT_PAL if evil else self._BEE_PAL
+        w = len(rows[0]) * u
+        h = len(rows) * u
+        ox, oy = -w / 2.0, -h / 2.0
+        # Wings beat: the top and bottom rows only show on alternate frames.
+        beat = math.sin(self._bee_phase) > 0
+        for ry, row in enumerate(rows):
+            for rx, ch in enumerate(row):
+                if ch == ".":
+                    continue
+                if ch == "W":
+                    # Wings sit above the body only; the outer row drops on
+                    # alternate frames so they read as a beat.
+                    if ry == 0 and not beat:
+                        continue
+                    painter.setBrush(_c(pal["W"], 235 if evil else 165))
+                else:
+                    painter.setBrush(_c(pal[ch], 255))
+                painter.drawRect(QRectF(ox + rx * u, oy + ry * u, u, u))
         painter.restore()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+    _SPEECH_U = 3          # block size of the bubble border
 
     def _draw_speech(self, painter: QPainter, x: float, y: float, text: str,
                      alpha: float = 1.0):
-        font = QFont(_SANS, 9)
-        font.setBold(True)
-        painter.setFont(font)
-        fm = painter.fontMetrics()
-        tw = fm.horizontalAdvance(text) + 16
-        th = fm.height() + 8
-        bx = max(4.0, min(x - tw / 2.0, self.width() - tw - 4.0))
-        # Prefer above; flip below when there isn't room (top edge).
-        above = y - 20.0 - th
-        by = above if above >= 4.0 else (y + 20.0)
-        by = min(by, self.height() - th - 4.0)
-        bubble = QRectF(bx, by, tw, th)
-        painter.setPen(QPen(_c(Colors.ACCENT, int(170 * alpha)), 1))
-        painter.setBrush(_c("#0c0c0e", int(235 * alpha)))
-        painter.drawRoundedRect(bubble, 8, 8)
-        painter.setPen(_c(Colors.ACCENT, int(255 * alpha)))
-        painter.drawText(bubble, Qt.AlignmentFlag.AlignCenter, text)
+        """Classic pixel speech bubble: a blocky outline with stepped corners
+        and a stepped tail, text in the same 5x7 face as everything else. Not
+        a rounded rect - a rounded rect at this scale is exactly what the rest
+        of the skin was built to avoid."""
+        from .voxel import draw_pixel_text, pixel_text_width
+
+        u = self._SPEECH_U
+        pixel = 2
+        text = text.upper()
+        tw = pixel_text_width(text, pixel)
+        th = 7 * pixel
+        pad = 2 * u
+        bw = tw + 2 * pad + 2 * u
+        bh = th + 2 * pad + 2 * u
+        tail_h = 3 * u
+
+        bx = max(4.0, min(x - bw / 2.0, self.width() - bw - 4.0))
+        gap = 12.0
+        above = y - gap - bh - tail_h
+        below = above < 4.0
+        by = (y + gap + tail_h) if below else above
+        by = min(by, self.height() - bh - tail_h - 4.0)
+
+        ink = _c("#0e1013", int(255 * alpha))
+        face = _c("#f2f2f4", int(240 * alpha))
+
+        def blk(px, py, pw, ph, col):
+            painter.fillRect(int(px), int(py), int(pw), int(ph), col)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        # Face first, inset by one block so the corners can step.
+        blk(bx + u, by, bw - 2 * u, bh, face)
+        blk(bx, by + u, bw, bh - 2 * u, face)
+        # Border: each side short by one block at both ends, then the four
+        # corner blocks placed diagonally - that step is what makes it read
+        # as drawn on a pixel grid rather than a rectangle with a stroke.
+        blk(bx + u, by, bw - 2 * u, u, ink)                    # top
+        blk(bx + u, by + bh - u, bw - 2 * u, u, ink)           # bottom
+        blk(bx, by + u, u, bh - 2 * u, ink)                    # left
+        blk(bx + bw - u, by + u, u, bh - 2 * u, ink)           # right
+        for cx, cy in ((bx + u, by + u), (bx + bw - 2 * u, by + u),
+                       (bx + u, by + bh - 2 * u),
+                       (bx + bw - 2 * u, by + bh - 2 * u)):
+            blk(cx, cy, u, u, ink)
+
+        # Tail: a stepped wedge from the bubble edge toward the bee. Anchored
+        # near the bee's x so it points at whoever is talking.
+        tail_x = bx + max(u * 2, min(x - bx - u * 1.5, bw - u * 5))
+        for i in range(3):
+            width = (3 - i) * u
+            ty = (by - (i + 1) * u) if below else (by + bh + i * u)
+            blk(tail_x, ty, width, u, ink)
+
+        draw_pixel_text(painter, bx + u + pad, by + u + pad, text, pixel,
+                        "#0e1013")

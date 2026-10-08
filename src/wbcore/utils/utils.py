@@ -312,8 +312,25 @@ def dump_template_diag(tag, *template_names):
             out = os.path.join(debug_dir(), f"diag_{tag}_{stamp}.png")
             cv2.imwrite(out, frame)
             logging.error("DIAG[%s]: screen dumped to %s", tag, out)
+            _prune_diag_dumps(os.path.dirname(out))
         except Exception as exc:
             logging.error("DIAG[%s]: screen dump failed: %s", tag, exc)
+
+
+_DIAG_KEEP = 30
+
+
+def _prune_diag_dumps(folder):
+    """Keep only the newest dumps so a long stuck night cannot fill the disk."""
+    import glob
+    import os
+    dumps = sorted(glob.glob(os.path.join(folder, "diag_*.png")),
+                   key=os.path.getmtime, reverse=True)
+    for stale in dumps[_DIAG_KEEP:]:
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
 
 def win_get_position():
     """Cursor position in FHD coords."""
@@ -454,6 +471,16 @@ def wait_while_condition(condition, action=None, interval=0.5, timer=20):
     return True
 
 
+def _pinned(pins, pack, floor):
+    """True when `pack` is pinned to `floor`. A pin is one floor or several:
+    the Packs tab lets the same pack be set on more than one floor, and a
+    single-floor pin silently dropped all but the last."""
+    fl = pins.get(pack)
+    if isinstance(fl, (list, tuple, set, frozenset)):
+        return floor in fl
+    return fl == floor
+
+
 def generate_packs_pr(input_priority):
     priority, priority_f = input_priority
     
@@ -462,9 +489,9 @@ def generate_packs_pr(input_priority):
 
     for i in range(1, floor_limit()):
         for pack in priority:
-            assigned_on_this_floor = {pack for pack, fl in priority_f.items() if fl == i}
+            assigned_on_this_floor = {pk for pk in priority_f if _pinned(priority_f, pk, i)}
             if (pack in floors[format_lvl(i)] and (
-               (pack in priority_f and priority_f[pack] == i) or
+               (pack in priority_f and _pinned(priority_f, pack, i)) or
                (pack not in priority_f and not assigned_on_this_floor))):
                 packs[f"floor{i}"].append(pack)
     return packs
@@ -478,11 +505,11 @@ def generate_packs_av(input_avoid):
     for i in range(1, floor_limit()):
         for pack in avoid:
             if (pack in floors[format_lvl(i)] and (
-               (pack in avoid_f and avoid_f[pack] == i) or
+               (pack in avoid_f and _pinned(avoid_f, pack, i)) or
                (pack not in avoid_f))):
                 packs[f"floor{i}"].append(pack)
         for pack in priority_f.keys():
-            if pack in floors[format_lvl(i)] and priority_f[pack] != i:
+            if pack in floors[format_lvl(i)] and not _pinned(priority_f, pack, i):
                 packs[f"floor{i}"].append(pack)
     return packs
 
@@ -606,19 +633,33 @@ class Locate():  # convert ndarray inputs to BGR first!
         template, image = cls._convert(template, image)
         result = cv2.matchTemplate(image, template, method)
         match_w, match_h = template.shape[1], template.shape[0]
-        debug = logging.getLogger().isEnabledFor(logging.DEBUG)
+        # "Debug image matches" (Settings) traces every match at INFO so it
+        # lands in the Logs page; the old DEBUG gate stays for log-level users.
+        trace = bool(getattr(p, "DEBUG_MATCH_CONF", False))
+        debug = trace or logging.getLogger().isEnabledFor(logging.DEBUG)
+        name = Locate.tsize.get("name")
+        name = os.path.basename(name) if isinstance(name, str) else "image"
+        found = 0
         for (x, y) in cls._compare(result, conf, method):
             comp = 1920 / p.WINDOW[2]
             x_fullhd = int(x*comp) + x_off
             y_fullhd = int(y*comp) + y_off
+            found += 1
             if debug:
-                name = Locate.tsize.get("name")
-                name = os.path.basename(name) if isinstance(name, str) else "image"
                 score = cls._normalize_conf(result[y, x], result[y, x], method)
-                logging.debug("see %s  conf=%.3f  at (%d, %d)  size=(%d, %d)",
-                              name, float(score), x_fullhd, y_fullhd,
-                              int(match_w * comp), int(match_h * comp))
+                logging.log(logging.INFO if trace else logging.DEBUG,
+                            "see %s  conf=%.3f  at (%d, %d)  size=(%d, %d)",
+                            name, float(score), x_fullhd, y_fullhd,
+                            int(match_w * comp), int(match_h * comp))
             yield (x_fullhd, y_fullhd, int(match_w*comp), int(match_h*comp))
+        if trace and not found:
+            # The miss case is the one worth logging: how close did it get?
+            try:
+                mn, mx, _mnl, _mxl = cv2.minMaxLoc(result)
+                best = float(cls._normalize_conf(mx, mn, method))
+                logging.info("miss %s  best=%.3f  need=%.2f", name, best, conf)
+            except cv2.error:
+                pass
 
     @classmethod
     def _locate(cls, template, image=None, region=None, conf=None, method=None, **kwargs):
@@ -1239,6 +1280,20 @@ def chain_actions(preset: LocatePreset, actions: list):
 
         curr.execute(preset, ver=ver)
 
+_KNOWN_SCREENS = ("PackChoice", "Move", "shop", "supershop", "EGObin",
+                  "trials", "encounterreward")
+
+
+def _on_known_screen():
+    for key in _KNOWN_SCREENS:
+        try:
+            if now.button(key):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def handle_fuckup():
     # Stuck-loop recovery: click an empty corner to drop stray focus, then
     # ESC x2 to back out. WARNING because it can fire every ~0.2s when stuck.
@@ -1248,8 +1303,13 @@ def handle_fuckup():
             "+ ESC x2 to break out of a stuck screen.")
         gui.set_window()
         win_click(1888, 901)
-        gui.press("esc")
-        gui.press("esc")
+        # One ESC at a time: when the first already uncovers a screen the bot
+        # knows, a second would open the pause menu on top of it.
+        for _ in range(2):
+            gui.press("esc")
+            time.sleep(0.4)
+            if _on_known_screen():
+                break
         if loc.button("forfeit", wait=1):
             gui.press("esc")
     else:

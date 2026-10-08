@@ -198,6 +198,7 @@ def event():
 
         now_click.button("Proceed")
         now_click.button("CommenceBattle")
+        now_click.button("Commence")
 
         if now.button("check"):
             # Pick the selectable character with the best odds, then commence.

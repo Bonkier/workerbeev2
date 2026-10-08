@@ -180,20 +180,17 @@ def gift_search(targets):
                 continue
             current_kw = kw
             time.sleep(0.7)
-        _gift_scroll(12)        # reset to top so every search is top-down
-        if _find_and_click_gift(info["path"]):
+        # Straight to the gift when it is already on screen; the scroll
+        # reset and the top-down scan only when it is not.
+        if (_find_and_click_gift(info["path"], max_scrolls=0)
+                or (_gift_scroll(12) or _find_and_click_gift(info["path"]))):
             selected += 1
             logging.info("gift search: selected '%s' (%s).", name, kw)
-            time.sleep(0.4)
         else:
             logging.warning("gift search: '%s' not found in the '%s' grid.", name, kw)
     if selected:
-        time.sleep(0.3)
         tap_center("searchselect", tsize=(46, 18), wait=3)
-        time.sleep(0.4)
-        for _ in range(2):
-            gui.press("enter")
-            time.sleep(0.6)
+        _leave_gift_menu()
     else:
         # Nothing selected: back out of the overlay so the run isn't stuck on it.
         logging.warning("gift search: nothing selected; backing out of the overlay.")
@@ -203,44 +200,108 @@ def gift_search(targets):
     return selected
 
 
-def _select_archetype_gifts():
-    """Default starter-gift selection on the archetype screen."""
-    ClickAction(p.GIFTS[0]["checks"][2], ver="gifts!").execute(try_click)
-    if p.BUFF[3] or p.GIFTS[0]['checks'][5] == 0:
-        ClickAction((1239, 395), ver="selected!").execute(try_click)
-    if p.BUFF[3] or p.GIFTS[0]['checks'][5] == 1:
-        ClickAction((1239, 549), ver="selected!").execute(try_click)
+_ARCHETYPE_ROWS_Y = (395, 549, 703)
+
+
+def _select_archetype_gifts(team=None, row=None):
+    """Starter-gift selection on the archetype screen. `team` is the team
+    table entry whose keyword is clicked (the run's own by default); `row`,
+    an index or a callable run once that keyword's gifts show, overrides the
+    team's usual row. Star Shower adds a second gift, Perfected Possibility
+    a third."""
+    team = team or p.GIFTS[0]
+    ClickAction(team["checks"][2], ver="gifts!").execute(try_click)
+    if callable(row):
+        row = row()
+    if row is None:
+        row = team["checks"][5]
+    rows = [row]
+    if p.BUFF[3]:
+        rows += [i for i in (0, 1) if i not in rows][:1]
     if p.BUFF[9]:
-        ClickAction((1239, 703), ver="selected!").execute(try_click)
+        rows += [i for i in (2, 0, 1) if i not in rows][:1]
+    for i in sorted(set(rows)):
+        ClickAction((1239, _ARCHETYPE_ROWS_Y[i]), ver="selected!").execute(try_click)
     ClickAction((1624, 882)).execute(try_click)
 
 
 _SPIDERWEB_GIFT = "Spiderweb Entangled in Red"
+_FULL_SCREEN = (0, 0, 1920, 1080)
+
+
+def _leave_gift_menu(timer=8.0) -> bool:
+    """After Select in the gift menu: confirm each dialog as it shows (the
+    Starlight question by its own button, the GET dialogs with Enter) and
+    return as soon as the dungeon is loading or the pack screen is up
+    (False after `timer` seconds of neither)."""
+    start = time.time()
+    pressed = 0.0
+    while time.time() - start < timer:
+        if now.button("loading") or now.button("PackChoice"):
+            return True
+        if time.time() - pressed >= 0.3:
+            if now_click.button("starlightConfirm"):
+                pressed = time.time()
+            elif now.button("Confirm") or now.button("packconfirm", _FULL_SCREEN):
+                gui.press("enter")
+                pressed = time.time()
+        time.sleep(0.05)
+    return False
+
+
+def _starter_get_dialog(timer=3.0) -> bool:
+    """True while a starter-gift GET dialog is up; False once the EGO Gift
+    Search menu has shown on three polls in a row with no dialog over it,
+    or after `timer` seconds of neither."""
+    start = time.time()
+    menu = 0
+    while True:
+        if now.button("packconfirm", _FULL_SCREEN):
+            return True
+        menu = menu + 1 if "giftsearch" in PTH and now.button("giftsearch", _FULL_SCREEN) else 0
+        if menu >= 3 or time.time() - start >= timer:
+            return False
+        time.sleep(0.1)
 
 
 def select_starting_gift():
     """Run-start gift selection: archetype picks, then (if any are chosen) the
     EGO Gift Search for the user's gifts. SAIKAI always searches Spiderweb,
-    first and mandatory; Thrill and standard runs search the user's picks."""
-    _select_archetype_gifts()
+    first and mandatory; Thrill and standard runs search the user's picks.
+    HOLLOW takes Cigarette Holder from the Poise starter list and searches
+    Grand Welcome and Sharp Needle & Thread, leaving one slot to the user."""
+    if p.RUN_SCRIPT == "hollow":
+        from .hollow import starting_gift_row, starting_team
+        _select_archetype_gifts(starting_team(), starting_gift_row)
+    else:
+        _select_archetype_gifts()
 
     targets = [str(n) for n in (getattr(p, "GIFT_SEARCH", None) or [])]
     if p.RUN_SCRIPT == "saikai_ryoshu":
         targets = [_SPIDERWEB_GIFT] + [t for t in targets if t != _SPIDERWEB_GIFT]
+    elif p.RUN_SCRIPT == "hollow":
+        from .hollow import SEARCH_GIFTS, STARTING_GIFT
+        targets = list(SEARCH_GIFTS) + [
+            t for t in targets if t not in SEARCH_GIFTS and t != STARTING_GIFT]
     targets = targets[:3]
     if not targets:
         return
 
     # Confirm each starter-gift "E.G.O Gift GET!" dialog (Enter), one per gift
-    # selected; the EGO Gift Search menu opens once they're cleared.
+    # selected; the EGO Gift Search menu opens once they're cleared, and the
+    # moment it shows there is nothing left to confirm.
     for _ in range(4):
         if "packconfirm" in PTH:
-            if not loc.button("packconfirm", (0, 0, 1920, 1080), wait=3):
+            if not _starter_get_dialog():
                 break
+            gui.press("enter")
+            wait_while_condition(lambda: now.button("packconfirm", _FULL_SCREEN),
+                                 interval=0.1, timer=1.5)
+            time.sleep(0.2)
         else:
             time.sleep(1.2)
-        gui.press("enter")
-        time.sleep(1.0)
+            gui.press("enter")
+            time.sleep(1.0)
     gift_search(targets)
 
 
@@ -275,12 +336,16 @@ def dungeon_start() -> bool:
 
         lambda: time.sleep(0.2),
         lambda: (ensure_gift_search_on()
-                 if (p.RUN_SCRIPT == "saikai_ryoshu" or getattr(p, "GIFT_SEARCH", None))
+                 if (p.RUN_SCRIPT in ("saikai_ryoshu", "hollow")
+                     or getattr(p, "GIFT_SEARCH", None))
                  else now_click.button("giftSearch")),
         select_starting_gift,
 
-        lambda: wait_while_condition(lambda: not now.button("loading"), lambda: gui.press("space") if now.button("Confirm") else None, timer=5),
-        loading_halt
+        # Any confirm left over is cleared as it shows; the moment the
+        # dungeon is loading or the pack screen is up, the main loop takes
+        # over (no blind wait for a loading screen that may have passed).
+        lambda: _leave_gift_menu(timer=5),
+        lambda: wait_while_condition(lambda: now.button("loading"), interval=0.1),
     ]
     
     failed = 0
@@ -341,10 +406,10 @@ def click_bonus():
 def bonus_gone():
     if p.HARD:
         if not loc_rgb.button("bonus", "hardbonus", wait=1):
-            return now_rgb.button("bonus_off", "hardbonus", conf=0.8)
+            return now_rgb.button("bonus_off", "hardbonus", conf=0.7)
         else: return False
     elif not loc_rgb.button("bonus", wait=1):
-        return now_rgb.button("bonus_off", conf=0.8)
+        return now_rgb.button("bonus_off", conf=0.7)
     else: return False
 
 def handle_bonus():
@@ -544,6 +609,37 @@ def _thrill_f1_forfeit_no_claim():
     logging.info("THRILL: F1 forfeit complete - restart ready.")
 
 
+def _forfeit_stuck_run():
+    """Give up a run whose battle cannot be won. fight() backs out after three
+    lost attempts, but that only returns to the map, where the same node is
+    the only way on, so the bot walked back into an unwinnable boss for hours.
+    Forfeiting lands on the defeat screen, which main_loop already handles
+    (claim or discard per the Behaviour toggles, then a fresh run)."""
+    logging.warning("Battle lost 3 times in a row - forfeiting the run "
+                    "instead of walking back into it.")
+    if now.button("defeat"):
+        return
+    time.sleep(0.6)
+    # ESC closes an open node panel before it opens the pause menu, so
+    # reaching the forfeit button can take a second press.
+    for _ in range(3):
+        gui.press("esc")
+        time.sleep(0.9)
+        if now.button("forfeit"):
+            break
+    try:
+        chain_actions(try_click, [
+            Action("forfeit"),
+            Action("ConfirmInvert", ver="connecting"),
+        ])
+        connection()
+    except gui.PauseException:
+        raise
+    except Exception as exc:
+        logging.warning("Stuck-run forfeit: confirm sequence failed: %s", exc)
+    time.sleep(1.2)
+
+
 def dungeon_fail():
     failed = 0
     # THRILL uses the GiveUp-less FAIL so partial rewards are claimed; same for
@@ -593,6 +689,7 @@ def main_loop():
     dungeon_start()
     error = 0
     last_error = 0
+    stuck_dumped = False
     ck = False
     p.MOVE_ANIMATION = False
     p.LVL = 1
@@ -604,6 +701,13 @@ def main_loop():
             logging.info('Run Restarted (Thrill F1 forfeit, no claim)')
             _thrill_f1_forfeit_no_claim()
             return None
+
+        if getattr(p, "STUCK_FORFEIT", False):
+            p.STUCK_FORFEIT = False
+            _forfeit_stuck_run()
+            continue
+
+        wait_while_condition(lambda: now.button("connecting"), timer=60)
 
         if now.button("ServerError"):
             for _ in range(3):
@@ -721,15 +825,27 @@ def main_loop():
                             "no phase handled the screen. Visible markers: "
                             "%s. Running handle_fuckup.",
                             p.LVL, error, seen or "none")
+                        if not stuck_dumped:
+                            # The screen as it was BEFORE recovery touches it.
+                            stuck_dumped = True
+                            dump_template_diag(
+                                "stuck", "PackChoice", "packconfirm", "forfeit")
                         handle_fuckup()
                         error += 1
+                        # Restart the clock: without this the window stays
+                        # expired and every 0.2s pass fires another attempt,
+                        # spending all 20 retries in under a minute.
+                        last_error = time.time()
                 else:
                     last_error = time.time()
         else:
             last_error = 0
+            stuck_dumped = False
 
         if error > 20:
             logging.error('We are stuck')
+            dump_template_diag(
+                "stuck_final", "PackChoice", "packconfirm", "forfeit")
             if p.ALTF4: close_limbus()
             if p.APP: QMetaObject.invokeMethod(p.APP, "stop_execution", Qt.ConnectionType.QueuedConnection)
             raise StopExecution
@@ -802,11 +918,14 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
     # them has to go.
     p.SAIKAI_DEPLOYED = min(len((teams.get(0) or {}).get("sinners") or []) or 7, 12)
     p.SAIKAI_STOP_FLOOR = int(settings.get('saikai_stop_floor', 0) or 0)
+    p.HOLLOW_HEAL = str(settings.get('hollow_heal', '') or '')
+    p.HOLLOW_FALLBACK = [str(n) for n in (settings.get('hollow_fallback') or [])]
     p.SAIKAI_LEAVE_CLAIM = False
     p.THRILL_EXCLUDE = list(settings.get('thrill_exclude', []) or [])
     p.SWAP_MAX_ENERGY = bool(settings.get('swap_max_energy', False))
     p.THRILL_DONE = False
     p.THRILL_F1_RESTART = False
+    p.STUCK_FORFEIT = False
 
     p.BONUS = settings['bonus']
     p.RESTART = settings['restart']
@@ -825,6 +944,17 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
     p.SKIP_EGO_ENHANCING  = bool(settings.get('skip_ego_enhancing', False))
     p.SKIP_EGO_BUYING     = bool(settings.get('skip_ego_buying', False))
     p.SKIP_EGO_BATTLE     = bool(settings.get('skip_ego_battle', False))
+    # Confidence tracing. Also flip the pure detection layer's own flag (it
+    # takes no config imports by design) so both matcher paths trace.
+    p.DEBUG_MATCH_CONF    = bool(settings.get('debug_matches', False))
+    try:
+        from .detection import matcher as _matcher
+        _matcher.DEBUG_CONF = p.DEBUG_MATCH_CONF
+    except Exception:
+        pass
+    if p.DEBUG_MATCH_CONF:
+        logging.info("Debug image matches ON - every template match logs its "
+                     "confidence vs threshold (misses included).")
     p.SKIP_SINNER_HEALING = bool(settings.get('skip_sinner_healing', False))
     p.CLAIM_ON_DEFEAT     = bool(settings.get('claim_on_defeat', False))
     # Market workflow: OFF buys only tagged gifts and uses the custom reroll.
@@ -901,6 +1031,12 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
                      "(custom market flow, EGO fuel buying on, %s rerolls).",
                      "until-cost" if p.MARKET_REFRESH_UNTIL_COST
                      else p.MARKET_REFRESH_COUNT)
+    if p.RUN_SCRIPT == "hollow":
+        # The floor plan runs the shop; the default flow would feed the
+        # plan's gifts to its own fuse loop, and without the owned-shelf
+        # scan nothing could be crafted.
+        p.DEFAULT_MARKET_WORKFLOW = False
+        p.SKIP_EGO_CHECK = False
     p.APP = app
     p.WARNING = warning
 
@@ -909,6 +1045,9 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
     tele.reset()
     tele.phase("Starting")
     try:
+        # A new run measures the window afresh, so a size that is still
+        # wrong is reported again instead of only once per session.
+        gui._advised_window_size = None
         gui.set_window()
         lux_keys = [key for key in teams.keys() if key >= 7]
         team_keys = [key for key in teams.keys() if key < 7]
@@ -957,6 +1096,9 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
                     p.CUSTOM_FUSE_DONE = set()
                     try:
                         set_team(team, teams, keywordless)
+                        if p.RUN_SCRIPT == "hollow":
+                            from .hollow import begin_run
+                            begin_run()
                         # THRILL: scope the team's auto-buy list to ONLY
                         # thrill so the F1 shop does not snag the rest of
                         # the Rupture pool (bundle/lamp/breast/etc.) via
@@ -1024,6 +1166,7 @@ def convert_enkephalin_only(app=None, warning=None):
     tele.reset()
     tele.phase("Converting")
     try:
+        gui._advised_window_size = None
         gui.set_window()
         check_enkephalin()
     except (StopExecution, gui.PauseException):

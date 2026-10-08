@@ -1,20 +1,23 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Initializing-screen splash, crossfaded out when init finishes."""
 
+import math
 import os
 import random
 
 from PySide6.QtCore import (
     Property, QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal,
 )
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QStackedWidget,
     QVBoxLayout, QWidget,
 )
 
+from . import seasonal
 from .spinner import Spinner
 from .theme import Sizing
+from .voxel import PixelWordmark, VoxelLogo
 
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -61,6 +64,8 @@ def _read_version() -> str:
 
 
 def _load_app_icon(size: int = 72) -> QPixmap | None:
+    """The .ico mark. The splash and the voxel sidebar both use the animated
+    bee instead, but the legacy sidebar still brands with this."""
     icon_path = os.path.join(_BASE_DIR, "app_icon.ico")
     if not os.path.exists(icon_path):
         return None
@@ -81,23 +86,16 @@ class _LoadingPane(QWidget):
         # Full-width banner, not a square card.
         row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        icon_pix = _load_app_icon(72)
-        if icon_pix is not None:
-            icon_lbl = QLabel(self)
-            icon_lbl.setPixmap(icon_pix)
-            icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            icon_lbl.setFixedSize(72, 72)
-            row.addWidget(icon_lbl, alignment=Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(VoxelLogo(72, self),
+                      alignment=Qt.AlignmentFlag.AlignVCenter)
 
         # Title + subtitle + progress + status, filling remaining width.
         text_col = QVBoxLayout()
         text_col.setSpacing(Sizing.SPACE_SM)
         text_col.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        title = QLabel("WorkerBee")
-        title.setObjectName("splashTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        text_col.addWidget(title)
+        text_col.addWidget(PixelWordmark(4, self),
+                           alignment=Qt.AlignmentFlag.AlignLeft)
 
         self.subtitle = QLabel("")
         self.subtitle.setObjectName("splashSubtitle")
@@ -105,14 +103,18 @@ class _LoadingPane(QWidget):
         text_col.addWidget(self.subtitle)
 
         # Tip rotation, paused when explicit subtitle text is pinned.
-        self._tips = list(_LOADING_TIPS)
+        self._tips = list(seasonal.SPOOKY_TIPS if seasonal.is_halloween()
+                          else _LOADING_TIPS)
         random.shuffle(self._tips)
         self._tip_index = 0
         self._tips_pinned = False
         self._current_subtitle_raw = self._tips[0]
         self._apply_subtitle(self._tips[0])
         # Re-apply post-layout so elision uses the real label width (currently 0).
-        QTimer.singleShot(0, lambda: self._apply_subtitle(self._current_subtitle_raw))
+        # `self` as context: Qt drops the call if this pane is destroyed
+        # first. Without it the callback ran on a deleted label.
+        QTimer.singleShot(
+            0, self, lambda: self._apply_subtitle(self._current_subtitle_raw))
 
         self._tip_timer = QTimer(self)
         self._tip_timer.setInterval(2500)
@@ -139,10 +141,41 @@ class _LoadingPane(QWidget):
         self.status = QLabel("Starting...")
         self.status.setObjectName("splashStatus")
         self.status.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._status_raw = "Starting..."
         status_row.addWidget(self.status, stretch=1)
         text_col.addLayout(status_row)
 
         row.addLayout(text_col, stretch=1)
+
+    def apply_status(self, text: str | None = None):
+        """Set the status line, eliding only against the width the label
+        really has. Callers reach this well before the first layout, when
+        every widget is still at its default width, so the raw text is kept
+        and re-elided on every resize instead of being clipped once."""
+        if text is not None:
+            self._status_raw = text
+        raw = self._status_raw
+        avail = self.status.width()
+        fm = self.status.fontMetrics()
+        if avail <= 0 or avail >= fm.horizontalAdvance(raw):
+            self.status.setText(raw)
+        else:
+            # Middle, not right: the tail carries the download counter
+            # ("118 / 240 MB"), which is the half worth keeping.
+            self.status.setText(
+                fm.elidedText(raw, Qt.TextElideMode.ElideMiddle, avail))
+        self.status.setToolTip(raw)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        # Can fire mid-construction, before the labels exist, and re-eliding
+        # changes a size hint - so only act on a real width change.
+        if getattr(self, "_status_raw", None) is None:
+            return
+        if e.oldSize().width() == e.size().width():
+            return
+        self.apply_status()
+        self._apply_subtitle(self._current_subtitle_raw)
 
     def _cycle_tip(self):
         if self._tips_pinned:
@@ -185,13 +218,8 @@ class _UpdatePromptPane(QWidget):
         row.setSpacing(Sizing.SPACE_LG)
         row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        icon_pix = _load_app_icon(72)
-        if icon_pix is not None:
-            icon_lbl = QLabel(self)
-            icon_lbl.setPixmap(icon_pix)
-            icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            icon_lbl.setFixedSize(72, 72)
-            row.addWidget(icon_lbl, alignment=Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(VoxelLogo(72, self),
+                      alignment=Qt.AlignmentFlag.AlignVCenter)
 
         col = QVBoxLayout()
         col.setSpacing(Sizing.SPACE_XS)
@@ -232,6 +260,264 @@ class _UpdatePromptPane(QWidget):
         row.addLayout(col, stretch=1)
 
 
+def _c(hex_str: str, alpha: int = 255) -> QColor:
+    col = QColor(hex_str)
+    col.setAlpha(max(0, min(255, alpha)))
+    return col
+
+
+class _BeeScenery(QWidget):
+    """Pixel scenery band that scrolls right to left behind the splash.
+
+    Everything is drawn from integers on a fixed pixel grid rather than from
+    an image, so it scales with the splash without resampling and stays crisp.
+    Three parallax layers plus drifting bees; the whole band fades out into the
+    card's gradient at its bottom edge so there is no hard seam.
+    """
+
+    _UNIT = 3            # size of one drawn "pixel"
+    _TICK = 66           # ms per frame (~15fps; it is meant to be slow)
+    _SPAN = 240          # world width of one repeat, in units
+
+    # (period in units, height in units, colour, speed multiplier)
+    _HILLS = ((60, 8, "#2b2340", 0.35), (37, 5, "#3a2d55", 0.6))
+    _SPOOKY_HILLS = ((60, 8, "#24142b", 0.35), (37, 5, "#32193a", 0.6))
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._t = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(self._TICK)
+        self._timer.timeout.connect(self._advance)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._timer.stop()
+
+    def _advance(self):
+        self._t += 1.0
+        self.update()
+
+    def _hive(self, p, x, y, u):
+        """A skep hive: stacked bands, widest in the middle."""
+        body = _c("#7a5a1f")
+        dark = _c("#5d4416")
+        for i, w in enumerate((3, 5, 6, 6, 5)):
+            p.fillRect(int(x - w * u // 2), int(y + i * u),
+                       int(w * u), u, body if i % 2 == 0 else dark)
+        p.fillRect(int(x - u // 2), int(y + 5 * u), u, u, dark)
+
+    def _flower(self, p, x, y, u, petal, bloom=1.0):
+        """`bloom` 0..1 opens the head: bud, then side petals, then the top
+        pair, so a row of them ripples open instead of appearing at once."""
+        stem = _c("#3f6b32")
+        p.fillRect(int(x), int(y), u, 4 * u, stem)
+        p.fillRect(int(x - u), int(y + 2 * u), u, u, stem)   # leaf
+        head_y = int(y - 2 * u)
+        if bloom < 0.25:                      # closed bud
+            p.fillRect(int(x), head_y + u, u, u, petal)
+            return
+        p.fillRect(int(x), head_y, u, u, _c("#f4c430"))      # centre
+        p.fillRect(int(x - u), head_y, u, u, petal)
+        p.fillRect(int(x + u), head_y, u, u, petal)
+        if bloom > 0.55:
+            p.fillRect(int(x), head_y - u, u, u, petal)
+            p.fillRect(int(x), head_y + u, u, u, petal)
+        if bloom > 0.8:
+            p.fillRect(int(x - u), head_y - u, u, u, petal)
+            p.fillRect(int(x + u), head_y - u, u, u, petal)
+
+    def _grass(self, p, x, base, u, seed):
+        """A tuft that leans with a slow breeze; the lean is a function of
+        position so neighbouring tufts move together like a wave."""
+        blade = _c("#4a3a52" if seasonal.is_halloween() else "#2f5626")
+        sway = math.sin(self._t * 0.05 + seed * 0.7)
+        for i, h in enumerate((2, 3, 2)):
+            bx = x + (i - 1) * u
+            for row in range(h):
+                lean = int(round(sway * (row / max(1, h - 1)) * u))
+                p.fillRect(int(bx + lean), int(base - (row + 1) * u),
+                           u, u, blade)
+
+    def _bee(self, p, x, y, u):
+        gold, dark = _c("#f4c430"), _c("#1b1608")
+        p.fillRect(int(x), int(y), 2 * u, 2 * u, gold)
+        p.fillRect(int(x + 2 * u), int(y), u, 2 * u, dark)
+        p.fillRect(int(x + 3 * u), int(y), u, 2 * u, gold)
+        p.fillRect(int(x - u), int(y), u, u, dark)          # head
+        wing = _c("#cfe6ff", 150 if int(self._t) % 2 else 90)
+        p.fillRect(int(x + u), int(y - u), 2 * u, u, wing)
+
+    # --- the October set: a graveyard under a low moon -----------------
+    def _moon(self, p, cx, cy, u):
+        """A blood-orange moon built from rows of blocks, with a faint halo."""
+        rows = (3, 5, 7, 7, 7, 5, 3)
+        halo = _c("#ff6a1a", 22)
+        for i, wd in enumerate((5, 7, 9, 9, 9, 9, 9, 7, 5)):
+            p.fillRect(int(cx - wd * u / 2), int(cy + (i - 1) * u),
+                       int(wd * u), u, halo)
+        body, crater = _c("#e89a3a"), _c("#c2772a")
+        for i, wd in enumerate(rows):
+            p.fillRect(int(cx - wd * u / 2), int(cy + i * u),
+                       int(wd * u), u, body)
+        p.fillRect(int(cx - 2 * u), int(cy + 2 * u), u, u, crater)
+        p.fillRect(int(cx + u), int(cy + 4 * u), u, u, crater)
+        p.fillRect(int(cx), int(cy + u), u, u, crater)
+
+    def _tombstone(self, p, x, y, u):
+        """A round-shouldered slab with a cross cut into it."""
+        stone, cut = _c("#8a8499"), _c("#3d384a")
+        for i, wd in enumerate((2, 4, 4, 4, 4)):
+            p.fillRect(int(x - wd * u // 2), int(y + i * u), int(wd * u), u,
+                       stone)
+        p.fillRect(int(x - u // 2), int(y + u), u, 3 * u, cut)
+        p.fillRect(int(x - 3 * u // 2), int(y + 2 * u), 3 * u, u, cut)
+
+    def _pumpkin(self, p, x, y, u, glow):
+        """A jack-o'-lantern; `glow` 0..1 flickers the light in its face."""
+        rind = _c("#d9661a")
+        for i, wd in enumerate((3, 5, 5, 3)):
+            p.fillRect(int(x - wd * u // 2), int(y + i * u), int(wd * u), u,
+                       rind)
+        p.fillRect(int(x - u // 2), int(y - u), u, u, _c("#3f5a2a"))    # stem
+        lit = _c("#ffd23f", int(140 + 115 * glow))
+        p.fillRect(int(x - 3 * u // 2), int(y + u), u, u, lit)          # eyes
+        p.fillRect(int(x + u // 2), int(y + u), u, u, lit)
+        p.fillRect(int(x - u), int(y + 2 * u), 2 * u, u, lit)           # mouth
+
+    def _dead_tree(self, p, x, base, u):
+        """A bare trunk with a few crooked branches."""
+        bark = _c("#57465f")
+        p.fillRect(int(x), int(base - 8 * u), u, 8 * u, bark)
+        p.fillRect(int(x - 2 * u), int(base - 6 * u), 2 * u, u, bark)
+        p.fillRect(int(x - 2 * u), int(base - 8 * u), u, 2 * u, bark)
+        p.fillRect(int(x + u), int(base - 5 * u), 2 * u, u, bark)
+        p.fillRect(int(x + 2 * u), int(base - 7 * u), u, 2 * u, bark)
+        p.fillRect(int(x + u), int(base - 9 * u), u, u, bark)
+
+    _BAT_UP = ("#......#", "##.##.##", ".######.", "...##...")
+    _BAT_DOWN = ("...##...", ".######.", "##.##.##", "#......#")
+
+    def _bat(self, p, x, y, u):
+        """A bat in two frames, wings up then down, with a pair of red eyes."""
+        body = _c("#6b5580")
+        up = int(self._t / 3) % 2 == 0
+        rows = self._BAT_UP if up else self._BAT_DOWN
+        for ry, row in enumerate(rows):
+            for rx, cell in enumerate(row):
+                if cell == "#":
+                    p.fillRect(int(x + rx * u), int(y + ry * u), u, u, body)
+        eye_y = y + (2 if up else 1) * u
+        half = max(1, u // 2)
+        p.fillRect(int(x + 3 * u), int(eye_y), half, half, _c("#ff3b3b"))
+        p.fillRect(int(x + 4 * u + half), int(eye_y), half, half,
+                   _c("#ff3b3b"))
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        spooky = seasonal.is_halloween()
+        u = self._UNIT
+        w, h = self.width(), self.height()
+        # Ground sits well above the band's bottom edge: the fade below it is
+        # what blends the scene into the card, so anything drawn at the very
+        # bottom would be painted straight over.
+        base = int(h * 0.62)
+
+        if spooky:
+            self._moon(p, w * 0.80, base * 0.10, u)
+        for period, height, colour, speed in (
+                self._SPOOKY_HILLS if spooky else self._HILLS):
+            off = (self._t * speed) % (period * u)
+            col = _c(colour)
+            x = -off
+            while x < w + period * u:
+                for step in range(period):
+                    # A rounded mound: tallest in the middle of the period.
+                    frac = 1.0 - abs((step / period) * 2.0 - 1.0)
+                    bar = int(height * u * frac)
+                    if bar > 0:
+                        p.fillRect(int(x + step * u), base - bar, u, bar, col)
+                x += period * u
+
+        # Ground line, then grass across it.
+        p.fillRect(0, base, w, u, _c("#2a1c30" if spooky else "#243d1e"))
+        tuft = 0
+        gx = -((self._t * 1.0) % (6 * u))
+        while gx < w:
+            self._grass(p, gx, base, u, tuft)
+            gx += 6 * u
+            tuft += 1
+
+        # Foreground: hives and flowers, each blooming on its own phase.
+        off = (self._t * 1.0) % (self._SPAN * u)
+        x = -off
+        while spooky and x < w + self._SPAN * u:
+            # Graves, lanterns and bare trees where the hives and
+            # flowers stand the rest of the year.
+            self._tombstone(p, x + 30 * u, base - 5 * u, u)
+            for at, phase in ((78, 0.0), (196, 3.4)):
+                flick = (math.sin(self._t * 0.23 + phase) + 1.0) / 2.0
+                self._pumpkin(p, x + at * u, base - 4 * u, u, flick)
+            for at in (104, 222):
+                self._dead_tree(p, x + at * u, base, u)
+            self._tombstone(p, x + 150 * u, base - 5 * u, u)
+            x += self._SPAN * u
+        while x < w + self._SPAN * u:
+            self._hive(p, x + 30 * u, base - 5 * u, u)
+            for at, colour, phase in ((78, "#e0609a", 0.0),
+                                      (96, "#9a6fe0", 1.9),
+                                      (196, "#e0609a", 3.4),
+                                      (214, "#7fd4a0", 5.0)):
+                bloom = (math.sin(self._t * 0.035 + phase) + 1.0) / 2.0
+                self._flower(p, x + at * u, base - 3 * u, u,
+                             _c(colour), bloom)
+            self._hive(p, x + 150 * u, base - 5 * u, u)
+            x += self._SPAN * u
+
+        # Bees drifting across, each on its own sine.
+        for i in range(3):
+            speed = 1.6 + i * 0.5
+            bx = w - ((self._t * speed) + i * 210) % (w + 120)
+            by = (base * 0.35) + math.sin((self._t * 0.08) + i * 1.7) * 4 * u
+            if spooky:
+                self._bat(p, bx, by, u)
+            else:
+                self._bee(p, bx, by, u)
+
+        # Fade the band into whatever is below it, starting at the ground.
+        top = int(h * 0.60)
+        grad = QLinearGradient(0, top, 0, h)
+        grad.setColorAt(0.0, QColor(0, 0, 0, 0))
+        grad.setColorAt(0.65, QColor(0, 0, 0, 205))
+        grad.setColorAt(1.0, QColor(0, 0, 0, 255))
+        p.fillRect(0, top, w, h - top, grad)
+        p.end()
+
+
+class _SplashCard(QFrame):
+    """Splash surface: a dusk gradient that fades to black at the bottom,
+    with the scenery band riding along its top edge."""
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        grad = QLinearGradient(0, 0, 0, self.height())
+        if seasonal.is_halloween():
+            grad.setColorAt(0.0, QColor("#1c0a14"))
+            grad.setColorAt(0.45, QColor("#0d0509"))
+        else:
+            grad.setColorAt(0.0, QColor("#1b1533"))
+            grad.setColorAt(0.45, QColor("#120e20"))
+        grad.setColorAt(1.0, QColor("#000000"))
+        p.fillRect(self.rect(), grad)
+        p.end()
+        super().paintEvent(event)
+
 class SplashWidget(QWidget):
     """Splash container hosting one of two panes (loading / prompt)."""
 
@@ -255,7 +541,7 @@ class SplashWidget(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._card = QFrame(self)
+        self._card = _SplashCard(self)
         self._card.setObjectName("splashCard")
         # Opaque bg: transparent tip / status labels would ghost otherwise.
         # WA_StyledBackground lets the card's QSS gradient repaint behind them.
@@ -267,6 +553,10 @@ class SplashWidget(QWidget):
             Sizing.SPACE_LG, Sizing.SPACE_LG, Sizing.SPACE_LG, Sizing.SPACE_SM
         )
         card_lay.setSpacing(0)
+
+        # Scenery sits behind the panes, pinned to the card's top band.
+        self._scenery = _BeeScenery(self._card)
+        self._scenery.lower()
 
         self._stack = QStackedWidget(self._card)
         self._loading = _LoadingPane(self._stack)
@@ -290,6 +580,10 @@ class SplashWidget(QWidget):
         self._close_btn.raise_()
         self._reposition_close_btn()
 
+    def _resize_scenery(self):
+        band = max(48, int(self._card.height() * 0.55))
+        self._scenery.setGeometry(0, 0, self._card.width(), band)
+
     def _reposition_close_btn(self):
         margin = Sizing.SPACE_MD
         self._close_btn.move(
@@ -301,6 +595,8 @@ class SplashWidget(QWidget):
         super().resizeEvent(event)
         if hasattr(self, "_close_btn"):
             self._reposition_close_btn()
+        if hasattr(self, "_scenery"):
+            self._resize_scenery()
 
     # Animated progress drives the loading bar.
     def _get_progress(self) -> float:
@@ -316,15 +612,7 @@ class SplashWidget(QWidget):
     def set_status(self, text: str, percent: int | None = None):
         if self._stack.currentWidget() is not self._loading:
             self._stack.setCurrentWidget(self._loading)
-        # Explicit elide so the trailing counter (e.g. "X / Y MB") survives.
-        lbl = self._loading.status
-        avail = lbl.width()
-        if avail <= 0:
-            avail = 260              # pre-layout fallback
-        fm = lbl.fontMetrics()
-        lbl.setText(fm.elidedText(text, Qt.TextElideMode.ElideRight, avail))
-        # Tooltip keeps the raw text for narrow splash sizes.
-        lbl.setToolTip(text)
+        self._loading.apply_status(text)
         self.status_changed.emit(text)
         if percent is not None:
             self.animate_to(percent)

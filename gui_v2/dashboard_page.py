@@ -44,6 +44,10 @@ class DashboardPage(QWidget):
 
         outer.addWidget(self._build_hero())
         outer.addWidget(self._build_stats_section())
+        # Panels keep their natural height and the leftover goes to a trailing
+        # spacer. Stretching the activity panel to fill just moved the void
+        # inside it, where the panel border made it look broken; the page
+        # backdrop's grid is what makes the empty area read as intentional.
         outer.addWidget(self._build_activity_section())
         outer.addStretch(1)
 
@@ -64,7 +68,9 @@ class DashboardPage(QWidget):
 
         cta_row = QHBoxLayout()
         cta_row.setSpacing(Sizing.SPACE_MD)
-        start_btn = PrimaryButton("Start Mirror Dungeon", card)
+        from . import seasonal
+        start_btn = PrimaryButton(
+            seasonal.title("Start Mirror Dungeon"), card)
         start_btn.clicked.connect(self.start_requested.emit)
         cta_row.addWidget(start_btn)
 
@@ -130,6 +136,7 @@ class DashboardPage(QWidget):
             item = self._activity_body.takeAt(0)
             w = item.widget()
             if w is not None:
+                w.setParent(None)
                 w.deleteLater()
 
         runs = list(reversed(stats.load_runs()))[:_MAX_ACTIVITY_ROWS]

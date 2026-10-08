@@ -8,6 +8,7 @@ from saved fixtures and never racy.
 """
 from __future__ import annotations
 
+import logging
 from typing import Iterable
 
 import cv2
@@ -15,6 +16,12 @@ import numpy as np
 
 from .transforms import apply_color_mode
 from .types import ColorMode, Match, MatchMethod
+
+# Opt-in confidence tracing ("Debug image matches" in Settings). A plain
+# module flag, set by the runtime, so this layer keeps its no-config purity.
+# When on, EVERY match logs its score against the threshold - misses included,
+# which is what a detection bug actually needs (best=0.71 need=0.83).
+DEBUG_CONF = False
 
 
 def _resolve_method(method: MatchMethod) -> int:
@@ -93,6 +100,10 @@ def match_one(
         raw, loc = max_val, max_loc
 
     score = _normalize_score(raw, method)
+    if DEBUG_CONF:
+        logging.info("match %-30s conf=%.3f need=%.2f -> %s",
+                     template_name or "?", score, conf,
+                     "HIT" if score >= conf else "miss")
     if score < conf:
         return None
 
@@ -151,4 +162,13 @@ def match_all(
                 template_name=template_name,
             )
         )
+    if DEBUG_CONF:
+        best = max((m.confidence for m in kept), default=None)
+        if best is None:
+            # Nothing passed: report how close the frame's best cell got.
+            _mn, _mx, _ml, _mloc = cv2.minMaxLoc(result)
+            best = _normalize_score(
+                _mn if method is MatchMethod.SQDIFF_NORMED else _mx, method)
+        logging.info("match_all %-26s hits=%d best=%.3f need=%.2f",
+                     template_name or "?", len(kept), best, conf)
     return kept

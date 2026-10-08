@@ -112,6 +112,85 @@ _THRILL_AVOID = (
 )
 
 
+# --- HOLLOW scripted preset ---------------------------------------------
+# Faust alone with the Hollow E.G.O. The fights, the shop and the squad
+# are scripted in wbcore/hollow.py, gated by settings["run_script"].
+HOLLOW_LABEL = "Hollow"
+HOLLOW_SCRIPT = "hollow"
+# Graces: Star of the Beginning (0), Interstellar Travel (2).
+_HOLLOW_BUFF = [1, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+_HOLLOW_AFFINITY = "Poise"
+_HOLLOW_FAUST = 1
+# One pack per floor, pinned to it, and hunted through Pack Search; the
+# sheet's alternative for floor 3 is taken when the first is not offered.
+_HOLLOW_FLOOR_PACKS = {
+    1: ("FlatbrokeGamblers", "Flat-broke gamblers"),
+    2: ("HellsChicken", "Hell's Chicken"),
+    3: ("EmotionalSeduction", "Emotional Seduction"),
+    4: ("HatredandDespair", "Hatred and Despair"),
+    5: ("Line2", "Line 2"),
+}
+_HOLLOW_ALT_PACKS = {"EmotionalCraving": 3}
+HOLLOW_PACK_NAMES = tuple(name for _key, name in _HOLLOW_FLOOR_PACKS.values())
+# Gift Search picks the sheet calls important; the third slot is the user's.
+HOLLOW_SEARCH_GIFTS = ("Grand Welcome", "Sharp Needle & Thread")
+_HOLLOW_PINS = {key: floor for floor, (key, _name) in _HOLLOW_FLOOR_PACKS.items()}
+_HOLLOW_PINS.update(_HOLLOW_ALT_PACKS)
+_HOLLOW_PRIORITY = (
+    sorted(_HOLLOW_PINS, key=lambda key: (_HOLLOW_PINS[key],
+                                          key in _HOLLOW_ALT_PACKS)),
+    _HOLLOW_PINS,
+)
+_HOLLOW_AVOID = ([], dict(_HOLLOW_PRIORITY[1]), {})
+_ROSTER_KEYS = ("YISANG", "FAUST", "DONQUIXOTE", "RYOSHU", "MEURSAULT",
+                "HONGLU", "HEATHCLIFF", "ISHMAEL", "RODION", "SINCLAIR",
+                "OUTIS", "GREGOR")
+
+
+def _build_hollow_run(md_state: dict):
+    """Fixed (count, teams, settings, hard) for the HOLLOW run: Normal to
+    floor 4 then Hard, the floor packs above, Cigarette Holder taken from
+    the Poise starter list, Grand Welcome and Sharp Needle & Thread from the
+    gift search, and the shop run from the floor plan after its heal."""
+    settings = build_settings(md_state)
+    settings["buff"] = list(_HOLLOW_BUFF)   # the sheet's graces, pinned
+    settings["infinity"] = False
+    settings["winrate"] = False             # the battle script decides
+    settings["hard_from_floor"] = 5         # the sheet converts after floor 4
+    settings["pack_search"] = True
+    settings["pack_search_floors"] = {
+        floor: name for floor, (_key, name) in _HOLLOW_FLOOR_PACKS.items()}
+    settings["swap_max_energy"] = False     # the squad is Faust, full stop
+    settings["default_market_workflow"] = False   # the floor plan runs the shop
+    settings["skip_ego_check"] = False      # the plan scans the owned shelf
+    settings["run_script"] = HOLLOW_SCRIPT
+
+    heal = md_state.get("hollow_heal")
+    heal_idx = _SINNER_INDEX.get(heal, 0)
+    if heal_idx == _HOLLOW_FAUST:
+        heal_idx = 0
+    settings["hollow_heal"] = _ROSTER_KEYS[heal_idx]
+    settings["hollow_fallback"] = [
+        _ROSTER_KEYS[_SINNER_INDEX[n]]
+        for n in (md_state.get("hollow_order") or [])
+        if n in _SINNER_INDEX and _SINNER_INDEX[n] != _HOLLOW_FAUST]
+
+    status = md_state.get("hollow_status")
+    if status not in _STATUS_INDEX:
+        status = _HOLLOW_AFFINITY
+    teams = {0: {
+        "affinity": [_STATUS_INDEX[status]],
+        "affinity_idx": 0,
+        "duplicates": False,
+        "sinners": [_HOLLOW_FAUST],
+        "priority": _HOLLOW_PRIORITY,
+        "avoid": _scripted_avoid_with_user(_HOLLOW_AVOID, _HOLLOW_PRIORITY,
+                                           md_state),
+    }}
+    count = int(md_state.get("run_count", 1) or 1)
+    return count, teams, settings, True
+
+
 def _build_saikai_run(md_state: dict):
     """Fixed (count, teams, settings, hard) for the SAIKAI [Ryoshu] run.
 
@@ -264,11 +343,14 @@ def _build_packs(packs: dict, global_packs: dict | None = None):
             if state == "priority":
                 if pack not in pri_packs:
                     pri_packs.append(pack)
-                pri_floor[pack] = floor
+                # Every floor it is set on: a plain pack -> floor map kept
+                # only the last, so a pack avoided on floors 4 and 5 was
+                # still offered (and taken) on floor 4.
+                pri_floor.setdefault(pack, []).append(floor)
             elif state == "avoid":
                 if pack not in avo_packs:
                     avo_packs.append(pack)
-                avo_floor[pack] = floor
+                avo_floor.setdefault(pack, []).append(floor)
 
     # Global picks: no floor entry. A pack already pinned per-floor keeps its pin.
     for pack, state in (global_packs or {}).items():
@@ -301,14 +383,18 @@ def _swap_exclude_for(team_status: str, sinner_excl: dict) -> list:
 
 def _market_gifts_for(md_state: dict) -> dict:
     """The Market/Fuse tag dict for this run: the SAIKAI slot for SAIKAI runs
-    (preset-seeded when never saved), the normal slot otherwise."""
-    if (md_state.get("custom_run")
-            and md_state.get("custom_strategy") == SAIKAI_LABEL):
-        slot = md_state.get("market_gifts_saikai")
-        if slot is None:
-            from wbcore.market_catalog import SAIKAI_MARKET_TAGS
-            return {k: list(v) for k, v in SAIKAI_MARKET_TAGS.items()}
-        return slot
+    (preset-seeded when never saved), Hollow's own slot (empty when never
+    saved) for Hollow runs, the normal slot otherwise."""
+    if md_state.get("custom_run"):
+        if md_state.get("custom_strategy") == SAIKAI_LABEL:
+            slot = md_state.get("market_gifts_saikai")
+            if slot is None:
+                from wbcore.market_catalog import SAIKAI_MARKET_TAGS
+                return {k: list(v) for k, v in SAIKAI_MARKET_TAGS.items()}
+            return slot
+        if md_state.get("custom_strategy") == HOLLOW_LABEL:
+            slot = md_state.get("market_gifts_hollow")
+            return slot if isinstance(slot, dict) else {}
     return md_state.get("market_gifts")
 
 
@@ -414,6 +500,10 @@ def build_md_run(md_state: dict, sinner_sel: dict, sinner_excl: dict = None):
     if (md_state.get("custom_run") and
             md_state.get("custom_strategy") == "Thrill"):
         return _build_thrill_run(md_state)
+
+    if (md_state.get("custom_run") and
+            md_state.get("custom_strategy") == HOLLOW_LABEL):
+        return _build_hollow_run(md_state)
 
     settings = build_settings(md_state)
     hard = md_state.get("difficulty", "Hard") in ("Hard", "Extreme")

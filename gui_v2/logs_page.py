@@ -12,13 +12,15 @@ import re
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PySide6.QtGui import (
+    QColor, QFont, QTextCharFormat, QTextCursor, QTextOption,
+)
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout, QWidget,
 )
 
 from .theme import Colors, Fonts, Sizing
-from .widgets import GhostButton, PageHeader, Segmented
+from .widgets import ElidedLabel, GhostButton, PageHeader, Segmented
 
 
 # Canonical level names; "ALL" shows everything.
@@ -227,14 +229,19 @@ class LogsPage(QWidget):
         self._filter.selection_changed.connect(self._on_level)
         filt.addWidget(self._filter)
         from .copy import LOGS_VERBOSE_HINT
-        self._dev_hint = QLabel(
+        self._dev_hint = ElidedLabel(
             LOGS_VERBOSE_HINT, self, objectName="inlineHint")
         # Visible at launch since DEBUG is the default level.
         self._dev_hint.setVisible(True)
-        filt.addWidget(self._dev_hint)
-        filt.addStretch(1)
-        self._path_lbl = QLabel("", self, objectName="inlineHint")
-        filt.addWidget(self._path_lbl)
+        # Both labels elide, so they need real stretch: with stretch 0 an
+        # Ignored-policy label collapses to nothing.
+        filt.addWidget(self._dev_hint, 2)
+        self._path_lbl = ElidedLabel(
+            "", self, mode=Qt.TextElideMode.ElideLeft,
+            objectName="inlineHint")
+        self._path_lbl.setAlignment(Qt.AlignmentFlag.AlignRight
+                                    | Qt.AlignmentFlag.AlignVCenter)
+        filt.addWidget(self._path_lbl, 1)
         outer.addLayout(filt)
 
         self._view = QPlainTextEdit(self)
@@ -242,7 +249,11 @@ class LogsPage(QWidget):
         self._view.setReadOnly(True)
         self._view.setFont(QFont(Fonts.FAMILY_MONO.split(",")[0].strip(),
                                  Fonts.SIZE_SM))
-        self._view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        # Wrap: NoWrap put over half of every line off-screen behind a
+        # scrollbar, and the message payload is the point of the page.
+        self._view.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self._view.setWordWrapMode(
+            QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         outer.addWidget(self._view, stretch=1)
 
         self._reload()

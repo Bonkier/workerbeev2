@@ -136,10 +136,15 @@ def next_step(nodes, extra_connections):
                 adj.setdefault((c,d), []).append((a,b))
 
     # THRILL: Focused nodes drag the run - inflate weight to last-resort.
+    # HOLLOW: a focused fight cannot be won with win rate, and risky fights
+    # are more than Faust alone should take on.
     pri = priority
-    if getattr(p, "RUN_SCRIPT", "") == "thrill":
+    script = getattr(p, "RUN_SCRIPT", "")
+    if script in ("thrill", "hollow"):
         pri = dict(priority)
         pri["Focused"] = 9999
+        if script == "hollow":
+            pri["Risky"] = 9999
 
     def dfs(i, j):
         base = pri[nodes[i][j]]
@@ -207,9 +212,17 @@ def move():
     
     print("move check")
     # run fail detection
-    p.DEAD = len([gui.center(box) for box in LocateRGB.locate_all(PTH["0"], region=REG["alldead"], conf=0.9, threshold=40)])
+    dead = LocateRGB.locate_all(PTH["0"], region=REG["alldead"], conf=0.9, threshold=40)
+    p.DEAD = len(dead)
     print(f"{p.DEAD} dead sinners")
-    if p.DEAD >= len(p.SELECTED):
+    # HOLLOW fields Faust alone most of the time: her own death ends the
+    # run, a fallback sinner lost in a miniboss does not.
+    squad = len(p.SELECTED)
+    if getattr(p, "RUN_SCRIPT", "") == "hollow":
+        from .hollow import forfeit_threshold, read_map_sp
+        squad = forfeit_threshold(dead, REG["alldead"])
+        read_map_sp()
+    if p.DEAD >= squad:
         gui.press("esc")
         time.sleep(0.5)
         chain_actions(click, [
@@ -234,6 +247,7 @@ def move():
             gui.press("space")
             if enter():
                 logging.info("Entering unknown node")
+                _hollow_squad("")
                 return True
             return False
     
@@ -245,6 +259,7 @@ def move():
         print("Case 2: No directions are visible")
         if input_with_fallback("space", lambda: win_click(705, 411), enter) or move_fallback():
             logging.info("Entering unknown node")
+            _hollow_squad("")
             return True
         return False
     elif len(regions) == 1:
@@ -257,6 +272,7 @@ def move():
 
         if input_with_fallback(key_name, lambda: win_click(gui.center(region)), enter):
             logging.info(f"Entering {name} {'fight'*(name!='Event' and name!='Shop')}")
+            _hollow_squad(name)
             return True
         return False
     elif all(k in regions for k in (0, 2)):
@@ -314,11 +330,25 @@ def move():
             region = regions[id]
             if input_with_fallback(key_name, lambda: win_click(gui.center(region)), enter):
                 logging.info(f"Entering {name} {'fight'*(name!='Event')}")
+                _hollow_squad(name)
                 return True
     elif move_fallback():
         logging.info("Entering unknown node")
+        _hollow_squad("")
         return True
     return False
+
+
+def _hollow_squad(node):
+    """HOLLOW: who the next fight deploys depends on the node just entered."""
+    if getattr(p, "RUN_SCRIPT", "") != "hollow":
+        return
+    from .hollow import squad_for
+    p.HOLLOW_NODE = node
+    p.SELECTED = squad_for(node)
+    if len(p.SELECTED) > 1:
+        logging.info("HOLLOW: %s node - fielding the fallback squad %s.",
+                     node, p.SELECTED)
 
 
 def move_fallback():

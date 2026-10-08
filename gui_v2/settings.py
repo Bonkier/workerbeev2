@@ -152,7 +152,14 @@ def load_config(name: str) -> bool:
     configs = _load_configs()
     if name not in configs:
         return False
-    replace_all_settings(dict(configs[name]))
+    snap = dict(configs[name])
+    # Discord credentials belong to this machine, not to a config: keep
+    # the ones in use when the snapshot has none (imports never do).
+    if "discord" not in snap:
+        current = load_settings().get("discord")
+        if current:
+            snap["discord"] = current
+    replace_all_settings(snap)
     return True
 
 
@@ -167,6 +174,9 @@ def export_config_to(name: str, path: str) -> bool:
     `name` is not a saved config."""
     configs = _load_configs()
     settings = configs.get(name) if name in configs else load_settings()
+    # Exports get posted in public channels: never include the Discord
+    # section (bot token, even encrypted, and the channel id).
+    settings = {k: v for k, v in (settings or {}).items() if k != "discord"}
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"format": _EXPORT_TAG, "name": name,
@@ -196,6 +206,9 @@ def import_config_from(path: str) -> str | None:
         name = os.path.splitext(os.path.basename(path))[0]
     if not isinstance(settings, dict):
         return None
+    # Someone else's token cannot be decrypted here and must not replace
+    # this machine's when the config is loaded.
+    settings = {k: v for k, v in settings.items() if k != "discord"}
     configs = _load_configs()
     configs[name] = settings
     _save_configs(configs)

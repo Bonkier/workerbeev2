@@ -18,6 +18,11 @@ mounting_trials = [
     "Headstrong"
 ]
 
+# The trials that raise the enemies' Max HP (every tier of each, per the
+# wiki's floor 1 to 5 pools); the rest touch levels, power or damage only.
+HP_TRIALS = ("Keen", "Growth", "Resilient", "BodyUp", "BasePower",
+             "ClashPower", "FinalPower")
+
 
 def far_from_owned(coord, owned_x):
     '''True if `coord` is far from every owned icon x in `owned_x`.'''
@@ -80,6 +85,61 @@ def find_trial(trials_image):
                 print(name)
                 return res
     return []
+
+
+def trial_columns(trials_image):
+    """Every mounting trial label on the row, by template: {x: name}."""
+    found = {}
+    for name in mounting_trials:
+        for c in (1, 1.05):
+            res = LocateRGB.locate_all(PTH[f"trial_{name}"], trials_image,
+                                       method=cv2.TM_SQDIFF_NORMED, comp=c,
+                                       conf=0.87, threshold=100)
+            if res:
+                for box in res:
+                    x = int(gui.center(box)[0])
+                    if all(abs(x - fx) > 100 for fx in found):
+                        found[x] = name
+                break
+    return found
+
+
+def get_gift_hp_free(image, owned_x, trials_image, labels_image):
+    """The usual gift pick, with the gifts whose trial raises the enemies'
+    Max HP blacked out first, so the priority runs over the others. A
+    column with no readable trial stays in. When every gift on offer has
+    such a trial the pick is the usual one. Returns the image for the
+    next pick."""
+    cols = trial_columns(trials_image)
+    labels = LocateRGB.locate_all(PTH["trials"], labels_image,
+                                  method=cv2.TM_SQDIFF_NORMED, threshold=100)
+    gifts = max(len(labels), len(cols), 1)
+    hp = sorted(x for x, n in cols.items() if n in HP_TRIALS)
+    free = sorted(x for x, n in cols.items() if n not in HP_TRIALS)
+    logging.info("HOLLOW: trials on offer %s; %d gift(s).",
+                 ", ".join("%s at x %d" % (cols[x], x) for x in sorted(cols))
+                 or "none read", gifts)
+    if not hp or len(hp) >= gifts:
+        if hp:
+            logging.info("HOLLOW: every trial on offer raises Max HP; the "
+                         "usual pick.")
+        return get_gift(image, owned_x)
+    masked = image.copy()
+    for x in hp:
+        masked = rectangle(masked, (int(x - 140), 0), (int(x + 140), 110),
+                           (0, 0, 0), -1)
+    before = masked.copy()
+    picked = get_gift(masked, owned_x)
+    if free and np.array_equal(picked, before):
+        # Nothing the priority knows among the rest: take the first gift
+        # whose trial leaves Max HP alone.
+        x = free[0]
+        win_click(x, 600, tsize=(150, 170))
+        logging.info("HOLLOW: took the gift at x %d for its %s trial.",
+                     x, cols[x])
+        picked = rectangle(masked, (int(x - 140), 0), (int(x + 140), 110),
+                           (0, 0, 0), -1)
+    return picked
 
 
 def get_trial(image, trials_image):
@@ -145,6 +205,11 @@ def grab_EGO():
 
     cycle = 1
     trials = None
+    rows = None
+    if p.RUN_SCRIPT == "hollow" and now.button("trials"):
+        # HOLLOW keeps the enemies' Max HP down: the trial row decides
+        # which gifts are even considered.
+        rows = (screenshot(region=REG["buffs"]), screenshot(region=REG["trials"]))
     if p.HARD and now.button("trials"): 
         cycle = 2
         if p.EXTREME:
@@ -160,7 +225,10 @@ def grab_EGO():
             image, trials = get_trial(image, trials)
             time.sleep(0.1)
         if trials is None:
-            image = get_gift(image, owned_x)
+            if rows is not None:
+                image = get_gift_hp_free(image, owned_x, *rows)
+            else:
+                image = get_gift(image, owned_x)
             time.sleep(0.1)
 
     wait_while_condition(lambda: now.button("EGObin"), lambda: gui.press("space"), interval=0.5, timer=2)

@@ -9,7 +9,7 @@ from PySide6.QtCore import (
     QEasingCurve, QPropertyAnimation, QRect, Qt, QPoint,
     QParallelAnimationGroup,
 )
-from PySide6.QtGui import QCursor, QGuiApplication, QIcon
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QIcon, QPainter
 from PySide6.QtWidgets import (
     QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMainWindow,
     QPushButton, QStackedWidget, QVBoxLayout, QWidget,
@@ -22,7 +22,7 @@ from .main_ui import MainUI
 from .run_coordinator import RunCoordinator
 from .settings import get_splash_size
 from .splash import SplashWidget, _read_version
-from .theme import Motion, Sizing
+from .theme import Colors, Motion, Sizing
 
 
 # Edge margin (px) where dragging triggers a resize.
@@ -46,6 +46,92 @@ _EDGE_TOP    = 1 << 2
 _EDGE_BOTTOM = 1 << 3
 
 
+# Window-control glyphs as 5x5 pixel bitmaps. A font glyph at this size is
+# antialiased mush next to a skin built out of hard squares, and the minimise
+# dash had to be an en dash to look right at all.
+_WIN_GLYPHS = {
+    "min":     ("     ",
+                "     ",
+                "#####",
+                "     ",
+                "     "),
+    "max":     ("#####",
+                "#   #",
+                "#   #",
+                "#   #",
+                "#####"),
+    "restore": ("  ###",
+                "  # #",
+                "#####",
+                "#   #",
+                "#####"),
+    "close":   ("#   #",
+                " # # ",
+                "  #  ",
+                " # # ",
+                "#   #"),
+}
+
+
+class _WinButton(QPushButton):
+    """Title-bar control. Paints a pixel glyph on the voxel skin; falls back to
+    the v2 text glyph on legacy so that skin is untouched."""
+
+    _UNIT = 2
+
+    def __init__(self, kind: str, text: str, parent=None):
+        super().__init__(parent)
+        self._kind = kind
+        self._text = text
+        self._hover = False
+        self.refresh_theme()
+
+    def refresh_theme(self):
+        from .skins import is_voxel
+        self._pixel = is_voxel()
+        self.setText("" if self._pixel else self._text)
+        self.update()
+
+    def set_kind(self, kind: str):
+        if kind != self._kind:
+            self._kind = kind
+            self.update()
+
+    def enterEvent(self, event):
+        self._hover = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._pixel:
+            return
+        rows = _WIN_GLYPHS.get(self._kind)
+        if not rows:
+            return
+        u = self._UNIT
+        w = len(rows[0]) * u
+        h = len(rows) * u
+        x0 = (self.width() - w) // 2
+        y0 = (self.height() - h) // 2
+        if self._hover:
+            col = QColor("#ffffff")
+        else:
+            col = QColor(Colors.TEXT_SECONDARY)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        for ry, row in enumerate(rows):
+            for rx, cell in enumerate(row):
+                if cell == "#":
+                    p.fillRect(x0 + rx * u, y0 + ry * u, u, u, col)
+        p.end()
+
+
 class _TitleBar(QFrame):
     """Custom title bar: the native one flashes white on DWM repaint."""
 
@@ -60,27 +146,44 @@ class _TitleBar(QFrame):
         layout.setContentsMargins(Sizing.SPACE_MD, 0, 0, 0)
         layout.setSpacing(0)
 
-        # No title text - the sidebar shows the brand.
+        # No title text - the sidebar shows the brand. The search box sits
+        # centred over the pages, so it starts clear of the sidebar.
+        from .search_bar import SearchBox
+        layout.addSpacing(Sizing.SIDEBAR_WIDTH - Sizing.SPACE_MD)
+        layout.addStretch(1)
+        self.search = SearchBox(self)
+        layout.addWidget(self.search, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addStretch(1)
 
-        # Unicode glyphs so we don't ship icon files.
-        self._mk_btn(layout, "–", self._win.showMinimized, close=False)
-        self._mk_btn(layout, "□", self._toggle_max, close=False)
-        self._mk_btn(layout, "×", self._win.close, close=True)
+        self._mk_btn(layout, "min", "\u2013", self._win.showMinimized,
+                     close=False)
+        self._max_btn = self._mk_btn(layout, "max", "\u25a1",
+                                     self._toggle_max, close=False)
+        self._mk_btn(layout, "close", "\u00d7", self._win.close, close=True)
 
-    def _mk_btn(self, layout, glyph, handler, close: bool):
-        b = QPushButton(glyph, self)
+    def _mk_btn(self, layout, kind, glyph, handler, close: bool):
+        b = _WinButton(kind, glyph, self)
         b.setObjectName("titleBarBtnClose" if close else "titleBarBtn")
         b.setProperty("class", "titleBarBtn")
         b.clicked.connect(handler)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         layout.addWidget(b)
+        return b
+
+    def sync_state(self):
+        """Maximise button shows the restore glyph while maximised - including
+        when the OS did it (snap, double-click, keyboard), not just our own
+        button."""
+        btn = getattr(self, "_max_btn", None)
+        if btn is not None:
+            btn.set_kind("restore" if self._win.isMaximized() else "max")
 
     def _toggle_max(self):
         if self._win.isMaximized():
             self._win.showNormal()
         else:
             self._win.showMaximized()
+        self.sync_state()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -103,7 +206,8 @@ class MainWindow(QMainWindow):
     def __init__(self, mode: str = "init"):
         """mode = 'init' (normal launch) or 'update' (run update flow first)."""
         super().__init__()
-        self.setWindowTitle("WorkerBee")
+        from . import seasonal
+        self.setWindowTitle(seasonal.brand_name())
         icon_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "app_icon.ico",
@@ -158,6 +262,12 @@ class MainWindow(QMainWindow):
         # window taller than the splash. Added in _morph_to_main.
         self._main = MainUI(self._stack)
         self._coordinator = RunCoordinator(self._main, self)
+        from PySide6.QtGui import QKeySequence, QShortcut
+        from .search_bar import FeatureSearch
+        self._search = FeatureSearch(self._titlebar.search, self._main, root)
+        for keys in ("Ctrl+K", "Ctrl+F"):
+            QShortcut(QKeySequence(keys), self).activated.connect(
+                lambda k=keys: self._search_shortcut(k))
         self._stack.addWidget(self._splash)
         self._stack.setCurrentWidget(self._splash)
 
@@ -173,6 +283,18 @@ class MainWindow(QMainWindow):
         self._titlebar_opacity = QGraphicsOpacityEffect(self._titlebar)
         self._titlebar_opacity.setOpacity(0.0)
         self._titlebar.setGraphicsEffect(self._titlebar_opacity)
+
+    def _search_shortcut(self, keys: str):
+        """Focus the search bar, unless the user has bound this combination
+        to a run: that hotkey fires as well, and one press must not do both."""
+        try:
+            from .settings import load_section
+            saved = (load_section("app_settings") or {}).get("shortcuts") or {}
+            bound = {str(v).replace(" ", "").lower() for v in saved.values()}
+        except Exception:
+            bound = set()
+        if keys.lower() not in bound:
+            self._search.focus()
 
     def _clamp_to_screen(self, target_w: int, target_h: int) -> tuple[int, int]:
         """Cap dimensions at MAX_SCREEN_FRACTION so the window always fits."""
@@ -294,6 +416,10 @@ class MainWindow(QMainWindow):
         if bar is not None:
             bar.setGeometry(0, 0, self._root.width(), Sizing.TITLEBAR_HEIGHT)
             bar.raise_()
+            bar.sync_state()
+        search = getattr(self, "_search", None)
+        if search is not None:
+            search.reposition()
 
     def _apply_rounded_corners(self):
         """Windows 11 DWM rounded outer corners; no-op elsewhere."""
@@ -429,7 +555,7 @@ class MainWindow(QMainWindow):
             self._splash.set_status("Update lost its download link; aborting.")
             return
         self._splash.set_subtitle(
-            f"UPDATING  -  v{_read_version().lstrip('v')}  →  v{remote}"
+            f"UPDATING  -  v{_read_version().lstrip('v')}  \u2192  v{remote}"
         )
         self._splash.show_loading()
         self._apply_thread = InitThread(
@@ -459,6 +585,23 @@ class MainWindow(QMainWindow):
             return
         self._splash.set_status("Ready")
         self._morph_to_main()
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(2500, self._startup_lghub_check)
+
+    def _startup_lghub_check(self):
+        """G Hub open but refusing the bridge: say so now, with the steps,
+        rather than letting the first run fail on it."""
+        from .lghub_help import StartupCheck
+        self._lghub_startup = StartupCheck(self)
+        self._lghub_startup.problem.connect(self._on_lghub_problem)
+        self._lghub_startup.start()
+
+    def _on_lghub_problem(self, report: dict):
+        from . import lghub_help
+        if lghub_help.notification_shown():
+            return          # a failed run already raised it
+        lghub_help.show_lghub_help(self, report=report,
+                                   intro=lghub_help.STARTUP_INTRO)
 
     def _on_apply_done(self, ok: bool, err: str):
         """On success the helper batch is waiting for this process to

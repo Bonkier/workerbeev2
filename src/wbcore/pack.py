@@ -27,7 +27,7 @@ from .pack_search_catalog import PACK_SEARCH_KEYS
 from .runtime import ops, state
 from .teams import HARD as HARD_TEAMS, TEAMS
 from .utils import telemetry as tele
-from .utils.paths import FLOORS, HARD_FLOORS, PTH, REG
+from .utils.paths import FLOORS, HARD_FLOORS, PACK_SECTIONS, PTH, REG
 from .utils.utils import (
     LocateGray,
     SIFTMatcher,
@@ -37,6 +37,7 @@ from .utils.utils import (
     generate_packs_all,
     generate_packs_av,
     generate_packs_pr,
+    screenshot,
     tap_center,
     wait_while_condition,
 )
@@ -98,9 +99,7 @@ def _drop_pack_from_future_floors(level: int, name: str) -> None:
 # ~95% identical, so SIFT matches either art on either card and the section
 # is resolved by pixel-matching the digit crop immediately right of the
 # banner's match box.
-_PACK_SECTIONS = {
-    "Line4": ("Line4Sec3", "Line4Sec4"),
-}
+_PACK_SECTIONS = PACK_SECTIONS
 _SECTION_BASE = {v: base for base, vs in _PACK_SECTIONS.items() for v in vs}
 # The winning digit must beat the other by this much, and clear this floor,
 # or the card stays generic (behaviour then matches the pre-section builds).
@@ -162,6 +161,81 @@ def _pack_hit(pref: str, packs: dict) -> Optional[str]:
 def _pack_banned(pack: str, banned) -> bool:
     """A banned base bans its section variants too."""
     return pack in banned or _SECTION_BASE.get(pack) in banned
+
+
+# Pack Search: the section cards share one art, so the wanted section is
+# resolved by the section digit printed at the bottom of the card. Only the
+# "#3" digit is templated - with exactly two sections, the card that is NOT
+# a 3 is the 4 (elimination), so no second digit asset is needed.
+_PS_SECTION_DIGIT = {"Line4": "ps_line4digit3"}
+_PS_DIGIT_MATCH = "Line4Sec3"          # the section that digit belongs to
+# Digit box relative to the card's top-left (card art is 157x296).
+_PS_DIGIT_BOX = (134, 229, 14, 23)
+_PS_DIGIT_HIT = 0.80                   # above -> it IS the templated section
+
+
+def _find_section_card(stem: str, wanted: str):
+    """Find the Pack Search card for section `wanted`. Both sections match
+    `stem` (shared art), so every hit is scored on its section digit: the
+    best score is the templated section, and with two sections the other
+    card is the remaining one. Returns a Match, or None."""
+    base = _SECTION_BASE.get(wanted)
+    digit = _PS_SECTION_DIGIT.get(base)
+    hits = ops.find_all(stem, region=_SAIKAI_PACK_GRID, mode="gray")
+    if not hits:
+        return None
+    if not digit or digit not in PTH:
+        logging.warning("PackSearch: no section-digit template for %s - "
+                        "cannot tell the sections apart, taking the first "
+                        "card.", base)
+        return hits[0]
+    dx, dy, dw, dh = _PS_DIGIT_BOX
+    scored = []
+    for h in hits:
+        try:
+            conf = LocateGray.get_conf(PTH[digit],
+                                       region=(h.x + dx, h.y + dy, dw, dh))
+        except (cv2.error, ValueError):
+            conf = 0.0
+        scored.append((h, conf))
+    logging.info("PackSearch: %d Line-4 card(s), digit scores %s (want %s).",
+                 len(scored), [round(c, 2) for _h, c in scored], wanted)
+    if wanted == _PS_DIGIT_MATCH:
+        hit, conf = max(scored, key=lambda t: t[1])
+        return hit if conf >= _PS_DIGIT_HIT else None
+    # The other section: the card that is NOT the templated digit.
+    hit, conf = min(scored, key=lambda t: t[1])
+    return hit if conf < _PS_DIGIT_HIT else None
+
+
+# After the Pack Search window closes the secured pack IS on the floor bar,
+# but the bar animates in. A single early scan used to miss it and settle for
+# an unrelated pack, so insist on the secured pack for a few passes first.
+_POST_SEARCH_TRIES = 4
+_POST_SEARCH_WAIT = 1.0
+
+
+def _pick_after_search(level, regions, want, searched_ok):
+    """Slot for the pack secured by Pack Search, retried while the floor bar
+    settles. Falls back to a normal (non-strict) pick only when the secured
+    pack really never shows up, or when the search itself failed."""
+    if searched_ok and want:
+        for attempt in range(_POST_SEARCH_TRIES):
+            slot = _evaluate_packs(level, regions, 0, 0, strict=True, only=want)
+            if slot is not None:
+                return slot
+            if attempt < _POST_SEARCH_TRIES - 1:
+                time.sleep(_POST_SEARCH_WAIT)
+        logging.warning("PackSearch: secured %s but it never appeared on the "
+                        "floor bar after %.0fs - taking a normal pick.",
+                        want, _POST_SEARCH_TRIES * _POST_SEARCH_WAIT)
+    if not _floor_screen_back():
+        # Something still covers the floor: a pick here drags on whatever
+        # that is. Leave it to the stuck recovery instead.
+        logging.warning("PackSearch: the floor screen is not showing after "
+                        "Pack Search - no pick made.")
+        return None
+    return _evaluate_packs(level, regions, 0, 0, strict=False)
 
 
 def _in_pool(key: str, pool) -> bool:
@@ -430,6 +504,138 @@ def _maybe_switch_difficulty(level: int) -> None:
 
 # ----------------------------------------------------- pack search window
 
+# The Pack Search window covers the floor screen, so the floor's PackChoice
+# marker coming back is the proof a confirm went through. A confirm that did
+# not land used to be logged as "secured" with the window still open; the
+# pick that followed dragged on the window and the run stalled there.
+_SEARCH_CLOSE_WAIT = 3.0
+_SEARCH_CONFIRM_TRIES = 3
+_ON_FLOOR = "onfloor"                 # the wanted pack is on the floor bar already
+_AVAILABLE_NOTE = (1400, 40, 360, 110)   # "This Theme Pack is already available."
+_CARD_BAND = (161, 630, 1632, 140)       # the SIFT band across the five cards
+
+
+def _wait_cards_still(timeout: float = 4.0, tick: float = 0.25) -> bool:
+    """Wait until the pack cards stop moving: two reads of the card band a
+    tick apart that agree. True when they did, False at the timeout."""
+    deadline = time.time() + timeout
+    last = None
+    while True:
+        try:
+            band = cv2.cvtColor(screenshot(region=_CARD_BAND), cv2.COLOR_BGR2GRAY)
+        except Exception as exc:
+            logging.debug("Pack: card band read failed: %s", exc)
+            return False
+        if (last is not None and last.shape == band.shape
+                and float(cv2.absdiff(last, band).mean()) < 1.5):
+            return True
+        if time.time() >= deadline:
+            return False
+        last = band
+        time.sleep(tick)
+
+
+def _cancel_search() -> bool:
+    """Close the Pack Search window; True when the floor screen is back."""
+    ops.click_at(_SAIKAI_PACK_CANCEL)
+    if _floor_screen_back(2.0):
+        return True
+    ops.press("esc")
+    return _floor_screen_back(2.0)
+
+
+def _marked_unselectable(hit) -> bool:
+    """The grid card at `hit` wears the red Unselectable label: the floor
+    bar already offers that pack."""
+    if "unselectable" not in PTH:
+        return False
+    cx, cy = hit.center
+    return ops.find("unselectable", region=(cx - 110, cy - 125, 220, 70),
+                    mode="gray") is not None
+
+
+def _already_available() -> bool:
+    """The game's note that the clicked pack is already on the floor bar."""
+    return ("packavailable" in PTH
+            and ops.find("packavailable", region=_AVAILABLE_NOTE,
+                         mode="gray") is not None)
+
+
+def _floor_screen_back(timeout: float = _SEARCH_CLOSE_WAIT) -> bool:
+    deadline = time.time() + timeout
+    while True:
+        if ops.find("PackChoice"):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.2)
+
+
+def _find_search_card(stem, key):
+    if key in _SECTION_BASE:
+        return _find_section_card(stem, key)
+    return ops.find(stem, region=_SAIKAI_PACK_GRID, mode="gray")
+
+
+def _confirm_search_card(hit):
+    ops.click_at(hit.center, tsize=(48, 70))
+    time.sleep(0.5)
+    if not tap_center("packconfirm", tsize=(60, 22), wait=2):
+        ops.click_at(_SAIKAI_PACK_CONFIRM)
+    time.sleep(0.5)
+    ops.press("enter")
+    time.sleep(1.0)
+
+
+def _secure_search_pick(stem, key, hit, tag):
+    """Select the card at `hit`, confirm, and make sure the window closed.
+    True: the floor screen is back. _ON_FLOOR: the game said the pack is on
+    the floor bar already, so the window was cancelled to take it there.
+    False: the pick would not go through and the window was cancelled.
+    None: neither the floor nor the window could be recognised (the caller
+    carries on as before)."""
+    _confirm_search_card(hit)
+    if _already_available():
+        logging.info("%s: the game says %s is already available on the floor "
+                     "bar; cancelling Pack Search to take it there.", tag, key)
+        _cancel_search()
+        return _ON_FLOOR
+    if _floor_screen_back():
+        return True
+    # A second prompt can come up after the Enter above was already sent.
+    ops.press("enter")
+    if _floor_screen_back(2.0):
+        return True
+
+    window_open = False
+    for attempt in range(2, _SEARCH_CONFIRM_TRIES + 1):
+        hit = _find_search_card(stem, key)
+        if hit is None:
+            break
+        window_open = True
+        logging.warning("%s: Pack Search still open after confirming %s - "
+                        "selecting it again (attempt %d of %d).",
+                        tag, key, attempt, _SEARCH_CONFIRM_TRIES)
+        _confirm_search_card(hit)
+        if _floor_screen_back():
+            return True
+
+    if not window_open and "packconfirm" in PTH:
+        window_open = ops.find("packconfirm", region=(0, 0, 1920, 1080),
+                               mode="gray") is not None
+    dump_template_diag("packsearch_open", "PackChoice", "packconfirm")
+    if not window_open:
+        logging.warning("%s: the floor screen did not come back after "
+                        "confirming %s, and the search window is not "
+                        "recognised either.", tag, key)
+        return None
+
+    logging.warning("%s: %s could not be confirmed - cancelling Pack Search.",
+                    tag, key)
+    _cancel_search()
+    return False
+
+
 def _pack_search_window(level, candidates, tag):
     """Open Pack Search and hunt `candidates` [(template_stem, pack_key)]
     in the grid; click + confirm + enter the first hit. Returns the
@@ -487,17 +693,22 @@ def _pack_search_window(level, candidates, tag):
 
     for attempt in range(11):
         for stem, key in candidates:
-            hit = ops.find(stem, region=_SAIKAI_PACK_GRID, mode="gray")
+            hit = _find_search_card(stem, key)
             if hit is None:
                 continue
-            ops.click_at(hit.center, tsize=(48, 70))
-            time.sleep(0.5)
-            if not tap_center("packconfirm", tsize=(60, 22), wait=2):
-                ops.click_at(_SAIKAI_PACK_CONFIRM)
-            time.sleep(0.5)
-            ops.press("enter")
-            time.sleep(1.0)
-            logging.info("%s: secured %s via Pack Search.", tag, key)
+            if _marked_unselectable(hit):
+                logging.info("%s: %s is marked Unselectable in Pack Search: the "
+                             "floor bar already offers it. Cancelling the "
+                             "window to take it there.", tag, key)
+                _cancel_search()
+                return key
+            closed = _secure_search_pick(stem, key, hit, tag)
+            if closed == _ON_FLOOR:
+                return key
+            if closed is False:
+                return None
+            if closed:
+                logging.info("%s: secured %s via Pack Search.", tag, key)
             return key
         if attempt < 10:
             ops.scroll(-3, grid_x, grid_y)
@@ -507,8 +718,7 @@ def _pack_search_window(level, candidates, tag):
         "%s: no wanted pack for floor %d found in Pack Search. "
         "Cancelling out.", tag, level,
     )
-    ops.click_at(_SAIKAI_PACK_CANCEL)
-    time.sleep(0.5)
+    _cancel_search()
     return None
 
 
@@ -521,9 +731,25 @@ def _configured_search_candidates(level):
         return []
     key = PACK_SEARCH_KEYS[name]
     pool = HARD_FLOORS[format_lvl(level)] if state.HARD else FLOORS[format_lvl(level)]
-    if not _in_pool(key, pool) or ("ps_" + name) not in PTH:
+    if not _in_pool(key, pool):
         return []
-    return [("ps_" + name, key)]
+    stem = _ps_stem(name, key)
+    return [(stem, key)] if stem else []
+
+
+def _ps_stem(name: str, key: str):
+    """Pack Search card template for a configured pick. Sections share the
+    base's card art (they differ only by the printed section number), so they
+    borrow its template and are separated later by the digit."""
+    own = "ps_" + name
+    if own in PTH:
+        return own
+    base = _SECTION_BASE.get(key)
+    if base:
+        for base_name, base_key in PACK_SEARCH_KEYS.items():
+            if base_key == base and ("ps_" + base_name) in PTH:
+                return "ps_" + base_name
+    return None
 
 
 def _configured_pack_search(level: int) -> bool:
@@ -607,6 +833,7 @@ def pack() -> bool:
     # Let the cards finish sliding in before SIFT scores their x-positions,
     # otherwise a still-moving card gets mapped to its neighbour's slot.
     time.sleep(_PACK_SETTLE_DELAY)
+    _wait_cards_still()
 
     offset = (5 - card_count) * 161
     regions = [
@@ -648,9 +875,10 @@ def pack() -> bool:
         slot = _evaluate_packs(state.LVL, regions, 0, 0, strict=custom_search,
                                only=want)
         if custom_search and slot is None:
-            if _configured_pack_search(state.LVL):
+            searched = _configured_pack_search(state.LVL)
+            if searched:
                 time.sleep(1.0)
-            slot = _evaluate_packs(state.LVL, regions, 0, 0, strict=False)
+            slot = _pick_after_search(state.LVL, regions, want, searched)
     else:
         for skip in range(refresh_budget + 1):
             time.sleep(0.2)
@@ -660,17 +888,20 @@ def pack() -> bool:
                 break
             if skip != refresh_budget:
                 # Click the floor bar's refresh button and let the new
-                # pack offering animate in.
+                # pack offering animate in, however long that takes: a
+                # read taken mid-slide misses the very pack it hunts.
                 ops.click_at(_FLOOR_BAR_POINT, tsize=_FLOOR_BAR_SIZE)
-                time.sleep(2.0)
+                time.sleep(1.0)
+                _wait_cards_still()
 
         # The configured pack still didn't appear: open Pack Search, then
         # re-evaluate non-strictly (so the pick lands on the now-secured
         # pack); a failed search degrades to a normal pick.
         if slot is None and custom_search:
-            if _configured_pack_search(state.LVL):
+            searched = _configured_pack_search(state.LVL)
+            if searched:
                 time.sleep(1.0)
-            slot = _evaluate_packs(state.LVL, regions, 0, 0, strict=False)
+            slot = _pick_after_search(state.LVL, regions, want, searched)
 
     if slot is not None:
         x_min, y_min, w, h = regions[slot]

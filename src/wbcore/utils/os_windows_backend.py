@@ -46,6 +46,26 @@ def _warn_lghub_version():
             found, EXPECTED_LGHUB_VERSION)
 
 
+_last_lghub_report = None
+
+
+def _log_lghub_report(error, diag):
+    """Put the full G Hub diagnosis in the log when the bridge will not open,
+    so a log sent in for help already says why. Repeated only when it
+    changes: dungeon_start retries the bridge several times in a row."""
+    global _last_lghub_report
+    try:
+        from bridge.lghub_check import collect, format_report
+        text = format_report(collect(error, diag))
+    except Exception:
+        return
+    if text == _last_lghub_report:
+        return
+    _last_lghub_report = text
+    for line in text.splitlines():
+        logging.warning("LGHub: %s", line)
+
+
 def _get_bridge():
     global _bridge, _bridge_init_error
     with _bridge_lock:
@@ -63,6 +83,7 @@ def _get_bridge():
                         diag = b.diagnose()
                     except Exception:
                         pass
+                _log_lghub_report(str(exc), diag)
                 _bridge_init_error = RuntimeError(
                     f"Bridge initialization failed: {exc}"
                     + (f" [{diag}]" if diag else ""))
@@ -274,14 +295,17 @@ def mouseDown(button='left', delay=0.16, jitter=0.04):
     _fail_safe_check()
     _ensure_mouse_settings()
     _get_bridge().mouse_press(button=button)
+    _held_buttons.add(button)
     if delay > 0:
         _human_delay(delay, delay + max(0.0, jitter))
     _fail_safe_check()
 
 
 def mouseUp(button='left', delay=0.16, jitter=0.05):
-    _fail_safe_check()
+    # Release first: this is the cleanup path of every hold, and the
+    # fail-safe raising before it would leave the button down.
     _get_bridge().mouse_release(button=button)
+    _held_buttons.discard(button)
     if delay > 0:
         _human_delay(delay, delay + max(0.0, jitter))
     _fail_safe_check()
@@ -316,6 +340,22 @@ def set_failsafe(state=True):
     FAILSAFE_ENABLED = state
 
 
+_held_buttons = set()
+
+
+def _release_held():
+    """Let go of any button mouseDown() is still holding. A pause must not
+    leave the bridge's button down: the game would keep reading a drag."""
+    if _bridge is None or not _held_buttons:
+        return
+    for button in list(_held_buttons):
+        try:
+            _bridge.mouse_release(button=button)
+        except Exception:
+            pass
+    _held_buttons.clear()
+
+
 def _fail_safe_check():
     if not FAILSAFE_ENABLED:
         return
@@ -324,12 +364,14 @@ def _fail_safe_check():
     # to the next focus-loss pause.
     se = getattr(p, "stop_event", None)
     if se is not None and se.is_set():
+        _release_held()
         restore_mouse_settings()
         raise PauseException("stop")
 
     name = getActiveWindowTitle()
 
     if p.LIMBUS_NAME not in name:
+        _release_held()
         restore_mouse_settings()
         raise PauseException(name)
 
@@ -542,6 +584,9 @@ def check_window():
     if not in_bounds:
         raise WindowError("Window is partially or completely out of screen bounds!")
 
+_advised_window_size = None
+
+
 def set_window():
     hwnd = ctypes.windll.user32.FindWindowW(None, p.LIMBUS_NAME)
 
@@ -573,7 +618,12 @@ def set_window():
     p.SCREEN = get_virtual_screen_bounds()
     check_window()
 
-    if int(client_width / 16) != int(client_height / 9):
+    # set_window() re-runs on every resume and stuck recovery. Raise the
+    # advice once per window size, not each time.
+    global _advised_window_size
+    if (int(client_width / 16) != int(client_height / 9)
+            and _advised_window_size != (client_width, client_height)):
+        _advised_window_size = (client_width, client_height)
         p.WARNING(f"Game window ({client_width} x {client_height}) is not 16:9\nIt is recommended to set the game to either\n1920 x 1080 or 1280 x 720")
 
     print("WINDOW:", p.WINDOW)

@@ -193,27 +193,28 @@ def select_team():
     if not p.DUPLICATES and LocateGray.check(PTH[f"{affinity}_current"], region=REG["current_team"], conf=0.92, method=cv2.TM_SQDIFF_NORMED, wait=False):
         return
     
-    if now_rgb.button("arrow", conf=0.7):
-        win_moveTo(191, 472)
-        win_dragTo(289, 984)
+    win_moveTo(196, 480)
+    for _ in range(3):
+        if now_rgb.button("arrow", conf=0.7):
+            gui.scroll(20)
+            time.sleep(0.1)
+        else:
+            time.sleep(1)
+            break
+    else:
         time.sleep(1)
 
-    for i in range(4):
+    for i in range(7):
         coords = [gui.center(box) for box in LocateGray.locate_all(PTH[f"{affinity}_team"], region=REG["teams"], threshold=15, conf=0.85)]
         print(coords)
         coords.sort(key=lambda coord: coord[1])
 
         if len(coords) > idx:
-            if i != 0 and i != 3: gui.mouseUp()
             win_click(coords[idx])
             break
-        elif i != 3:
+        elif i != 6:
             idx -= len(coords)
-            if i != 0: gui.mouseUp()
-            win_moveTo(196, 670)
-            gui.mouseDown()
-            win_moveTo(193, 400)
-            if i == 2: gui.mouseUp()
+            gui.scroll(-10)
             time.sleep(0.3)
     else:
         logging.info("Team selecton failed!")
@@ -873,6 +874,9 @@ def fight(lux=False):
     if p.RUN_SCRIPT == "saikai_ryoshu":
         p.SAIKAI_BATTLE += 1
         logging.info("SAIKAI: entering battle #%d.", p.SAIKAI_BATTLE)
+    elif p.RUN_SCRIPT == "hollow":
+        from .hollow import begin_battle
+        begin_battle()
     while True:
         ck = False
         if loc.button("winrate", wait=1):
@@ -989,6 +993,9 @@ def fight(lux=False):
                     logging.info("SAIKAI: turn %d done - pressing Enter to execute.", saikai_turn)
                     gui.press("enter", 1, 0.1)
                     time.sleep(1)
+                elif p.RUN_SCRIPT == "hollow":
+                    from .hollow import chain_turn
+                    chain_turn(gear_start, gear_end)
                 elif p.RUN_SCRIPT == "thrill" and getattr(p, "THRILL_DONE", False):
                     # THRILL non-focused battles after Thrill is crafted. Do NOT
                     # press 'p' (Thrill build opts out of winrate auto-targeting).
@@ -1015,6 +1022,22 @@ def fight(lux=False):
                     if not lux and not p.SKIP_EGO_BATTLE: select_ego()
                     gui.press("enter", 1, 0.1)
                     time.sleep(1)
+                elif is_focused and p.RUN_SCRIPT == "hollow":
+                    from .hollow import (chain_turn, focused_turn,
+                                         squad_focused_turn, _with_fallback)
+                    if _with_fallback():
+                        # The fallback squad in a per-skill fight (the
+                        # floor 3 Skin Prophet): aim every skill by hand.
+                        squad_focused_turn()
+                    elif int(getattr(p, "LVL", 1) or 1) < 4:
+                        # Floors 1 to 3 are never aimed by hand: with no
+                        # chain gears seen, run the chain turn without them.
+                        logging.info("HOLLOW: no chain gears seen on floor %d; "
+                                     "chain turn anyway (hand aiming starts "
+                                     "on floor 4).", p.LVL)
+                        chain_turn(None, None)
+                    else:
+                        focused_turn()
                 else:
                     gui.press("p", 1, 0.1)
                     time.sleep(0.5)
@@ -1065,12 +1088,17 @@ def fight(lux=False):
                     loading_halt()
                     print("Battle is over")
                     logging.info("Battle is over")
+                    # Backing out only returns to the map, and the node is
+                    # still the way forward: have main_loop end the run.
+                    p.STUCK_FORFEIT = True
                     return True
             else:
                 wait_while_condition(lambda: not now.button("Confirm_retry", method=cv2.TM_SQDIFF_NORMED), lambda: win_click(1200, 530), interval=1, timer=3)
                 gui.press("space")
                 loading_halt()
                 logging.info(f"Re-attempting the battle (attempt {attempts + 1})")
+                if p.RUN_SCRIPT == "hollow":
+                    p.HOLLOW_TURN = 0
 
         for i in exit_if:
             if now.button(i):

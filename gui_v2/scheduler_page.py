@@ -268,7 +268,10 @@ class SchedulerPage(QWidget):
             SCHEDULER_PAGE_HINT, self, objectName="inlineHint"))
 
         outer.addWidget(self._build_add_card())
-        outer.addWidget(self._build_list_card(), stretch=1)
+        # Natural height + a trailing spacer: stretching the list card just
+        # put a 530px void inside a bordered panel.
+        outer.addWidget(self._build_list_card())
+        outer.addStretch(1)
 
     def _build_add_card(self) -> QWidget:
         add = Card("ADD TASK", self)
@@ -386,17 +389,20 @@ class SchedulerPage(QWidget):
         conv_row.addStretch(1)
         self._inputs.addWidget(conv_page)
 
-        row.addWidget(self._inputs, stretch=1)
+        # Inputs at their natural width so the button sits beside the fields
+        # it submits, not pinned to the far edge of the panel.
+        row.addWidget(self._inputs)
 
         add_btn = PrimaryButton("Add task", add)
         add_btn.clicked.connect(self._on_add_clicked)
         row.addWidget(add_btn)
+        row.addStretch(1)
 
         add.body.addLayout(row)
         return add
 
     def _build_list_card(self) -> QWidget:
-        card = Card("SCHEDULED TASKS", self, fill=True)
+        card = Card("SCHEDULED TASKS", self)
         self._content = QStackedWidget(card)
 
         rows_page = QWidget(self._content)
@@ -486,6 +492,7 @@ class SchedulerPage(QWidget):
             item = self._rows_box.takeAt(0)
             w = item.widget()
             if w is not None:
+                w.setParent(None)
                 w.deleteLater()
         for task in self._tasks:
             rowf = _TaskRow(task, parent=self)

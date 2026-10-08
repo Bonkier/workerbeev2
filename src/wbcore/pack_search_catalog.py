@@ -47,6 +47,11 @@ PACK_SEARCH_KEYS = {
     'Line 2': 'Line2',
     'MADNESS Line 1': 'Line1',
     'Masquerade Line 4': 'Line4',
+    # Line 4 is two packs with different fights. Both cards carry the same art
+    # and are told apart by the section number, so they share one search
+    # template (see pack.py's section handling).
+    'Line 4 - Section #3': 'Line4Sec3',
+    'Line 4 - Section #4': 'Line4Sec4',
     'Merry Go Round Line 5': 'Line5',
     'Miracle in District 20': 'MiracleinDistrict20',
     'Miracle in District 20 BokGak': 'MiracleinDistrict20BokGak',

@@ -16,8 +16,9 @@ MD_DIFFICULTY_HINT = (
 
 MD_CUSTOM_RUN_HINT = (
     "F3 Hard starts on Normal and switches to Hard after Floor 3."
-    "SAIKAI [Ryoshu] requires HoS team."
-    "Thrill requires 6 evade IDs."
+    "SAIKAI [Ryoshu] requires HoS team. "
+    "Thrill requires 6 evade IDs. "
+    "Hollow runs Faust alone with the Hollow E.G.O (Le Trou)."
 )
 
 MD_GRACE_HINT = (
@@ -48,9 +49,9 @@ MD_SAIKAI_EXCLUSION_HINT = (
 
 # Rendered as RichText by the Skill Replacement card.
 MD_SKILL_REPLACEMENT_HINT_RICH = (
-    "Sinner skill swap priority in market."
-    "Input the # of times you want to replace each skill"
-    "and drag in what order of priority you want them done."
+    "Sinner skill swap priority in the market. Pick a sinner, switch "
+    "them on, set how many times to replace each skill, and drag the "
+    "rows into the order you want them done."
 )
 
 

@@ -4,7 +4,345 @@
 from .theme import Colors, Sizing, Fonts
 
 
+def _rgb(hex_color: str):
+    h = hex_color.lstrip("#")
+    if len(h) == 3:
+        h = "".join(ch * 2 for ch in h)
+    try:
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except (ValueError, IndexError):
+        return 244, 196, 48
+
+
+def _shift(hex_color: str, factor: float) -> str:
+    """Lighten (>1) or darken (<1) a colour, for the voxel bevels."""
+    r, g, b = _rgb(hex_color)
+    cl = lambda v: max(0, min(255, int(v)))
+    return f"#{cl(r * factor):02x}{cl(g * factor):02x}{cl(b * factor):02x}"
+
+
 def build_global_qss() -> str:
+    """The base sheet, plus the voxel overrides when that skin is active."""
+    qss = _base_qss()
+    try:
+        from .skins import is_voxel
+        if is_voxel():
+            qss += _voxel_qss()
+    except Exception:
+        pass
+    return qss
+
+
+def _is_default_bg() -> bool:
+    """True when the user has not picked a custom background, so the voxel
+    skin may impose its own tinted surface ramp."""
+    try:
+        # A season sets its own (darker) base, so the ramp must derive
+        # from it rather than from the skin's fixed tones.
+        from . import seasonal
+        if seasonal.is_halloween():
+            return False
+    except Exception:
+        pass
+    try:
+        from .themes import DEFAULT_BG, current_theme
+        return str(current_theme().get("bg", DEFAULT_BG)).lower() == DEFAULT_BG.lower()
+    except Exception:
+        return True
+
+
+def voxel_page_color() -> str:
+    """Fill the voxel sheet paints the page backdrop with."""
+    return "#0e1013" if _is_default_bg() else Colors.BG_BASE
+
+
+# Panels are a translucent lift over the page rather than an opaque slab, so
+# the backdrop's grid and twinkle read faintly through them. Expressed as a
+# white overlay so it works over any background colour the user picks.
+CARD_TINT = (255, 255, 255, 7)
+BAND_TINT = (255, 255, 255, 26)     # section header, one step lighter
+
+
+def _rgba(tint) -> str:
+    return "rgba(%d, %d, %d, %d)" % tint
+
+
+def voxel_band_color():
+    """RGBA the voxel sheet gives #sectionLabel. A section header bar has to
+    paint EXACTLY this or the title chip shows a seam against the bar it sits
+    in."""
+    return BAND_TINT
+
+
+def voxel_panel_color() -> str:
+    """Fill the voxel sheet paints QFrame#card with. Widgets that paint their
+    own surface (slide snapshots) have to match it or they flash a different
+    shade mid-animation."""
+    return "#171a1e" if _is_default_bg() else Colors.BG_RAISED
+
+
+def _voxel_qss() -> str:
+    """Dense pixel-art surfaces: flat fills, crisp 1px edges and tight
+    padding. Deliberately restrained - the reference is a muted dusk pixel
+    scene, so contrast stays low and the accent is used sparingly rather than
+    outlining every control. Appended after the base sheet so it wins."""
+    c = Colors
+    f = Fonts
+    # Cool-tinted charcoals, matching the reference scene's blue-grey darks
+    # rather than the neutral near-black of the v2 theme. Only used while the
+    # user is on the default background; a custom background keeps deriving
+    # from their own colour so theming is not silently overridden.
+    tinted = _is_default_bg()
+    page = "#0e1013" if tinted else c.BG_BASE
+    panel = "#171a1e" if tinted else c.BG_RAISED
+    line = "#2b323a" if tinted else _shift(c.BG_RAISED, 1.55)
+    seam = "#2e353f" if tinted else _shift(c.BG_RAISED, 1.75)
+    line_soft = "#1b2026" if tinted else _shift(c.BG_RAISED, 1.25)
+    sunk = "#0a0d10" if tinted else _shift(c.BG_BASE, 0.75)
+    hover = "#1f242a" if tinted else c.BG_HOVER
+    dim = "#8a939e" if tinted else c.TEXT_TERTIARY
+    head = "#a9a9b4" if tinted else c.TEXT_SECONDARY
+    card_tint = _rgba(CARD_TINT)
+    band_tint = _rgba(BAND_TINT)
+    return f"""
+    /* ---- voxel skin: dense, flat, 1px edges ---- */
+
+    /* Flat everywhere: the base sheet's window gradient makes top-of-page
+       cards read as unbounded against it. */
+    QMainWindow, QWidget#root, QWidget#contentInset,
+    QStackedWidget#contentStack, QScrollArea#shellScroll,
+    QScrollArea#pageScroll {{
+        background: {page};
+        border: none;
+    }}
+
+    /* ...and everything between the page backdrop and the cards is clear, so
+       the backdrop's pixel grid (widgets.PageBackdrop) reads through the
+       empty parts of every page instead of each layer repainting flat black.
+       Scoped to the two shell scroll areas: the generic viewport name is
+       shared by list and log views, which must stay opaque. */
+    QWidget#contentInset QWidget#root,
+    QWidget#contentInset QStackedWidget#contentStack,
+    QWidget#contentInset QScrollArea#shellScroll,
+    QWidget#contentInset QScrollArea#pageScroll,
+    QScrollArea#shellScroll > QWidget#qt_scrollarea_viewport,
+    QScrollArea#pageScroll > QWidget#qt_scrollarea_viewport {{
+        background: transparent;
+        border: none;
+    }}
+
+    /* Panels: a translucent lift over the page, one crisp edge, tight inner
+       padding. Not an opaque slab - the backdrop grid reads through, which is
+       what ties the panels to the page instead of stacking boxes on it. */
+    QFrame#card {{
+        background-color: {card_tint};
+        border: 1px solid {line};
+        border-radius: 0px;
+    }}
+
+    /* Skill-replacement rows: the same faint panel and 1px edge as the
+       card they sit in, not the base sheet's solid block. */
+    QFrame#skillSwapCard {{
+        background-color: {card_tint};
+        border: 1px solid {line};
+        border-radius: 0px;
+    }}
+    QFrame#skillSwapCard:hover {{
+        background-color: {band_tint};
+        border-color: {seam};
+    }}
+
+    QFrame#sidebar {{
+        background-color: {panel};
+        border: none;
+        border-right: 1px solid {seam};
+    }}
+
+    /* Nav: compact rows, accent only on the selected one. */
+    QPushButton#sidebarItem {{
+        border: none;
+        border-left: 3px solid transparent;
+        border-radius: 0px;
+        /* Extra left padding clears the selection caret. */
+        padding: 5px 10px 5px 15px;
+        min-height: 26px;
+        font-size: {f.SIZE_MD}pt;
+        font-weight: 500;
+    }}
+    QPushButton#sidebarItem:hover {{
+        background-color: {hover};
+    }}
+    /* No accent edge bar: the selected row is marked by the stepped caret
+       _SidebarItem paints. The transparent border is kept so the label sits
+       at the same x whether or not the row is selected. */
+    QPushButton#sidebarItem:checked {{
+        background-color: {c.BG_OVERLAY};
+        border-left: 3px solid transparent;
+        color: {c.TEXT_PRIMARY};
+        font-weight: 600;
+    }}
+
+    /* Buttons: flat blocks that hug their label. The press state shifts
+       tone, not geometry. */
+    /* 2px vertical padding, not 4: the 1px accent border counts toward the
+       box, and the CTA has to land on the same 34px as the bordered ghost
+       buttons and the inputs beside it. */
+    QPushButton#primaryCta, QPushButton#splashPrimary {{
+        background-color: {c.ACCENT};
+        color: #16130a;
+        border: 1px solid {c.ACCENT};
+        border-radius: 0px;
+        padding: 2px 14px;
+        min-height: 28px;
+        max-height: 28px;
+        font-weight: 600;
+    }}
+    QPushButton#secondary, QPushButton#splashSecondary {{
+        background-color: {c.BG_OVERLAY};
+        border: 1px solid {line};
+        border-radius: 0px;
+        padding: 4px 12px;
+    }}
+    QPushButton#secondary:hover, QPushButton#splashSecondary:hover {{
+        border-color: {c.ACCENT_MUTED};
+    }}
+
+    /* The base sheet sizes these with literals the legacy skin depends on, so
+       they never followed BUTTON_HEIGHT/INPUT_HEIGHT down to the voxel scale:
+       every ghost button rendered 42px and the run spinners 46px, against 34px
+       inputs beside them. Overridden by id here, voxel only. */
+    QPushButton#ghostBtn {{
+        border-radius: 0px;
+        padding: 2px 12px;
+        min-height: 28px;
+        max-height: 28px;
+    }}
+    QSpinBox#runCount, QTimeEdit#runCount {{
+        padding: 2px 6px;
+        min-height: 24px;
+    }}
+
+    /* The splash card fills the whole frameless splash window, so it is the
+       PAGE surface, not a card on a page: it takes {page}, not {panel}. The
+       base sheet paints it with the v2 3-stop gradient, which made the first
+       surface of every launch the one place the old look survived. */
+    QFrame#splashCard {{
+        background-color: {page};
+        border: 1px solid {seam};
+    }}
+
+    /* Title-bar search: the same recessed well as the other inputs, and
+       a square list under it. */
+    QLineEdit#titleSearch {{
+        background-color: {sunk};
+        border: 1px solid {line};
+        border-radius: 0px;
+        padding: 0px 8px;
+    }}
+    QLineEdit#titleSearch:focus {{
+        border: 1px solid {c.ACCENT};
+    }}
+    QFrame#searchPopup {{
+        background-color: {panel};
+        border: 1px solid {seam};
+        border-radius: 0px;
+    }}
+
+    /* Inputs: recessed well, one edge, accent only on focus. */
+    QLineEdit#textField, QComboBox#combo, QSpinBox, QDoubleSpinBox,
+    QPlainTextEdit, QTextEdit {{
+        background-color: {sunk};
+        border: 1px solid {line};
+        border-radius: 0px;
+        padding: 2px 6px;
+    }}
+    QLineEdit#textField:focus, QComboBox#combo:focus,
+    QSpinBox:focus, QDoubleSpinBox:focus {{
+        border: 1px solid {c.ACCENT};
+    }}
+
+    /* Headers: section titles were the DIMMEST text on the page, so the
+       structure could not be skimmed. Lift them above body text and reserve
+       the muted tone for micro-labels underneath. */
+    /* Panel titles are drawn in the pixel face (widgets._title_label), so
+       these only carry the accent tick and spacing - no font override, which
+       is what made every header read as a code editor. */
+    /* Section titles sit on a filled band rather than floating on the page,
+       so a long list reads as banded groups instead of one undifferentiated
+       run of items. */
+    /* The filled band alone marks a section. No accent edge bar: it is the
+       most over-used selection/heading device there is, and with one on every
+       header the accent stopped meaning anything. */
+    QWidget#sectionLabel {{
+        background-color: {band_tint};
+    }}
+    /* Inside a folding header the bar already paints the band across the full
+       width. The title would otherwise paint a SECOND translucent layer over
+       it and show as a lighter chip - two alphas compound where a solid
+       colour used to match exactly. */
+    QWidget#sectionHeader QWidget#sectionLabel {{
+        background: transparent;
+    }}
+    QLabel#subSectionLabel, QLabel#inlineMeta {{
+        color: {dim};
+    }}
+
+    /* No settingRow min-height here: the row derives its own floor from the
+       control it wraps (widgets.SettingRow). A fixed value is applied during
+       polish, i.e. AFTER the row computed its floor, so it overrides it - and
+       26px is below what the legacy skin's taller toggle needs. */
+    QLabel#settingTitle {{
+        font-size: {f.SIZE_BASE}pt;
+    }}
+
+
+    /* Slim square scrollbars. */
+    QScrollBar:vertical {{
+        width: 10px;
+        background: {c.BG_BASE};
+        border-left: 1px solid {line_soft};
+    }}
+    QScrollBar:horizontal {{
+        height: 10px;
+        background: {c.BG_BASE};
+        border-top: 1px solid {line_soft};
+    }}
+    QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
+        background: {line};
+        border: none;
+        border-radius: 0px;
+        min-height: 24px;
+        min-width: 24px;
+    }}
+    QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{
+        background: {c.ACCENT_MUTED};
+    }}
+
+    QCheckBox::indicator {{
+        border: 1px solid {line};
+        border-radius: 0px;
+    }}
+
+    /* Base-sheet holdouts: these carry hardcoded pixel radii rather than the
+       RADIUS_* tokens, so squaring the tokens never reached them and they
+       kept rendering in the v2 shape. */
+    QListWidget#orderedList::indicator,
+    QSlider#slider::groove:horizontal,
+    QSlider#slider::sub-page:horizontal,
+    QSlider#slider::handle:horizontal,
+    QProgressBar#splashBar, QProgressBar#splashBar::chunk,
+    QPushButton#splashClose {{
+        border-radius: 0px;
+    }}
+
+    QFrame#hrule {{
+        background-color: {line_soft};
+        max-height: 1px;
+    }}
+    """
+
+
+def _base_qss() -> str:
     c = Colors
     s = Sizing
     f = Fonts
@@ -141,7 +479,7 @@ def build_global_qss() -> str:
         font-weight: 500;
     }}
 
-    QPushButton#titleBarBtn {{
+    QPushButton#titleBarBtn, QPushButton#titleBarBtnClose {{
         background-color: transparent;
         border: none;
         color: {c.TEXT_SECONDARY};
@@ -156,6 +494,8 @@ def build_global_qss() -> str:
         background-color: {c.BG_HOVER};
         color: {c.TEXT_PRIMARY};
     }}
+    /* The close button carried ONLY a :hover rule, so at rest it fell back to
+       the platform default button - a light raised box next to two flat ones. */
     QPushButton#titleBarBtnClose:hover {{
         background-color: #e81123;
         color: white;
@@ -310,6 +650,13 @@ def build_global_qss() -> str:
         font-size: {f.SIZE_SM}pt;
     }}
 
+    /* Rank 1 in a stats block. */
+    QLabel#rankBest {{
+        color: {c.ACCENT};
+        font-size: {f.SIZE_SM}pt;
+        font-weight: 700;
+    }}
+
     /* Elevated surface panel - groups content with depth instead of
        leaving it flat on the page. Lighter bg + soft border + rounded
        corners; the drop shadow is applied in code (widgets.Card). */
@@ -417,6 +764,17 @@ def build_global_qss() -> str:
     QLabel#activityMeta {{
         color: {c.TEXT_TERTIARY};
         font-size: {f.SIZE_SM}pt;
+    }}
+
+    /* Drag-reorder card on the skill-replacement list. Lives here rather than
+       in a per-widget stylesheet so a live skin/theme switch rebuilds it. */
+    QFrame#skillSwapCard {{
+        background-color: {c.BG_OVERLAY};
+        border: 1px solid {c.BORDER_SUBTLE};
+        border-radius: {s.RADIUS_SM}px;
+    }}
+    QFrame#skillSwapCard:hover {{
+        background-color: {c.BG_HOVER};
     }}
 
     /* Primary CTA */
@@ -756,17 +1114,15 @@ def build_global_qss() -> str:
     QSpinBox#runCount:focus, QTimeEdit#runCount:focus {{
         border-color: {c.ACCENT};
     }}
-    /* Step button SUB-CONTROLS: transparent background and no border
-       so they blend into the styled pill, but we keep Qt's native
-       arrow drawing path. The previous attempt used a CSS triangle
-       (transparent left/right borders + a solid coloured bottom or
-       top border) but Qt's QSS engine renders those as four discrete
-       line segments instead of meeting them at the 45 deg corners
-       the way a browser does, so the chevrons appeared as two thin
-       horizontal bars instead of proper triangles. We DO need the
-       explicit `subcontrol-position` because without it some builds
-       clip the buttons against the styled border-radius and they
-       disappear entirely. */
+    /* Step button SUB-CONTROLS: transparent background and no border so they
+       blend into the styled pill. Giving them any geometry puts Qt6 on the
+       fully-custom CC_SpinBox path, where the arrow is drawn ONLY from the
+       ::up-arrow/::down-arrow rules below - there is no native fallback, so
+       without those rules the step affordance is never painted at all. Qt
+       renders them as filled blocks rather than true triangles, the same as
+       QComboBox#combo::down-arrow. The explicit `subcontrol-position` is
+       needed because without it some builds clip the buttons against the
+       styled border-radius and they disappear entirely. */
     QSpinBox#runCount::up-button, QTimeEdit#runCount::up-button {{
         background-color: transparent;
         border: none;
@@ -792,6 +1148,34 @@ def build_global_qss() -> str:
     QSpinBox#runCount::up-button:hover, QTimeEdit#runCount::up-button:hover,
     QSpinBox#runCount::down-button:hover, QTimeEdit#runCount::down-button:hover {{
         background-color: {c.BG_HOVER};
+    }}
+    QSpinBox#runCount::up-arrow, QTimeEdit#runCount::up-arrow {{
+        width: 0; height: 0;
+        border-left: 4px solid transparent;
+        border-right: 4px solid transparent;
+        border-bottom: 5px solid {c.TEXT_PRIMARY};
+    }}
+    QSpinBox#runCount::down-arrow, QTimeEdit#runCount::down-arrow {{
+        width: 0; height: 0;
+        border-left: 4px solid transparent;
+        border-right: 4px solid transparent;
+        border-top: 5px solid {c.TEXT_PRIMARY};
+    }}
+    /* At the range limit Qt marks the sub-control :off; without this the
+       indicator stays at full brightness and reads as steppable. */
+    QSpinBox#runCount::up-arrow:off, QSpinBox#runCount::up-arrow:disabled,
+    QTimeEdit#runCount::up-arrow:off, QTimeEdit#runCount::up-arrow:disabled {{
+        border-bottom-color: {c.TEXT_TERTIARY};
+    }}
+    QSpinBox#runCount::down-arrow:off, QSpinBox#runCount::down-arrow:disabled,
+    QTimeEdit#runCount::down-arrow:off, QTimeEdit#runCount::down-arrow:disabled {{
+        border-top-color: {c.TEXT_TERTIARY};
+    }}
+    QSpinBox#runCount::up-arrow:hover, QTimeEdit#runCount::up-arrow:hover {{
+        border-bottom-color: {c.ACCENT};
+    }}
+    QSpinBox#runCount::down-arrow:hover, QTimeEdit#runCount::down-arrow:hover {{
+        border-top-color: {c.ACCENT};
     }}
 
     /* Scroll area inside pages should match the page bg */
@@ -881,6 +1265,38 @@ def build_global_qss() -> str:
     }}
     QDialog#dialog QDialogButtonBox QPushButton:default:hover {{
         background-color: {c.ACCENT_HOVER};
+    }}
+
+    /* Title-bar feature search and the list it opens */
+    QLineEdit#titleSearch {{
+        background-color: {c.BG_OVERLAY};
+        color: {c.TEXT_PRIMARY};
+        border: 1px solid {c.BORDER_SUBTLE};
+        border-radius: {s.RADIUS_SM}px;
+        padding: 0px 10px;
+        font-size: {f.SIZE_SM}pt;
+        selection-background-color: {c.ACCENT_MUTED};
+    }}
+    QLineEdit#titleSearch:focus {{
+        border-color: {c.ACCENT};
+    }}
+    QFrame#searchPopup {{
+        background-color: {c.BG_RAISED};
+        border: 1px solid {c.BORDER_STRONG};
+        border-radius: {s.RADIUS_SM}px;
+    }}
+    QLabel#searchHeading {{
+        color: {c.ACCENT};
+        font-size: {f.SIZE_XS}pt;
+        font-weight: 600;
+        padding: 8px 12px 4px 12px;
+        background: transparent;
+    }}
+    QLabel#searchEmpty {{
+        color: {c.TEXT_TERTIARY};
+        font-size: {f.SIZE_SM}pt;
+        padding: 10px 12px;
+        background: transparent;
     }}
 
     /* Text input field (Discord token / channel) */

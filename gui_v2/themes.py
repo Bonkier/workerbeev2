@@ -141,6 +141,12 @@ def apply_saved_theme():
         _apply_text(text)
     else:
         _restore_default_text()
+    # A season dresses the whole app over the saved theme, which is left
+    # untouched on disk and comes back when the season ends.
+    from . import seasonal
+    if seasonal.is_halloween():
+        _apply_accent(seasonal.RED)
+        _apply_background(seasonal.BACKGROUND)
 
 
 def _restyle_running_app():

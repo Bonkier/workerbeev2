@@ -13,8 +13,12 @@ from ctypes import c_char_p, c_int, c_uint8
 
 WINMODE_FLAGS = 0x00000900 if sys.platform == "win32" else 0
 _EXPORTS = (
-    "z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z8",
-    "z9", "z10", "z11", "z12", "z13", "z14", "z15", "z16",
+    "electric_sheep_5v",   "electric_sheep_9v",   "electric_sheep_12v",
+    "electric_sheep_18v",  "electric_sheep_24v",  "electric_sheep_36v",
+    "electric_sheep_48v",  "electric_sheep_60v",  "electric_sheep_90v",
+    "electric_sheep_110v", "electric_sheep_120v", "electric_sheep_220v",
+    "electric_sheep_230v", "electric_sheep_240v", "electric_sheep_277v",
+    "electric_sheep_400v", "electric_sheep_480v",
 )
 
 

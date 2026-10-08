@@ -9,6 +9,9 @@ NAME_ORDER = 0
 DUPLICATES = False
 
 LOG = True
+# "Debug image matches" (Settings > Advanced): trace every template match's
+# confidence against its threshold, misses included, into game.log.
+DEBUG_MATCH_CONF = False
 BONUS = False
 RESTART = True
 ALTF4 = False
@@ -101,6 +104,7 @@ CUSTOM_ENHANCE_DONE = {}
 # Fuse targets confirmed crafted this attempt, so later shops skip the whole
 # open-menu/verify dance for them. Reset per attempt in execute_me.
 CUSTOM_FUSE_DONE = set()
+CUSTOM_FUSE_ACTIVE = False
 CLAIM_ON_DEFEAT = False
 # Run `shutdown /l` after the run queue finishes (unattended runs).
 LOGOUT_ON_FINISH = False
@@ -110,6 +114,19 @@ THRILL_DONE = False
 # THRILL: set by thrill_market_f1 when F1 exits without crafting Thrill.
 # Triggers no-claim forfeit + a "Restart" telemetry entry (not a defeat).
 THRILL_F1_RESTART = False
+# Set by fight() when a battle is lost three times over; main_loop then
+# forfeits the run rather than walking back into the same node.
+STUCK_FORFEIT = False
+# HOLLOW run (see wbcore/hollow.py)
+HOLLOW_HEAL = ""
+HOLLOW_FALLBACK = []
+HOLLOW_CORRODED = False
+HOLLOW_CORRODED_FLOOR = 0
+HOLLOW_AIM_CHECKED = False
+HOLLOW_TURN = 0
+HOLLOW_MENU_DUMPED = False
+HOLLOW_RETRIES = 0
+HOLLOW_NODE = ""
 
 # SHOP: Skill Replacement (all 12 sinners).
 # ACTIVE            - sinner names to accept offers for.
@@ -123,6 +140,7 @@ SKILL_REPLACE_ORDER = {}
 SKILL_REPLACE_REMAINING = {}
 SKILL_REPLACE_USED_THIS_SHOP = 0
 SKILL_REPLACE_SINNERS_THIS_SHOP = set()
+SKILL_REPLACE_SCAN_LOGGED = False
 
 # LUXCAVATION.
 # THD_DIFFICULTY - level 20/30/40/50/60; maps to lux_lv{N} template.

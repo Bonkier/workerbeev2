@@ -149,6 +149,7 @@ REG = {
     # grab.py
     "encounterreward": ( 412,  165,  771,   72),
     "Confirm"        : ( 791,  745,  336,  104),
+    "starlightConfirm": (980,  708,  340,   74),
     "Cancel"         : ( 660,  650,  278,   92),
     "EGObin"         : (  87,   49,   90,   90),
     "EGO"            : (   0,  309, 1920,  110),
@@ -402,6 +403,27 @@ PACKS = {
     'PilgrimageofCompassion'      : ((4, 5), (4, 5)),
     'MnesticExperience'           : ((5,), (5,))
 }
+
+# Packs that ship two card arts differing only in a trailing section number
+# (different fights). Each SECTION is the real pack; the key is only the
+# shared banner used to find the cards and to name the in-game Pack Search
+# entry, so it is deliberately absent from PACKS. Lives here so both the
+# backend (pack.py) and the config UI can resolve base <-> sections.
+PACK_SECTIONS = {
+    'Line4': ('Line4Sec3', 'Line4Sec4'),
+}
+
+
+def pack_in_floor(key, floor, packs=None):
+    """Is `key` offered on `floor` (either difficulty)? A section base counts
+    as offered when any of its sections is."""
+    packs = packs if packs is not None else PACKS
+    for name in (key,) + tuple(PACK_SECTIONS.get(key, ())):
+        entry = packs.get(name)
+        if entry and (floor in entry[0] or floor in entry[1]):
+            return True
+    return False
+
 
 def packs_to_floors(packs, hard=False):
     floors = {}

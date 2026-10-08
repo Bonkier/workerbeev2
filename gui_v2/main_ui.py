@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Main UI shell: sidebar navigation + page stack."""
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import (
+    Property, QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal,
+)
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QVBoxLayout, QWidget,
@@ -16,8 +19,9 @@ from .scheduler_page import SchedulerPage
 from .settings_page import SettingsPage
 from .splash import _load_app_icon, _read_version
 from .stats_page import StatsPage
-from .theme import Motion, Sizing
-from .widgets import AnimatedStack
+from . import seasonal
+from .theme import Colors, Motion, Sizing
+from .widgets import AnimatedStack, ElidedLabel, PageBackdrop
 
 
 # Sidebar nav: (key, label).
@@ -34,7 +38,12 @@ _NAV_ITEMS = (
 
 
 class _SidebarItem(QPushButton):
-    """Text-only nav row; :checked shows a yellow left-edge bar."""
+    """Text-only nav row. The selected row is marked with a stepped caret that
+    slides in from the left, the way a menu cursor does - the legacy skin keeps
+    its v2 accent edge bar instead."""
+
+    _UNIT = 3                      # caret pixel size
+    _STEPS = (1, 2, 3, 2, 1)       # blocks per row, giving a right-pointing wedge
 
     def __init__(self, key: str, label: str,
                  parent: QWidget | None = None):
@@ -44,6 +53,50 @@ class _SidebarItem(QPushButton):
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFlat(True)
+        self._grow = 0.0
+        self._caret = False
+        self.refresh_theme()
+        self._anim = QPropertyAnimation(self, b"caretGrow", self)
+        self._anim.setDuration(Motion.QUICK)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.toggled.connect(self._on_toggled)
+
+    def refresh_theme(self):
+        from .skins import is_voxel
+        self._caret = is_voxel()
+        self.update()
+
+    def _on_toggled(self, on: bool):
+        self._anim.stop()
+        self._anim.setStartValue(self._grow)
+        self._anim.setEndValue(1.0 if on else 0.0)
+        self._anim.start()
+
+    def _get_grow(self):
+        return self._grow
+
+    def _set_grow(self, v):
+        self._grow = v
+        self.update()
+
+    caretGrow = Property(float, _get_grow, _set_grow)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._caret or self._grow <= 0.0:
+            return
+        u = self._UNIT
+        h = len(self._STEPS) * u
+        y = (self.height() - h) // 2
+        # Slides in from the left and fades up together.
+        x = 3 - int(round((1.0 - self._grow) * 7))
+        col = QColor(Colors.ACCENT)
+        col.setAlpha(int(255 * self._grow))
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        for i, n in enumerate(self._STEPS):
+            p.fillRect(x, y + i * u, n * u, u, col)
+        p.end()
 
 
 class MainUI(QWidget):
@@ -67,14 +120,18 @@ class MainUI(QWidget):
 
         root.addWidget(self._build_sidebar())
 
-        # Window controls float top-right; inset so page headers clear them
-        # while the sidebar runs full-height.
-        content_wrap = QWidget(self)
+        # The title bar floats as a full-width raised overlay
+        # (main_window._position_titlebar), so the inset has to clear its FULL
+        # height, not a token gap: at 8px the page header's action buttons were
+        # drawn under the minimise/maximise/close controls, and because the bar
+        # is raised it also swallowed clicks on the top of those buttons. The
+        # sidebar is a sibling and still runs full-height.
+        content_wrap = PageBackdrop(self)
         content_wrap.setObjectName("contentInset")
         content_wrap.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         # The inset's themed gradient lives in global QSS (#contentInset).
         cw = QVBoxLayout(content_wrap)
-        cw.setContentsMargins(0, Sizing.SPACE_MD, 0, 0)
+        cw.setContentsMargins(0, Sizing.TITLEBAR_HEIGHT, 0, 0)
         cw.setSpacing(0)
         cw.addWidget(self._build_content())
         root.addWidget(content_wrap, stretch=1)
@@ -94,10 +151,82 @@ class MainUI(QWidget):
             pass
 
     # --- Sidebar ----------------------------------------------------
+    def _build_brand(self):
+        """Sidebar brand for the active skin: the animated voxel bee with the
+        pixel wordmark, or the v2 icon + text labels."""
+        host = self._brand_host
+        row = self._brand_row
+        while row.count():                       # clear (a skin switch rebuilds)
+            item = row.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+            elif item.layout() is not None:
+                lay = item.layout()
+                while lay.count():
+                    sub = lay.takeAt(0).widget()
+                    if sub is not None:
+                        sub.setParent(None)
+                        sub.deleteLater()
+                lay.setParent(None)
+
+        voxel = False
+        try:
+            from .skins import is_voxel
+            voxel = is_voxel()
+        except Exception:
+            voxel = False
+
+        if voxel:
+            from .voxel import PixelWordmark, VoxelLogo
+            row.addWidget(VoxelLogo(34, host),
+                          alignment=Qt.AlignmentFlag.AlignVCenter)
+            text_col = QVBoxLayout()
+            text_col.setContentsMargins(0, 0, 0, 0)
+            text_col.setSpacing(Sizing.SPACE_XXS)
+            text_col.addWidget(PixelWordmark(3, host))
+            tagline = ElidedLabel("Limbus automation", host)
+            tagline.setObjectName("sidebarTagline")
+            text_col.addWidget(tagline)
+            row.addLayout(text_col)
+            row.addStretch(1)
+            return
+
+        logo_pix = _load_app_icon(30)
+        if logo_pix is not None:
+            logo = QLabel(host)
+            logo.setPixmap(logo_pix)
+            logo.setFixedSize(30, 30)
+            logo.setScaledContents(True)
+            row.addWidget(logo, alignment=Qt.AlignmentFlag.AlignVCenter)
+        brand_text = QVBoxLayout()
+        brand_text.setContentsMargins(0, 0, 0, 0)
+        brand_text.setSpacing(0)
+        first, second = seasonal.brand()
+        title = QLabel(first + second, host)
+        if seasonal.is_halloween():
+            title.setTextFormat(Qt.TextFormat.RichText)
+            title.setText(
+                f"<span style='color:{seasonal.RED}'>{first}</span>"
+                f"<span style='color:{seasonal.BONE}'>{second}</span>")
+        title.setObjectName("sidebarBrand")
+        brand_text.addWidget(title)
+        tagline = ElidedLabel("Limbus automation", host)
+        tagline.setObjectName("sidebarTagline")
+        brand_text.addWidget(tagline)
+        row.addLayout(brand_text)
+        row.addStretch(1)
+
+    def rebuild_brand(self):
+        """Skin switch hook (skins._rebrand_running_app)."""
+        if hasattr(self, "_brand_row"):
+            self._build_brand()
+
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame(self)
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(232)
+        sidebar.setFixedWidth(Sizing.SIDEBAR_WIDTH)
         col = QVBoxLayout(sidebar)
         col.setContentsMargins(
             Sizing.SPACE_MD, Sizing.SPACE_XXL,
@@ -105,35 +234,17 @@ class MainUI(QWidget):
         )
         col.setSpacing(Sizing.SPACE_XXS)
 
-        brand_row = QHBoxLayout()
-        brand_row.setContentsMargins(0, 0, 0, 0)
-        brand_row.setSpacing(Sizing.SPACE_SM)
-
-        logo_pix = _load_app_icon(30)
-        if logo_pix is not None:
-            logo = QLabel(sidebar)
-            logo.setPixmap(logo_pix)
-            logo.setFixedSize(30, 30)
-            logo.setScaledContents(True)
-            brand_row.addWidget(logo, alignment=Qt.AlignmentFlag.AlignVCenter)
-
-        brand_text = QVBoxLayout()
-        brand_text.setContentsMargins(0, 0, 0, 0)
-        brand_text.setSpacing(0)
-        title = QLabel("WorkerBee", sidebar)
-        title.setObjectName("sidebarBrand")
-        brand_text.addWidget(title)
-        tagline = QLabel("Limbus automation", sidebar)
-        tagline.setObjectName("sidebarTagline")
-        brand_text.addWidget(tagline)
-        brand_row.addLayout(brand_text)
-        brand_row.addStretch(1)
-        col.addLayout(brand_row)
+        self._brand_host = QWidget(sidebar)
+        self._brand_row = QHBoxLayout(self._brand_host)
+        self._brand_row.setContentsMargins(0, 0, 0, 0)
+        self._brand_row.setSpacing(Sizing.SPACE_SM)
+        self._build_brand()
+        col.addWidget(self._brand_host)
 
         col.addSpacing(Sizing.SPACE_LG)
 
         for key, label in _NAV_ITEMS:
-            btn = _SidebarItem(key, label, sidebar)
+            btn = _SidebarItem(key, seasonal.title(label), sidebar)
             btn.clicked.connect(lambda _c=False, k=key: self._select(k))
             col.addWidget(btn)
             self._items[key] = btn
@@ -216,8 +327,12 @@ class MainUI(QWidget):
         sa.setObjectName("shellScroll")
         sa.setWidgetResizable(True)
         sa.setFrameShape(QScrollArea.Shape.NoFrame)
+        # AlwaysOff makes the scroll area adopt the page's full minimum width,
+        # which is how a wide page (settings) pushed the whole window's
+        # minimum past 2000px and drew its right-hand column off-screen with
+        # no way to reach it.
         sa.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         sa.setWidget(page)
         return sa
@@ -233,13 +348,17 @@ class MainUI(QWidget):
             return
         self._stack.setCurrentWidget(target)
 
-    def _reveal_stk_settings(self):
-        """Switch to Settings and scroll the SAIKAI / THRILL card near the top.
-        Deferred past the page transition so the scroll area has final geometry
-        (the switch animates and grabs page pixmaps for ~Motion.NORMAL ms)."""
+    def _reveal_stk_settings(self, run=None):
+        """Switch to Settings and scroll the custom run card near the top,
+        showing `run` when one is named. Deferred past the page transition
+        so the scroll area has final geometry (the switch animates and grabs
+        page pixmaps for ~Motion.NORMAL ms)."""
         self._select("settings")
         page = self._pages.get("settings")
         wrapper = self._wrappers.get("settings")
+        seg = getattr(page, "_stk_seg", None)
+        if run and seg is not None and run in getattr(seg, "_buttons", {}):
+            seg._buttons[run].click()
         card = getattr(page, "_stk_card", None)
         if card is None or not isinstance(wrapper, QScrollArea):
             return

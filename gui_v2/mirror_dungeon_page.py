@@ -1,15 +1,28 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Mirror Dungeon page - the full run-config surface."""
 
+import os
+
 from PySide6.QtCore import QMimeData, QPoint, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QDrag, QFont, QPainter, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor, QDrag, QFont, QPainter, QPainterPath, QPen, QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractButton, QApplication, QCompleter, QDialog, QDialogButtonBox,
     QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidgetItem,
     QPushButton, QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from .run_config import SAIKAI_LABEL
+from .run_config import HOLLOW_LABEL, HOLLOW_SEARCH_GIFTS, SAIKAI_LABEL
+
+_MARKET_SLOT_HINTS = {
+    "saikai": ("Editing the SAIKAI market config (used by SAIKAI runs only). "
+               "Pick another strategy to edit your normal config."),
+    "hollow": ("Editing the Hollow market config (used by Hollow runs only; "
+               "its floor plan decides the fuses, the kept gifts and the "
+               "upties, so only Buy and Sell tags matter here). Pick "
+               "another strategy to edit your normal config."),
+}
 from .settings import load_section, save_section
 from .copy import (
     MD_CUSTOM_RUN_HINT,
@@ -18,20 +31,36 @@ from .copy import (
     MD_RUN_COUNT_HINT,
     MD_SKILL_REPLACEMENT_HINT_RICH,
 )
+from . import seasonal
 from .theme import Colors, Sizing
 from .widgets import (
     AnimatedStack, Card, ChipList, ClickOrderGrid, CycleChip, FloorPacks,
     FlowLayout, GhostButton, HRule, IconlessTabBar, LinkButton, OrderedList,
-    PageHeader, PrimaryButton, Segmented, SettingRow, Toggle,
-    show_placeholder_notice,
+    CollapsibleSection, PageHeader, PrimaryButton, Segmented, SettingRow,
+    Toggle, _rad, _title_label, page_fill_qss, show_placeholder_notice,
+    tag_chip_qss,
 )
 
 _SECTION = "mirror"
+
+# Width cap on a behaviour row, so every switch lands on the same vertical
+# rail rather than the panel's right edge.
+_BEHAVIOUR_RAIL = 340
 
 # Statuses with a confirmed Mirror Dungeon team-select icon ({status}_team).
 
 
 _GIFT_TIER_ROMAN = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V", 6: "EX"}
+
+# Full-resolution gift illustrations (tools/fetch_gift_art.py). The bundled
+# ImageAssets are tight in-game crops sized for template matching, which look
+# chopped in the pickers; fall back to them when art is missing.
+def _gift_art(name: str, info: dict) -> str:
+    """Picker image for a gift: the full wiki illustration when present, else
+    the cropped template the bot matches with (which carries the game's dark
+    inventory frame, so it reads as a black box next to the clean art)."""
+    from .giftart import art_path
+    return art_path(name) or info.get("path") or ""
 # Keyword display order within each tier (status order, keywordless last).
 _GIFT_KW_ORDER = (
     "burn", "bleed", "tremor", "rupture", "sinking", "poise",
@@ -55,7 +84,7 @@ class _GiftTile(QAbstractButton):
         self.setToolTip(
             f"{name}\n{info['keyword'].title()}  -  Tier "
             f"{_GIFT_TIER_ROMAN.get(info['tier'], '?')}")
-        pm = QPixmap(info["path"])
+        pm = QPixmap(_gift_art(name, info))
         self._pix = (pm.scaled(self._SIZE, self._SIZE,
                                Qt.AspectRatioMode.KeepAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)
@@ -97,7 +126,7 @@ class _GiftTile(QAbstractButton):
         if self._hover and not self._locked:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(Colors.BG_OVERLAY))
-            p.drawRoundedRect(r, 8, 8)
+            p.drawRoundedRect(r, _rad(8), _rad(8))
         if not self._pix.isNull():
             x = int((self.width() - self._pix.width()) / 2)
             y = int((self.height() - self._pix.height()) / 2)
@@ -105,12 +134,12 @@ class _GiftTile(QAbstractButton):
         if self._selected:
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.setPen(QPen(QColor(Colors.ACCENT), 2))
-            p.drawRoundedRect(r, 8, 8)
+            p.drawRoundedRect(r, _rad(8), _rad(8))
             self._draw_badge(p)
         elif self._hover:
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.setPen(QPen(QColor(Colors.BORDER_STRONG), 1))
-            p.drawRoundedRect(r, 8, 8)
+            p.drawRoundedRect(r, _rad(8), _rad(8))
         p.end()
 
     def _draw_badge(self, p):
@@ -118,7 +147,10 @@ class _GiftTile(QAbstractButton):
         cx, cy = self.width() - b / 2.0 - 3, b / 2.0 + 3
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(Colors.ACCENT))
-        p.drawEllipse(int(cx - b / 2), int(cy - b / 2), b, b)
+        if _rad(b):
+            p.drawEllipse(int(cx - b / 2), int(cy - b / 2), b, b)
+        else:
+            p.drawRect(int(cx - b / 2), int(cy - b / 2), b, b)
         dark = QColor("#0e0e10")
         if self._locked:
             p.setPen(QPen(dark, 1.4))
@@ -126,7 +158,8 @@ class _GiftTile(QAbstractButton):
             p.drawArc(int(cx - 3), int(cy - 5), 6, 6, 0, 180 * 16)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(dark)
-            p.drawRoundedRect(int(cx - 4), int(cy - 1), 8, 6, 1.5, 1.5)
+            p.drawRoundedRect(int(cx - 4), int(cy - 1), 8, 6,
+                              _rad(1.5), _rad(1.5))
         else:
             p.setPen(QPen(dark, 2))
             p.drawLine(int(cx - 4), int(cy + 1), int(cx - 1), int(cy + 3))
@@ -145,8 +178,14 @@ class _KeywordTab(QAbstractButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(keyword.title())
         self.setFixedSize(64, 60)
-        pm = QPixmap(icon_path) if icon_path else QPixmap()
-        self._pix = (pm.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio,
+        # Prefer the wiki status icon: the bundled tab crop has the keyword
+        # printed inside it, which doubled up with this tab's own label.
+        from .giftart import keyword_icon
+        # No bundled-crop fallback: those have the keyword printed inside them,
+        # so a tab without a wiki icon reads better as a plain text tab.
+        src = keyword_icon(keyword)
+        pm = QPixmap(src) if src else QPixmap()
+        self._pix = (pm.scaled(30, 30, Qt.AspectRatioMode.KeepAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)
                      if not pm.isNull() else pm)
 
@@ -168,20 +207,24 @@ class _KeywordTab(QAbstractButton):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(Colors.BG_OVERLAY if (checked or self._hover)
                           else Colors.BG_RAISED))
-        p.drawRoundedRect(r, 8, 8)
+        p.drawRoundedRect(r, _rad(8), _rad(8))
         if not self._pix.isNull():
-            p.drawPixmap(int((self.width() - self._pix.width()) / 2), 6, self._pix)
+            p.drawPixmap(int((self.width() - self._pix.width()) / 2), 7, self._pix)
         f = QFont(self.font())
         f.setPointSizeF(7.5)
         p.setFont(f)
         p.setPen(QColor(Colors.TEXT_PRIMARY if checked else Colors.TEXT_TERTIARY))
-        p.drawText(QRect(2, 40, self.width() - 4, 16),
-                   int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
-                   self._kw.title())
+        # Iconless tabs centre their label instead of leaving a gap above it.
+        label = (QRect(2, 40, self.width() - 4, 16) if not self._pix.isNull()
+                 else QRect(2, 0, self.width() - 4, self.height()))
+        align = (Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+                 if not self._pix.isNull()
+                 else Qt.AlignmentFlag.AlignCenter)
+        p.drawText(label, int(align), self._kw.title())
         if checked:
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.setPen(QPen(QColor(Colors.ACCENT), 2))
-            p.drawRoundedRect(r, 8, 8)
+            p.drawRoundedRect(r, _rad(8), _rad(8))
         p.end()
 
 
@@ -254,7 +297,7 @@ class _GiftGallery(QWidget):
         sa.setObjectName("pageScroll")     # transparent bg, matches the page
         sa.setWidgetResizable(True)
         sa.setFrameShape(QScrollArea.Shape.NoFrame)
-        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         inner = QWidget()
         body = QVBoxLayout(inner)
         body.setContentsMargins(0, 0, 0, Sizing.SPACE_MD)
@@ -275,8 +318,8 @@ class _GiftGallery(QWidget):
                     key=lambda n: n.lower())
                 if not names:
                     continue
-                thdr = QLabel(f"Tier {_GIFT_TIER_ROMAN[tier]}", panel,
-                              objectName="subSectionLabel")
+                thdr = _title_label(f"Tier {_GIFT_TIER_ROMAN[tier]}", panel,
+                                    pixel=2, section=True)
                 pcol.addWidget(thdr)
                 holder = QWidget(panel)
                 flow = FlowLayout(holder, spacing=6)
@@ -343,7 +386,13 @@ class _GiftGallery(QWidget):
     def set_locked(self, names):
         """Mandatory, non-removable picks (always selected, counted in the cap).
         Used to pin SAIKAI's Spiderweb gift."""
-        self._locked = {n for n in (names or []) if n in self._tiles}
+        new = {n for n in (names or []) if n in self._tiles}
+        # A released lock unequips its gift. Left selected, the SAIKAI gift
+        # carried over to the next strategy and was searched for on every
+        # Thrill run. It can still be picked by hand afterwards.
+        released = self._locked - new
+        self._order = [n for n in self._order if n not in released]
+        self._locked = new
         # Locked picks go to the front and survive the cap.
         rest = [n for n in self._order if n not in self._locked]
         self._order = (list(self._locked) + rest)[:self._max]
@@ -365,20 +414,17 @@ class _GiftGallery(QWidget):
             it = self._chips.takeAt(0)
             w = it.widget() if it else None
             if w is not None:
+                w.setParent(None)
                 w.deleteLater()
         for name in self._order:
             locked = name in self._locked
-            chip = QPushButton(f"{name}  \U0001F512" if locked else f"{name}   x",
+            shown = name.replace("&", "&&")      # a bare & would be a mnemonic
+            chip = QPushButton(f"{shown}  \U0001F512" if locked else f"{shown}   x",
                                self._chips_holder)
             border = Colors.ACCENT if locked else Colors.BORDER_STRONG
-            chip.setStyleSheet(
-                f"QPushButton{{background:{Colors.BG_OVERLAY};"
-                f"color:{Colors.TEXT_PRIMARY};border:1px solid {border};"
-                f"border-radius:12px;padding:3px 10px;}}"
-                + ("" if locked else
-                   f"QPushButton:hover{{border-color:{Colors.ACCENT};}}"))
+            chip.setStyleSheet(tag_chip_qss(border, locked=locked))
             if locked:
-                chip.setToolTip("Mandatory for SAIKAI")
+                chip.setToolTip("Mandatory for this run")
             else:
                 chip.setCursor(Qt.CursorShape.PointingHandCursor)
                 chip.clicked.connect(lambda _=False, nm=name: self._toggle(nm))
@@ -460,7 +506,7 @@ class _MarketGiftTile(QAbstractButton):
         self.setToolTip(
             f"{name}\n{info['keyword'].title()}  -  Tier "
             f"{_GIFT_TIER_ROMAN.get(info['tier'], '?')}")
-        pm = QPixmap(info["path"])
+        pm = QPixmap(_gift_art(name, info))
         self._pix = (pm.scaled(self._SIZE, self._SIZE,
                                Qt.AspectRatioMode.KeepAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)
@@ -521,37 +567,59 @@ class _MarketGiftTile(QAbstractButton):
         if self._hover:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(Colors.BG_OVERLAY))
-            p.drawRoundedRect(r, 8, 8)
+            p.drawRoundedRect(r, _rad(8), _rad(8))
         if not self._pix.isNull():
             x = int((self.width() - self._pix.width()) / 2)
             y = int((self.height() - self._pix.height()) / 2)
             p.drawPixmap(x, y, self._pix)
-        # Role badges along the bottom-left.
-        bx, by = 4, self.height() - 17
-        f = QFont(self.font())
-        f.setPointSizeF(6.5)
-        f.setBold(True)
-        for letter, col in self._badges():
+        # Roles read as ONE bar across the bottom edge, split into a segment
+        # per active role, rather than a scatter of stickers floating on the
+        # artwork. It cannot wrap or overflow however many roles are set, and
+        # each segment gets wider the fewer there are.
+        badges = self._badges()
+        if badges:
+            bar_h = 13
+            bx0 = int(r.left()) + 1
+            bw = int(r.width()) - 2
+            by0 = int(r.bottom()) - bar_h
+            # Clip to the frame so the square bar cannot poke out past the
+            # legacy skin's rounded bottom corners.
+            clip = QPainterPath()
+            clip.addRoundedRect(r, _rad(8), _rad(8))
+            p.save()
+            p.setClipPath(clip)
+            # Scrim: keeps the letters legible over bright gift art and gives
+            # the bar an edge to sit on.
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(col))
-            p.drawRoundedRect(bx, by, 13, 13, 3, 3)
+            p.setBrush(QColor(0, 0, 0, 150))
+            p.drawRect(bx0, by0 - 1, bw, bar_h + 1)
+            seg = bw / float(len(badges))
+            f = QFont(self.font())
+            f.setPointSizeF(7.0 if seg >= 15 else 6.0)
+            f.setBold(True)
             p.setFont(f)
-            p.setPen(QColor("#0e0e10"))
-            p.drawText(QRect(bx, by, 13, 13),
-                       int(Qt.AlignmentFlag.AlignCenter), letter)
-            bx += 15
+            for i, (letter, col) in enumerate(badges):
+                sx = bx0 + int(round(i * seg))
+                sw = bx0 + int(round((i + 1) * seg)) - sx
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(col))
+                p.drawRect(sx, by0, sw, bar_h)
+                p.setPen(QColor("#0e0e10"))
+                p.drawText(QRect(sx, by0, sw, bar_h),
+                           int(Qt.AlignmentFlag.AlignCenter), letter)
+            p.restore()
         if self._active:
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.setPen(QPen(QColor(Colors.ACCENT), 2))
-            p.drawRoundedRect(r, 8, 8)
+            p.drawRoundedRect(r, _rad(8), _rad(8))
         elif self._configured():
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.setPen(QPen(QColor(Colors.BORDER_STRONG), 1.5))
-            p.drawRoundedRect(r, 8, 8)
+            p.drawRoundedRect(r, _rad(8), _rad(8))
         elif self._hover:
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.setPen(QPen(QColor(Colors.BORDER_STRONG), 1))
-            p.drawRoundedRect(r, 8, 8)
+            p.drawRoundedRect(r, _rad(8), _rad(8))
         p.end()
 
 
@@ -648,8 +716,8 @@ class _MarketGiftGallery(QWidget):
                     key=lambda n: n.lower())
                 if not names:
                     continue
-                thdr = QLabel(f"Tier {_GIFT_TIER_ROMAN[tier]}", panel,
-                              objectName="subSectionLabel")
+                thdr = _title_label(f"Tier {_GIFT_TIER_ROMAN[tier]}", panel,
+                                    pixel=2, section=True)
                 pcol.addWidget(thdr)
                 holder = QWidget(panel)
                 flow = FlowLayout(holder, spacing=6)
@@ -669,7 +737,7 @@ class _MarketGiftGallery(QWidget):
             sa.setObjectName("pageScroll")
             sa.setWidgetResizable(True)
             sa.setFrameShape(QScrollArea.Shape.NoFrame)
-            sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             sa.setWidget(inner)
             outer.addWidget(sa, 1)
         else:
@@ -687,26 +755,33 @@ class _MarketGiftGallery(QWidget):
         col.setSpacing(Sizing.SPACE_XS)
         row = QHBoxLayout()
         row.setSpacing(Sizing.SPACE_SM)
-        row.addWidget(QLabel("Tag mode", panel, objectName="settingTitle"))
+        row.addWidget(QLabel("Tag mode", panel, objectName="settingTitle"),
+                      0, Qt.AlignmentFlag.AlignTop)
         mode_qss = (
             f"QPushButton{{background:{Colors.BG_RAISED};"
             f"color:{Colors.TEXT_SECONDARY};"
-            f"border:1px solid {Colors.BORDER_SUBTLE};border-radius:13px;"
+            f"border:1px solid {Colors.BORDER_SUBTLE};"
+            f"border-radius:{Sizing.RADIUS_PILL}px;"
             f"padding:5px 14px;font-weight:600;}}"
             f"QPushButton:hover{{border-color:{Colors.ACCENT};}}"
             f"QPushButton:checked{{background:{Colors.ACCENT};"
             f"color:{Colors.BG_BASE};border-color:{Colors.ACCENT};}}"
         )
+        # Flowed, not boxed: a QHBoxLayout cannot wrap, so seven modes summed
+        # to a hard minimum wider than the window and the last ones were laid
+        # out past the right edge. The keyword tabs above already flow.
+        btns = QWidget(panel)
+        flow = FlowLayout(btns, spacing=Sizing.SPACE_SM)
         self._mode_btns = {}
         for key, label in _MARKET_MODES:
-            b = QPushButton(label, panel)
+            b = QPushButton(label, btns)
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet(mode_qss)
             b.clicked.connect(lambda _=False, k=key: self._on_mode(k))
             self._mode_btns[key] = b
-            row.addWidget(b)
-        row.addStretch(1)
+            flow.addWidget(b)
+        row.addWidget(btns, 1)
         col.addLayout(row)
         self._mode_hint = QLabel("Pick a mode, then click gifts to tag them.",
                                  panel, objectName="inlineHint")
@@ -798,6 +873,7 @@ class _MarketGiftGallery(QWidget):
             w = item.widget()
             if w is not None:
                 w.setParent(None)
+                w.setParent(None)
                 w.deleteLater()
 
     def _rebuild_summary(self):
@@ -839,12 +915,7 @@ class _MarketGiftGallery(QWidget):
                 text = f"{num}.  {name}" if num else name
                 chip = QPushButton(f"{text}   ×", chipholder)
                 chip.setCursor(Qt.CursorShape.PointingHandCursor)
-                chip.setStyleSheet(
-                    f"QPushButton{{background:{Colors.BG_OVERLAY};"
-                    f"color:{Colors.TEXT_PRIMARY};border:1px solid {col};"
-                    f"border-radius:11px;padding:2px 9px;}}"
-                    f"QPushButton:hover{{background:{col};"
-                    f"color:{Colors.BG_BASE};}}")
+                chip.setStyleSheet(tag_chip_qss(col))
                 chip.clicked.connect(
                     lambda _=False, k=key, nm=name: self._remove_tag(k, nm))
                 flow.addWidget(chip)
@@ -971,67 +1042,95 @@ _KEYWORDS = (
 _SKILL_CARD_MIME = "application/x-workerbee-skill-swap"
 
 
+# The per-sinner block is capped at this width: at full card width a row's
+# count sat a whole screen away from the swap it belongs to.
+_SKILL_BLOCK_W = 460
+# Twelve sinners as 4 x 3: three name rows, level with the three swap rows.
+_SKILL_CHIP_COLS = 4
+
+
+def _skill_row_h() -> int:
+    """Height shared by a swap row and a sinner chip, so the two columns
+    of the block stay on the same lines."""
+    from .skins import is_voxel
+    return 34 if is_voxel() else 48
+
+
+class _SkillGrip(QWidget):
+    """Drag handle: a 2x3 block of square dots, painted so it matches the
+    pixel look instead of borrowing a braille glyph from the text font."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setFixedSize(7, 12)
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(Colors.TEXT_TERTIARY))
+        for cx in range(2):
+            for cy in range(3):
+                p.drawRect(cx * 5, cy * 5, 2, 2)
+        p.end()
+
+
 class _SkillSwapCard(QFrame):
-    """Drag-reorderable card: handle | label | repeats spinbox."""
+    """Drag-reorderable row: rank | grip | label | repeats spinbox."""
 
     repeats_changed = Signal(str, int)
 
     def __init__(self, swap_key: str, label: str, repeats: int,
                  parent: QWidget | None = None):
         super().__init__(parent)
+        from .skins import is_voxel
         self._swap = swap_key
         self._drag_press: QPoint | None = None
         self.setObjectName("skillSwapCard")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+        voxel = is_voxel()
         # setFixedHeight (not min-height) prevents QVBoxLayout collapsing.
-        self.setFixedHeight(56)
-        self.setStyleSheet(
-            f"QFrame#skillSwapCard {{"
-            f"  background-color: {Colors.BG_OVERLAY};"
-            f"  border: 1px solid {Colors.BORDER_SUBTLE};"
-            f"  border-radius: {Sizing.RADIUS_SM}px;"
-            f"}}"
-            f"QFrame#skillSwapCard:hover {{"
-            f"  background-color: {Colors.BG_HOVER};"
-            f"}}"
-        )
-
+        self.setFixedHeight(_skill_row_h())
         h = QHBoxLayout(self)
-        # Asymmetric margins (4/8) compensate for the QSpinBox baseline.
-        h.setContentsMargins(Sizing.SPACE_MD, 4,
-                             Sizing.SPACE_MD, 8)
+        h.setContentsMargins(Sizing.SPACE_MD, 0, Sizing.SPACE_XS + 1, 0)
         h.setSpacing(Sizing.SPACE_MD)
 
-        handle = QLabel("⠇", self)   # braille dots-1237 (grip)
-        handle.setStyleSheet(
-            f"color: {Colors.TEXT_TERTIARY};"
-            f" background: transparent;"
-            f" border: none;"
-            f" font-size: 18pt;"
-        )
-        handle.setFixedWidth(18)
-        h.addWidget(handle)
+        # Place in the priority order; the stack renumbers it after a drop.
+        self._rank = QLabel("", self)
+        self._rank.setFixedWidth(10)
+        self._rank.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h.addWidget(self._rank)
+        h.addWidget(_SkillGrip(self))
 
-        text = QLabel(label, self, objectName="settingTitle")
-        text.setStyleSheet(
-            "background: transparent; border: none;")
-        h.addWidget(text)
+        self._text = QLabel(label, self, objectName="settingTitle")
+        h.addWidget(self._text)
         h.addStretch(1)
-
-        rep_lbl = QLabel("Repeats", self, objectName="inlineHint")
-        rep_lbl.setStyleSheet(
-            "background: transparent; border: none;")
-        h.addWidget(rep_lbl)
 
         self._spin = QSpinBox(self)
         self._spin.setObjectName("runCount")
         self._spin.setRange(0, 99)
         self._spin.setValue(int(repeats or 0))
-        self._spin.setFixedSize(110, 34)
+        self._spin.setFixedSize(*((58, 24) if voxel else (84, 34)))
+        self._spin.setToolTip("How many times to take this swap in a run")
         self._spin.valueChanged.connect(
             lambda v: self.repeats_changed.emit(self._swap, int(v)))
         h.addWidget(self._spin, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.set_dim(False)
+
+    def set_rank(self, rank: int):
+        self._rank.setText(str(rank))
+
+    def set_dim(self, dim: bool):
+        """Read as inactive without disabling: the row stays editable."""
+        plain = "background: transparent; border: none;"
+        rank = Colors.TEXT_TERTIARY if dim else Colors.ACCENT
+        self._rank.setStyleSheet(
+            f"color: {rank}; font-weight: 700; {plain}")
+        self._text.setStyleSheet(
+            (f"color: {Colors.TEXT_TERTIARY}; " if dim else "") + plain)
+        self._spin.setStyleSheet(
+            f"color: {Colors.TEXT_TERTIARY};" if dim else "")
 
     def swap(self) -> str:
         return self._swap
@@ -1094,6 +1193,15 @@ class _SkillPriorityStack(QWidget):
             card.repeats_changed.connect(self.repeats_changed.emit)
             self._cards.append(card)
             self._layout.addWidget(card)
+        self._renumber()
+
+    def _renumber(self):
+        for i, card in enumerate(self._cards, 1):
+            card.set_rank(i)
+
+    def set_dim(self, dim: bool):
+        for card in self._cards:
+            card.set_dim(dim)
 
     def order(self) -> list[str]:
         return [c.swap() for c in self._cards]
@@ -1134,6 +1242,7 @@ class _SkillPriorityStack(QWidget):
             self._layout.takeAt(0)
         for card in self._cards:
             self._layout.addWidget(card)
+        self._renumber()
 
         event.acceptProposedAction()
         self.order_changed.emit(self.order())
@@ -1369,11 +1478,11 @@ def _pack_search_names_for_floor(floor: int) -> list:
     (either difficulty's pool)."""
     try:
         from wbcore.pack_search_catalog import PACK_SEARCH_KEYS
-        from wbcore.utils.paths import PACKS
-        return sorted(
-            n for n, k in PACK_SEARCH_KEYS.items()
-            if k in PACKS and (floor in PACKS[k][0] or floor in PACKS[k][1])
-        )
+        from wbcore.utils.paths import pack_in_floor
+        # pack_in_floor resolves section bases (e.g. Masquerade Line 4, which
+        # is searchable but is not itself a pack - its sections are).
+        return sorted(n for n, k in PACK_SEARCH_KEYS.items()
+                      if pack_in_floor(k, floor))
     except Exception:
         return []
 
@@ -1414,6 +1523,18 @@ class MirrorDungeonPage(QWidget):
         self._connect_persistence()
         self._restore_state()
 
+    def refresh_theme(self):
+        """Re-apply the per-widget stylesheets that bake tokens in at build
+        time. themes._restyle_running_app rebuilds the GLOBAL sheet on a skin
+        or theme switch, but a string already stored on a widget keeps its old
+        values until the app restarts - which is how pockets of the previous
+        look survived a live switch."""
+        from .widgets import page_fill_qss
+        for name in ("egoGiftsPage", "marketPage"):
+            w = self.findChild(QWidget, name)
+            if w is not None:
+                w.setStyleSheet(f"QWidget#{name} {{ {page_fill_qss()} }}")
+
     def _build(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(
@@ -1423,7 +1544,8 @@ class MirrorDungeonPage(QWidget):
 
         # Pinned header.
         header = PageHeader("Mirror Dungeon", self)
-        self._start_btn = PrimaryButton("Start Mirror Dungeon", self)
+        self._start_btn = PrimaryButton(
+            seasonal.title("Start Mirror Dungeon"), self)
         self._start_btn.clicked.connect(self.start_requested.emit)
         header.add_action(self._start_btn)
         self._stop_btn = GhostButton("Stop", self)
@@ -1440,6 +1562,10 @@ class MirrorDungeonPage(QWidget):
 
         # Tab content - each tab scrolls on its own.
         self._tab_stack = AnimatedStack(self)
+        # No explicit surface: AnimatedStack keeps the snapshot's alpha and
+        # leaves the overlay clear on voxel, so the page backdrop (grid and
+        # twinkle) stays visible under a sliding tab. Forcing a flat colour
+        # here is what made the background vanish mid-transition.
         self._tab_stack.addWidget(self._scroll(self._build_general_tab()))
         self._tab_stack.addWidget(self._scroll(self._build_build_tab()))
         self._tab_stack.addWidget(self._scroll(self._build_packs_tab()))
@@ -1454,7 +1580,7 @@ class MirrorDungeonPage(QWidget):
         sa.setObjectName("pageScroll")
         sa.setWidgetResizable(True)
         sa.setFrameShape(QScrollArea.Shape.NoFrame)
-        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         sa.setWidget(content)
         return sa
 
@@ -1482,12 +1608,13 @@ class MirrorDungeonPage(QWidget):
         ]
         for card, r, c in cells:
             card.setSizePolicy(QSizePolicy.Policy.Preferred,
-                               QSizePolicy.Policy.Expanding)
-            grid.addWidget(card, r, c)
+                               QSizePolicy.Policy.Preferred)
+            grid.addWidget(card, r, c, alignment=Qt.AlignmentFlag.AlignTop)
+        # Columns share the width; rows do NOT share the height, or the two
+        # short cards get stretched to match their taller neighbours and each
+        # ends up mostly empty.
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
-        grid.setRowStretch(0, 1)
-        grid.setRowStretch(1, 1)
         col.addLayout(grid)
 
         col.addWidget(self._build_behaviour_section())
@@ -1542,7 +1669,7 @@ class MirrorDungeonPage(QWidget):
 
     # --- Difficulty -----------------------------------------------
     def _build_difficulty_section(self) -> QWidget:
-        section = Card("DIFFICULTY", self)
+        section = Card("DIFFICULTY", self, collapsible=True)
         self._difficulty = Segmented(
             ["Normal", "Hard", "Extreme"], default="Hard", parent=section,
         )
@@ -1578,7 +1705,8 @@ class MirrorDungeonPage(QWidget):
         # On/off lives in the card header (top-right).
         self._custom_run = Toggle(default=False, parent=self)
         self._custom_run.toggled.connect(self._on_custom_run)
-        section = Card("CUSTOM RUN", self, trailing=self._custom_run)
+        section = Card("CUSTOM RUN", self, trailing=self._custom_run,
+                       collapsible=True)
 
         hint = QLabel(
             MD_CUSTOM_RUN_HINT,
@@ -1588,10 +1716,15 @@ class MirrorDungeonPage(QWidget):
         section.body.addWidget(hint)
 
         self._custom_strategy = Segmented(
-            ["F3 Hard", SAIKAI_LABEL, "Thrill"], default="F3 Hard", parent=section)
+            ["F3 Hard", SAIKAI_LABEL, "Thrill", HOLLOW_LABEL],
+            default="F3 Hard", parent=section)
+        # Thrill is unfinished: it stays on show but cannot be picked, and
+        # a saved config that had it selected falls back to the default.
+        self._custom_strategy.set_locked("Thrill", "W.I.P")
+        self._custom_strategy.locked_clicked.connect(self._on_locked_strategy)
         section.body.addWidget(self._custom_strategy)
 
-        self._stk_link = LinkButton("Go to SAIKAI / Thrill settings", section)
+        self._stk_link = LinkButton("Go to custom run settings", section)
         self._stk_link.clicked.connect(self.open_stk_settings.emit)
         self._stk_link.setVisible(False)
         section.body.addWidget(self._stk_link)
@@ -1612,18 +1745,32 @@ class MirrorDungeonPage(QWidget):
             self._custom_strategy.set_interactive(on)
         self._update_gift_lock()
 
+    def _on_locked_strategy(self, _label: str):
+        from .dialogs import show_notice
+        show_notice(self, "Thrill runs are still being built, so they are "
+                    "switched off for now.", title="W.I.P")
+
     def _update_gift_lock(self, *_):
-        """SAIKAI pins its Spiderweb gift in the picker (mandatory, locked)."""
+        """SAIKAI pins its Spiderweb gift in the picker (mandatory, locked);
+        Hollow pins Grand Welcome and Sharp Needle & Thread the same way
+        (its Cigarette Holder comes from the starter screen, not from here).
+        Each custom strategy edits its own Market/Fuse tag slot, and picking
+        Hollow clears the gift search first, so no earlier config bleeds
+        into its run."""
         if hasattr(self, "_stk_link"):
             self._stk_link.setVisible(
                 self._custom_run.isChecked()
-                and self._custom_strategy.selected() in (SAIKAI_LABEL, "Thrill"))
+                and self._custom_strategy.selected() in (
+                    SAIKAI_LABEL, "Thrill", HOLLOW_LABEL))
         saikai = (self._custom_run.isChecked()
                   and self._custom_strategy.selected() == SAIKAI_LABEL)
+        hollow = (self._custom_run.isChecked()
+                  and self._custom_strategy.selected() == HOLLOW_LABEL)
         if hasattr(self, "_market_gallery"):
             # Swap the gallery to the strategy's tag slot (state() serializes
-            # the inactive slot from _market_slots, so no save is needed here).
-            want = "saikai" if saikai else "normal"
+            # the inactive slots from _market_slots, so no save is needed
+            # here). Hollow's slot starts empty.
+            want = "saikai" if saikai else "hollow" if hollow else "normal"
             if want != self._market_slot:
                 self._market_slots[self._market_slot] = \
                     self._market_gallery.config()
@@ -1632,18 +1779,30 @@ class MirrorDungeonPage(QWidget):
                 if want == "saikai" and cfg is None:
                     cfg = self._saikai_market_seed()
                     self._market_slots["saikai"] = cfg
+                if want == "hollow" and cfg is None:
+                    cfg = {}
+                    self._market_slots["hollow"] = cfg
                 self._market_gallery.set_config(cfg or {})
-            self._market_slot_hint.setVisible(saikai)
+            self._market_slot_hint.setText(_MARKET_SLOT_HINTS.get(want, ""))
+            self._market_slot_hint.setVisible(want != "normal")
         if not hasattr(self, "_gift_gallery"):
             return
+        strategy = (SAIKAI_LABEL if saikai else HOLLOW_LABEL if hollow
+                    else None)
+        if (hollow and strategy != getattr(self, "_gift_lock_strategy", None)
+                and not self._loading):
+            self._gift_gallery.set_selected([])
+        self._gift_lock_strategy = strategy
         self._gift_gallery.set_locked(
-            ["Spiderweb Entangled in Red"] if saikai else [])
+            ["Spiderweb Entangled in Red"] if saikai
+            else list(HOLLOW_SEARCH_GIFTS) if hollow else [])
 
     # --- Team rotation --------------------------------------------
     def _build_team_section(self) -> QWidget:
         add_btn = LinkButton("+ Add team", self)
         add_btn.clicked.connect(self._add_team)
-        section = Card("TEAM ROTATION", self, trailing=add_btn)
+        section = Card("TEAM ROTATION", self, trailing=add_btn,
+                       collapsible=True)
         self._team_section = section
 
         self._teams = [
@@ -1673,6 +1832,7 @@ class MirrorDungeonPage(QWidget):
             item = self._team_rows_container.takeAt(0)
             w = item.widget()
             if w is not None:
+                w.setParent(None)
                 w.deleteLater()
         for i, team in enumerate(self._teams):
             row = _TeamRow(team["name"], team.get("affinities", []),
@@ -1730,6 +1890,7 @@ class MirrorDungeonPage(QWidget):
             "gift_search": self._gift_search_selection(),
             "market_gifts": self._market_slot_cfg("normal"),
             "market_gifts_saikai": self._market_slot_cfg("saikai"),
+            "market_gifts_hollow": self._market_slot_cfg("hollow"),
             "market_controls": self._market_controls_config(),
             "skill_replace": {
                 "active":  sorted(self._skill_active),
@@ -1786,13 +1947,25 @@ class MirrorDungeonPage(QWidget):
                 sk = s.get("market_gifts_saikai")
                 self._market_slots["saikai"] = \
                     sk if isinstance(sk, dict) else None
+                hk = s.get("market_gifts_hollow")
+                self._market_slots["hollow"] = \
+                    hk if isinstance(hk, dict) else None
                 saikai = (bool(s.get("custom_run"))
                           and s.get("custom_strategy") == SAIKAI_LABEL)
-                self._market_slot = "saikai" if saikai else "normal"
+                hollow = (bool(s.get("custom_run"))
+                          and s.get("custom_strategy") == HOLLOW_LABEL)
+                self._market_slot = ("saikai" if saikai
+                                     else "hollow" if hollow else "normal")
+                self._gift_lock_strategy = (
+                    SAIKAI_LABEL if saikai else HOLLOW_LABEL if hollow
+                    else None)
                 cfg = self._market_slots[self._market_slot]
                 if self._market_slot == "saikai" and cfg is None:
                     cfg = self._saikai_market_seed()
                     self._market_slots["saikai"] = cfg
+                if self._market_slot == "hollow" and cfg is None:
+                    cfg = {}
+                    self._market_slots["hollow"] = cfg
                 self._market_gallery.set_config(cfg or {})
             ps = s.get("pack_search_cfg")
             if hasattr(self, "_ps_rows"):
@@ -1891,7 +2064,7 @@ class MirrorDungeonPage(QWidget):
 
     # --- Run count + general -------------------------------------
     def _build_run_section(self) -> QWidget:
-        section = Card("RUN COUNT", self)
+        section = Card("RUN COUNT", self, collapsible=True)
         row = QHBoxLayout()
         row.setSpacing(Sizing.SPACE_SM)
         self._run_count = QSpinBox(self)
@@ -1919,7 +2092,7 @@ class MirrorDungeonPage(QWidget):
 
     # --- Behaviour toggles ---------------------------------------
     def _build_behaviour_section(self) -> QWidget:
-        section = Card("BEHAVIOUR", self)
+        section = Card("BEHAVIOUR", self, collapsible=True)
         self._behaviour = {}
 
         rows = [
@@ -1999,37 +2172,61 @@ class MirrorDungeonPage(QWidget):
         section.body.addLayout(nums)
         section.body.addSpacing(Sizing.SPACE_MD)
 
-        # Two-column toggle grid.
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(Sizing.SPACE_XXL)
-        grid.setVerticalSpacing(0)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+        # Grouped two-column layout. Previously the 17 rows were poured into a
+        # grid row-major, so column 0 held rows 1,3,5,7... and the six related
+        # shop/EGO skips were scattered across both columns - the toggles read
+        # as randomly placed because, in reading order, they were.
         from .widgets import windows_logo_pixmap
-        # Per-key leading icons for OS-reaching toggles.
         _icons = {
             "logout_on_finish": windows_logo_pixmap(18),
         }
-        for i, (key, title, subtitle, default) in enumerate(rows):
-            tog = Toggle(default=default, parent=section)
-            self._behaviour[key] = tog
-            grid.addWidget(
-                SettingRow(title, subtitle, tog, parent=section,
-                           leading_icon=_icons.get(key)),
-                i // 2, i % 2,
-            )
-        section.body.addLayout(grid)
+        by_key = {r[0]: r for r in rows}
+        groups = (
+            ("RUN", ("bonus", "enkephalin", "skip", "winrate",
+                     "swap_max_energy")),
+            ("PACKS", ("pack_search",)),
+            ("ON DEFEAT", ("restart", "claim_on_defeat")),
+            ("SHOP AND EGO", ("skip_restshop", "skip_ego_check",
+                              "skip_ego_fusion", "skip_ego_enhancing",
+                              "skip_ego_buying", "skip_sinner_healing",
+                              "wishmaking")),
+            ("WHEN FINISHED", ("altf4", "logout_on_finish")),
+        )
+        columns = ((0, 1, 2), (3, 4))
+        cols = QHBoxLayout()
+        cols.setSpacing(Sizing.SPACE_XXL)
+        self._behaviour_groups = {}
+        for group_ids in columns:
+            col = QVBoxLayout()
+            col.setSpacing(0)
+            for gid in group_ids:
+                name, keys = groups[gid]
+                if gid != group_ids[0]:
+                    col.addSpacing(Sizing.SPACE_MD)
+                group = CollapsibleSection(name, section)
+                group.setMaximumWidth(_BEHAVIOUR_RAIL)
+                self._behaviour_groups[name] = group
+                for key in keys:
+                    _k, title, subtitle, default = by_key[key]
+                    tog = Toggle(default=default, parent=section)
+                    self._behaviour[key] = tog
+                    group.body.addWidget(SettingRow(
+                        title, subtitle, tog, parent=section,
+                        leading_icon=_icons.get(key), rail=_BEHAVIOUR_RAIL))
+                col.addWidget(group, 0, Qt.AlignmentFlag.AlignLeft)
+            col.addStretch(1)
+            cols.addLayout(col, 1)
+        section.body.addLayout(cols)
         return section
 
     def _build_egogifts_tab(self) -> QWidget:
         """The EGO Gift Search tab: a keyword-tab thumbnail gallery for picking up to
         3 gifts to auto-select at the start of a Mirror Dungeon run."""
-        from .widgets import _page_gradient_qss
         page = QWidget()
         # Paint the page background (only the page, via the id selector) so the
         # AnimatedStack slide snapshot is the dark page, not a grey transparent.
         page.setObjectName("egoGiftsPage")
-        page.setStyleSheet(f"QWidget#egoGiftsPage {{ {_page_gradient_qss()} }}")
+        page.setStyleSheet(f"QWidget#egoGiftsPage {{ {page_fill_qss()} }}")
         col = QVBoxLayout(page)
         col.setContentsMargins(Sizing.SPACE_XL, Sizing.SPACE_LG,
                                Sizing.SPACE_XL, Sizing.SPACE_LG)
@@ -2049,10 +2246,9 @@ class MirrorDungeonPage(QWidget):
 
     def _build_market_tab(self) -> QWidget:
         """The Market tab: buying-workflow controls + per-gift keep/sell/buy config."""
-        from .widgets import _page_gradient_qss
         page = QWidget()
         page.setObjectName("marketPage")
-        page.setStyleSheet(f"QWidget#marketPage {{ {_page_gradient_qss()} }}")
+        page.setStyleSheet(f"QWidget#marketPage {{ {page_fill_qss()} }}")
         col = QVBoxLayout(page)
         col.setContentsMargins(Sizing.SPACE_XL, Sizing.SPACE_LG,
                                Sizing.SPACE_XL, Sizing.SPACE_LG)
@@ -2118,11 +2314,9 @@ class MirrorDungeonPage(QWidget):
         # seeded from the preset the first time SAIKAI is selected and stays
         # fully editable. The gallery edits whichever slot is active.
         self._market_slot = "normal"
-        self._market_slots = {"normal": {}, "saikai": None}
-        self._market_slot_hint = QLabel(
-            "Editing the SAIKAI market config (used by SAIKAI runs only). "
-            "Pick another strategy to edit your normal config.",
-            page, objectName="inlineHint")
+        self._market_slots = {"normal": {}, "saikai": None, "hollow": None}
+        self._market_slot_hint = QLabel(_MARKET_SLOT_HINTS["saikai"],
+                                        page, objectName="inlineHint")
         self._market_slot_hint.setWordWrap(True)
         self._market_slot_hint.setVisible(False)
         col.addWidget(self._market_slot_hint)
@@ -2139,8 +2333,8 @@ class MirrorDungeonPage(QWidget):
 
     def _market_slot_cfg(self, slot):
         """The tag dict for `slot`: live from the gallery when that slot is
-        active, else the stored copy. None = SAIKAI slot never saved (the
-        preset seeds it on first use)."""
+        active, else the stored copy. None = a strategy slot never saved
+        (SAIKAI's preset seeds it on first use; Hollow's starts empty)."""
         if not hasattr(self, "_market_gallery"):
             return {} if slot == "normal" else None
         if slot == self._market_slot:
@@ -2192,7 +2386,7 @@ class MirrorDungeonPage(QWidget):
     _SKILL_REPLACE_DEFAULT_ORDER = ("1>3", "2>3", "1>2")
 
     def _build_skill_replace_section(self) -> QWidget:
-        section = Card("SHOP: SKILL REPLACEMENT", self)
+        section = Card("SKILL REPLACEMENT", self, collapsible=True)
 
         hint = QLabel(
             MD_SKILL_REPLACEMENT_HINT_RICH,
@@ -2214,31 +2408,54 @@ class MirrorDungeonPage(QWidget):
         }
         self._skill_selected_name: str = flat_names[0]
 
-        # 6x2 sinner chip grid (dual-state chip).
+        # The selected sinner's block on the left, the sinner picker on the
+        # right, built so the two share their lines: a caption row each, then
+        # three rows of the same height and spacing (swaps | names).
+        body = QGridLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setHorizontalSpacing(Sizing.SPACE_XL)
+        body.setVerticalSpacing(Sizing.SPACE_SM)
+        body.setColumnStretch(1, 1)
+
+        self._skill_head = QWidget(section)
+        self._skill_head.setFixedWidth(_SKILL_BLOCK_W)
+        head_layout = QHBoxLayout(self._skill_head)
+        head_layout.setContentsMargins(0, 0, Sizing.SPACE_XS + 1, 0)
+        head_layout.setSpacing(Sizing.SPACE_SM)
+        self._skill_head_layout = head_layout
+        body.addWidget(self._skill_head, 0, 0)
+
+        self._skill_details = QFrame(section)
+        self._skill_details.setFixedWidth(_SKILL_BLOCK_W)
+        details_layout = QVBoxLayout(self._skill_details)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        details_layout.setSpacing(Sizing.SPACE_XS)
+        self._skill_details_layout = details_layout
+        body.addWidget(self._skill_details, 1, 0, Qt.AlignmentFlag.AlignTop)
+
+        picker = QWidget(section)
+        picker_col = QVBoxLayout(picker)
+        picker_col.setContentsMargins(0, 0, 0, 0)
+        picker_col.setSpacing(Sizing.SPACE_XS)
+        picker_col.addWidget(QLabel("SINNERS", picker,
+                                    objectName="sectionLabel"),
+                             0, Qt.AlignmentFlag.AlignLeft)
         sinner_grid = QGridLayout()
+        sinner_grid.setContentsMargins(0, 0, 0, 0)
         sinner_grid.setHorizontalSpacing(Sizing.SPACE_SM)
         sinner_grid.setVerticalSpacing(Sizing.SPACE_XS)
         self._skill_chips: dict[str, _SinnerSkillChip] = {}
-        for r, names in enumerate(self._SKILL_REPLACE_SINNERS):
-            for c, name in enumerate(names):
-                chip = _SinnerSkillChip(name, section)
-                chip.selected.connect(self._on_skill_sinner_selected)
-                chip.toggled_active.connect(self._on_skill_sinner_toggle_active)
-                self._skill_chips[name] = chip
-                sinner_grid.addWidget(chip, r, c)
-        section.body.addLayout(sinner_grid)
-
-        section.body.addSpacing(Sizing.SPACE_MD)
-        section.body.addWidget(HRule(section))
-        section.body.addSpacing(Sizing.SPACE_SM)
-
-        # Per-sinner details: title + drag-orderable priority list.
-        self._skill_details = QFrame(section)
-        details_layout = QVBoxLayout(self._skill_details)
-        details_layout.setContentsMargins(0, 0, 0, 0)
-        details_layout.setSpacing(Sizing.SPACE_SM)
-        self._skill_details_layout = details_layout
-        section.body.addWidget(self._skill_details)
+        for i, name in enumerate(flat_names):
+            chip = _SinnerSkillChip(name, picker)
+            chip.setFixedHeight(_skill_row_h())
+            chip.selected.connect(self._on_skill_sinner_selected)
+            chip.toggled_active.connect(self._on_skill_sinner_toggle_active)
+            self._skill_chips[name] = chip
+            sinner_grid.addWidget(chip, i // _SKILL_CHIP_COLS,
+                                  i % _SKILL_CHIP_COLS)
+        picker_col.addLayout(sinner_grid)
+        body.addWidget(picker, 1, 1, Qt.AlignmentFlag.AlignTop)
+        section.body.addLayout(body)
 
         self._skill_chips[self._skill_selected_name].set_selected(True)
         self._render_skill_details()
@@ -2256,49 +2473,95 @@ class MirrorDungeonPage(QWidget):
         self._render_skill_details()
 
     def _on_skill_sinner_toggle_active(self, name: str):
-        """Toggle whether the bot visits `name`."""
-        if name in self._skill_active:
-            self._skill_active.discard(name)
-            self._skill_chips[name].set_active(False)
-        else:
+        """Chip double-click: flip whether the bot visits `name`."""
+        on = name not in self._skill_active
+        self._set_skill_active(name, on)
+        if name == self._skill_selected_name:
+            try:
+                self._skill_toggle.setChecked(on)
+            except (AttributeError, RuntimeError):
+                pass
+
+    def _set_skill_active(self, name: str, on: bool):
+        on = bool(on)
+        if (name in self._skill_active) == on:
+            return
+        if on:
             self._skill_active.add(name)
-            self._skill_chips[name].set_active(True)
-        self._render_skill_details()
+        else:
+            self._skill_active.discard(name)
+        self._skill_chips[name].set_active(on)
+        self._dim_skill_rows()
         self._save_state()
 
+    def _dim_skill_rows(self):
+        """A sinner that is switched off keeps its rows editable, but they
+        read as inactive."""
+        try:
+            self._skill_priority_stack.set_dim(
+                self._skill_selected_name not in self._skill_active)
+        except (AttributeError, RuntimeError):
+            pass
+
     def _render_skill_details(self):
-        """Rebuild the per-sinner priority list."""
-        layout = self._skill_details_layout
-        while layout.count() > 0:
-            item = layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
+        """Rebuild the selected sinner's block: name, on/off switch, and the
+        priority rows."""
+        for layout in (self._skill_head_layout, self._skill_details_layout):
+            while layout.count() > 0:
+                item = layout.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.setParent(None)
+                    w.deleteLater()
 
         name = self._skill_selected_name
-        active = name in self._skill_active
-        status = "enabled" if active else "disabled"
-        title = QLabel(
-            f"{name} - Skill Replacement  "
-            f"<span style='color: {Colors.TEXT_TERTIARY};'>({status})</span>",
-            self._skill_details, objectName="settingTitle")
-        title.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(title)
+        # A real switch: the state used to be a grey "(disabled)" in the
+        # title, changed only by double-clicking the chip.
+        head = self._skill_head_layout
+        host = self._skill_head
+        head.addWidget(QLabel(name, host, objectName="settingTitle"))
+        head.addStretch(1)
+        switch_label = QLabel("Replace skills", host)
+        switch_label.setStyleSheet(f"color: {Colors.TEXT_SECONDARY};")
+        head.addWidget(switch_label)
+        self._skill_toggle = Toggle(default=name in self._skill_active,
+                                    parent=host)
+        self._skill_toggle.toggled.connect(
+            lambda on, n=name: self._set_skill_active(n, on))
+        head.addWidget(self._skill_toggle)
+
+        block = self._skill_details
+        layout = self._skill_details_layout
+        self._skill_rows = QWidget(block)
+        rows = QVBoxLayout(self._skill_rows)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(Sizing.SPACE_XS)
+
+        # Column captions once, not a "Repeats" label on every row.
+        caps = QHBoxLayout()
+        caps.setContentsMargins(Sizing.SPACE_MD, 0, Sizing.SPACE_XS + 1, 0)
+        caps.addWidget(QLabel("PRIORITY", self._skill_rows,
+                              objectName="sectionLabel"))
+        caps.addStretch(1)
+        caps.addWidget(QLabel("REPEATS", self._skill_rows,
+                              objectName="sectionLabel"))
+        rows.addLayout(caps)
 
         label_of = dict(self._SKILL_REPLACE_SWAPS)
-
         priority = self._skill_order[name]
         items = [(k, label_of[k],
                   self._skill_repeats[name].get(k, 0)) for k in priority]
         self._skill_priority_stack = _SkillPriorityStack(
-            items, parent=self._skill_details)
+            items, parent=self._skill_rows)
         # Bind the current sinner name into the (key, value) callback.
         sel = name
         self._skill_priority_stack.order_changed.connect(
             self._on_skill_order_changed_v2)
         self._skill_priority_stack.repeats_changed.connect(
             lambda key, val, n=sel: self._on_skill_repeats_v2(n, key, val))
-        layout.addWidget(self._skill_priority_stack)
+        rows.addWidget(self._skill_priority_stack)
+        layout.addWidget(self._skill_rows)
+        self._dim_skill_rows()
 
     def _on_skill_order_changed_v2(self, new_order: list[str]):
         """Persist the new priority order after a drop."""
@@ -2438,7 +2701,7 @@ class MirrorDungeonPage(QWidget):
     # --- Public state hooks --------------------------------------
     def set_running(self, running: bool):
         self._start_btn.setEnabled(not running)
-        self._start_btn.setText("Start Mirror Dungeon")
+        self._start_btn.setText(seasonal.title("Start Mirror Dungeon"))
         self._stop_btn.setEnabled(running)
 
     def set_arming(self, seconds: int):
@@ -2448,5 +2711,6 @@ class MirrorDungeonPage(QWidget):
             self._stop_btn.setEnabled(True)
         else:
             self._start_btn.setEnabled(True)
-            self._start_btn.setText("Start Mirror Dungeon")
+            self._start_btn.setText(
+                seasonal.title("Start Mirror Dungeon"))
             self._stop_btn.setEnabled(False)

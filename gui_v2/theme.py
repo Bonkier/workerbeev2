@@ -52,6 +52,7 @@ class Sizing:
     BUTTON_HEIGHT = 36
     INPUT_HEIGHT  = 36
     TITLEBAR_HEIGHT = 36
+    SIDEBAR_WIDTH = 232
 
     # Splash-to-main target sizes in logical (DPI-scaled) pixels. MainWindow
     # clamps both to a screen fraction. The compact 2.5:1 banner sizes the
