@@ -1083,7 +1083,7 @@ class LocatePreset:
         result = self.cl.try_locate(path, **params)
         return gui.center(result)
     
-    def button(self, *args, ver=False, **overrides):
+    def button(self, *args, ver=False, retries=3, **overrides):
         if   len(args) == 1: key, region_key = args[0], args[0]
         elif len(args) == 2: key, region_key = args
         elif len(args) != 0: raise ValueError("Invalid arguments")
@@ -1113,7 +1113,7 @@ class LocatePreset:
                 if not params["click"]:
                     raise AssertionError("Verification reqires action to verify")
                 params["wait"] = False
-            for i in range(3):
+            for i in range(retries + 1):
                 if p.LIMBUS_NAME not in (win := gui.getActiveWindowTitle()): pause(win)
                 if isinstance(ver, str):
                     condition = lambda: not self.button(ver, wait=False, click=False, error=False)
@@ -1133,6 +1133,8 @@ class LocatePreset:
 
                 verified = wait_while_condition(condition, interval=0.1, timer=3)
                 if not verified:
+                    if i == retries:
+                        raise RuntimeError(f"Verification failed after {retries} retries.")
                     print(f"Verifier failed (attempt {i}), reclicking...")
                     if len(args) == 0:
                         win_click(x, y)
@@ -1145,8 +1147,6 @@ class LocatePreset:
                         raise RuntimeError(f"Click retry failed")
                 else:
                     break
-            else:
-                raise RuntimeError(f"Verification failed after 3 retries.")
         return result
 
 
@@ -1234,11 +1234,12 @@ class BaseAction:
 
 
 class Action(BaseAction):
-    def __init__(self, key, region=None, click=None, ver=None):
+    def __init__(self, key, region=None, click=None, ver=None, retries=3):
         self.key = key
         self.region = region
         self.click = click
         self.ver = ver
+        self.retries = retries
 
     def should_execute(self, _=None):
         return True
@@ -1248,7 +1249,7 @@ class Action(BaseAction):
         kwargs = {}
         if self.click is not None:
             kwargs["click"] = self.click
-        return preset.button(*args, ver=self.ver or ver, **kwargs)
+        return preset.button(*args, ver=self.ver or ver, retries=self.retries, **kwargs)
 
 
 class ClickAction(BaseAction):

@@ -3,9 +3,11 @@
 
 Floors 1 to 4 run on Normal, floor 5 on Hard. On floors 1 to 3 every fight
 is one turn: open Faust's E.G.O menu from her portrait, hold on Le Trou until
-it overclocks, slot it, win rate, Enter, and keep the mouse held so the
+it overclocks, slot it, chain the turn by one drag through the bottom cards
+(win rate when the drag does not take), and keep the mouse held so the
 animation runs fast. At -45 SP she corrodes and the E.G.O is already in the
-slot, so the menu step is skipped. The floor 4 and 5 bosses are focused
+slot, so the menu step is skipped and the turn is win rated. The floor 4
+and 5 bosses are focused
 fights: Le Trou is slotted without the overclock and aimed at an enemy skill
 slot on turn 1, then win rate from turn 2. SP resets with every floor, so
 a corroded reading holds for its floor only and the overclock loop starts
@@ -13,8 +15,9 @@ over on the next. Shops heal first (a chosen sinner once on floor 1, since
 they never fight and the 45 SP keeps for the skill checks; Faust herself on
 floors 4 and 5) and then follow the Market/Fuse tab's plan, except that
 Clear Mirror, Calm Water and Artistic Sense are not uptied before the
-floor 3 shop. The starter gift is Cigarette Holder from the Poise list;
-Grand Welcome and Sharp Needle & Thread come from the E.G.O Gift Search.
+floor 3 shop. The starter gift is Torn Bandolier from the Pierce list;
+Grand Welcome and Sharp Needle & Thread come from the E.G.O Gift Search,
+and Grand Welcome stays out of the fuel pool until the floor 3 shop.
 
 Every step is gated by run_script == HOLLOW_SCRIPT and called from the
 generic fight/shop/move loops."""
@@ -31,8 +34,8 @@ from .teams import TEAMS as _TEAM_TABLE
 
 HOLLOW_SCRIPT = "hollow"
 FAUST = "FAUST"
-STARTING_GIFT = "Cigarette Holder"
-STARTING_KEYWORD = "POISE"               # the starter screen keyword it is under
+STARTING_GIFT = "Torn Bandolier"
+STARTING_KEYWORD = "PIERCE"              # the starter screen keyword it is under
 SEARCH_GIFTS = ("Grand Welcome", "Sharp Needle & Thread")
 # Upties the owner wants left alone until this floor's shop.
 ENHANCE_FROM_FLOOR = {"Clear Mirror, Calm Water": 3, "Artistic Sense": 3}
@@ -50,7 +53,7 @@ _MIRROR = "Clear Mirror, Calm Water"
 _SENSE = "Artistic Sense"
 MARKET_PROTECTED = {
     1: (_CONCEIT, _DECAY, _WELCOME, STARTING_GIFT, _THREAD, _MIRROR, _SENSE),
-    2: (_CONCEIT, _DECAY, STARTING_GIFT, _THREAD),
+    2: (_CONCEIT, _DECAY, _WELCOME, STARTING_GIFT, _THREAD),
     3: (_CONCEIT, _DECAY, STARTING_GIFT, _THREAD, _MIRROR, _SENSE),
 }
 # The two the run must get, in this order, with fuel bought for them; the
@@ -94,7 +97,6 @@ _STARTER_ROWS_REGION = (1150, 320, 240, 470)
 _STARTER_ART_SCALES = (1.0, 1.2, 1.35, 1.5, 0.85)
 _HOLD_PARK = (960, 160)           # harmless place to hold the mouse down
 _X_BIAS = 4                       # the cursor lands a touch left of the mark
-_DRAG_CHAIN_FLOORS = (1,)         # boss fights chained by hand, not win rate
 _PLATES = ("hollow_letrou", "hollow_boucher")   # the card's two names
 _SP_CONF = 0.975                  # -45 against -42 is one digit: exact only
 _MAP_SP_REGION = (425, 1005, 80, 60)   # Faust's SP badge in the map strip
@@ -150,16 +152,16 @@ def forfeit_threshold(dead_boxes, strip) -> int:
 
 def starting_team() -> dict:
     """The team-table entry whose keyword is clicked on the starter screen:
-    always Poise, where Cigarette Holder is listed."""
+    always Pierce, where Torn Bandolier is listed."""
     return _TEAM_TABLE[STARTING_KEYWORD]
 
 
 def starting_gift_row():
-    """Which row of the keyword's starter gifts shows Cigarette Holder,
+    """Which row of the keyword's starter gifts shows Torn Bandolier,
     found by its art at a few sizes so a reorder in the game cannot pick
     the wrong gift. None when the art is not on screen."""
     from . import gift_catalog
-    templates = [PTH["holder"]] if "holder" in PTH else []
+    templates = [PTH["bandolier"]] if "bandolier" in PTH else []
     info = gift_catalog.gift_info(STARTING_GIFT)
     if info:
         templates.append(info["path"])
@@ -372,9 +374,13 @@ def _spaced(xs, gap=30) -> list:
     return out
 
 
+_soft_gears = {"gears": None}     # the last soft gear match, for the drag
+
+
 def _gear_slots() -> list:
     """Slot x positions from the chain gears, found with a softer match
     than the fight loop uses (busy boss arenas hide them from it)."""
+    _soft_gears["gears"] = None
     try:
         g1 = LocateEdges.locate(PTH["gear"], region=(0, 761, 900, 179), conf=0.55)
         g2 = LocateEdges.locate(PTH["gear2"], region=(350, 730, 1570, 232),
@@ -387,6 +393,7 @@ def _gear_slots() -> list:
     gs, ge = gui.center(g1), gui.center(g2)
     if ge[0] - gs[0] < 250:
         return []
+    _soft_gears["gears"] = (gs, ge)
     return _slot_xs(gs, ge)
 
 
@@ -644,13 +651,6 @@ def _swap_in_the_ego(gear_start, gear_end, slot_x):
     return True
 
 
-def _drag_chain_due() -> bool:
-    """The floor 1 boss: the turn is chained by hand, not by win rate. (A
-    run resumed inside a fight has no node name and win rates.)"""
-    return (int(getattr(p, "LVL", 1) or 1) in _DRAG_CHAIN_FLOORS
-            and getattr(p, "HOLLOW_NODE", "") == "Boss")
-
-
 def _drag_in_the_ego(gear_start, gear_end) -> bool:
     """Chain the turn the way SAIKAI picks a skill: one drag from the start
     gear through every column, each taken at its BOTTOM card (where the
@@ -671,11 +671,11 @@ def _drag_in_the_ego(gear_start, gear_end) -> bool:
 
 
 def chain_turn(gear_start, gear_end):
-    """A non-focused turn: overclock Le Trou, slot it, then win rate and the
-    swap click if a Skill 3 was chained instead, go. The floor 1 boss is
-    chained by the bottom-card drag instead of win rate (with win rate as
-    the fallback). The gears may be None when they were not seen (floors 1
-    to 3 run this turn regardless)."""
+    """A non-focused turn: overclock Le Trou, slot it, then chain the turn by
+    the bottom-card drag, with win rate (and the swap click if a Skill 3 was
+    chained instead) as the fallback. A corroded Faust has the E.G.O chosen
+    already and is win rated. The gears may be None when they were not seen
+    (floors 1 to 3 run this turn regardless)."""
     p.HOLLOW_TURN = int(getattr(p, "HOLLOW_TURN", 0) or 0) + 1
     check_attack_position()
     if _retry_if_due():
@@ -699,8 +699,12 @@ def chain_turn(gear_start, gear_end):
             if p.HOLLOW_TURN == 1:
                 overclock(box)
             slot_card(box, overclocked=(p.HOLLOW_TURN == 1))
+    if menu and (gear_start is None or gear_end is None):
+        # The fight loop missed the gears; find_faust's softer match may
+        # have them.
+        gear_start, gear_end = _soft_gears["gears"] or (None, None)
     if (menu and gear_start is not None and gear_end is not None
-            and _drag_chain_due() and _drag_in_the_ego(gear_start, gear_end)):
+            and _drag_in_the_ego(gear_start, gear_end)):
         execute_and_hold(enter=False)
         return
     win_rate()
@@ -1111,6 +1115,9 @@ def shop_visit() -> bool:
         p.HOLLOW_CORRODED_FLOOR = floor
         logging.info("HOLLOW: shop reads Faust %s.",
                      "at -45 SP (corroded)" if p.HOLLOW_CORRODED else "not corroded")
+    if getattr(p, "SKIP_SINNER_HEALING", False):
+        logging.info("HOLLOW: no heal (Behaviour: Skip sinner healing).")
+        return True
     target = _heal_target_index()
     if target is None:
         logging.info("HOLLOW: no heal on floor %d.", floor)

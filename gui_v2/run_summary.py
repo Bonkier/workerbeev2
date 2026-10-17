@@ -6,12 +6,13 @@ wording can be tested without a window. Each returns a list of sections,
 [(caption, [(label, value), ...]), ...]."""
 
 from .run_config import (HOLLOW_LABEL, HOLLOW_PACK_NAMES, SAIKAI_LABEL,
-                         THRILL_LABEL)
+                         THRILL_LABEL, _GRACE_ORDER)
 
 # Behaviour toggles by state key. pack_search is left out: it is reported
 # with the pack settings instead of as a bare toggle.
 BEHAVIOUR_LABELS = {
     "bonus": "Claim bonus",
+    "bonus_one": "One weekly bonus per run",
     "restart": "Restart on failure",
     "claim_on_defeat": "Claim rewards on defeat",
     "enkephalin": "Convert enkephalin",
@@ -45,6 +46,26 @@ def _count_states(packs, global_packs, state):
         if isinstance(floor_packs, dict):
             seen |= {pk for pk, st in floor_packs.items() if st == state}
     return len(seen)
+
+
+_GRACE_SUFFIX = ("", "", " +", " ++")
+_HOLLOW_DEFAULT_GRACES = ("Star of the Beginning, Interstellar Travel "
+                          "(none picked, so the sheet's)")
+
+
+def _graces(md):
+    """The BUILD panel's graces with their tiers; Hollow falls back to the
+    sheet's pair when none is picked."""
+    grace = md.get("grace") or {}
+    picked = []
+    for name in _GRACE_ORDER:
+        try:
+            state = int(grace.get(name, 0) or 0)
+        except (TypeError, ValueError):
+            state = 0
+        if state:
+            picked.append(name + _GRACE_SUFFIX[min(state, 3)])
+    return _join(picked, _HOLLOW_DEFAULT_GRACES, limit=10)
 
 
 def _difficulty(md, saikai, thrill, hollow=False):
@@ -97,7 +118,7 @@ def md_summary(md: dict, app: dict | None = None) -> list:
     ]
 
     if hollow:
-        run.append(("Graces", "Star of the Beginning, Interstellar Travel"))
+        run.append(("Graces", _graces(md)))
         team = [
             ("Team keyword", str(md.get("hollow_status") or "Poise")),
             ("Squad", "Faust alone"),
@@ -135,8 +156,8 @@ def md_summary(md: dict, app: dict | None = None) -> list:
          else _market(md, saikai)),
         ("Skill replacement", _join(active, "Off")),
         ("Pack search", "%s, %d refresh%s" % (
-            "On, one pack per floor" if hollow
-            else "On" if behaviour.get("pack_search", True) else "Off",
+            "Off" if not behaviour.get("pack_search", True)
+            else "On, one pack per floor" if hollow else "On",
             refreshes, "" if refreshes == 1 else "es")),
         ("Packs", _join(HOLLOW_PACK_NAMES) if hollow
          else "%d prioritised, %d avoided" % (
@@ -144,10 +165,11 @@ def md_summary(md: dict, app: dict | None = None) -> list:
             _count_states(md.get("packs"), md.get("global_packs"), "avoid"))),
     ]
 
-    # Hollow decides win rate, never swaps the squad and always scans the
-    # owned shelf for its plan, so those toggles do not apply to it.
-    overridden = ({"winrate", "swap_max_energy", "skip_ego_check"}
-                  if hollow else set())
+    # Hollow decides win rate itself and always scans the owned shelf for
+    # its plan, so those two toggles do not apply to it.
+    overridden = {"winrate", "skip_ego_check"} if hollow else set()
+    if not behaviour.get("bonus", True):
+        overridden = overridden | {"bonus_one"}    # no charge is spent at all
     on = [label for key, label in BEHAVIOUR_LABELS.items()
           if behaviour.get(key) and key not in overridden]
     options = [("Switched on", _join(on, "Nothing", limit=99))]

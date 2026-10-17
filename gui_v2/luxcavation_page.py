@@ -24,7 +24,7 @@ _LUX_AFFINITIES = (
     "Sloth", "Gluttony", "Gloom", "Pride", "Envy",
 )
 
-_EXP_STAGES = [str(i) for i in range(1, 10)]   # 1..9
+_EXP_STAGES = [str(i) for i in range(1, 11)]   # 1..10
 _EXP_STAGE_DEFAULT = "6"
 _THD_DIFFICULTIES = ["20", "30", "40", "50", "60"]
 _THD_DIFFICULTY_DEFAULT = "40"

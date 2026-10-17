@@ -60,7 +60,7 @@ def voxel_page_color() -> str:
 # the backdrop's grid and twinkle read faintly through them. Expressed as a
 # white overlay so it works over any background colour the user picks.
 CARD_TINT = (255, 255, 255, 7)
-BAND_TINT = (255, 255, 255, 26)     # section header, one step lighter
+BAND_TINT = (255, 255, 255, 12)     # section header, barely lighter
 
 
 def _rgba(tint) -> str:
@@ -157,14 +157,35 @@ def _voxel_qss() -> str:
         border: none;
         border-right: 1px solid {seam};
     }}
+    QFrame#sidebarBrandBand {{
+        background-color: {band_tint};
+        border: none;
+        border-bottom: 1px solid {seam};
+    }}
+    QFrame#sidebarSeam {{
+        background-color: {seam};
+        border: none;
+    }}
+    QFrame#sidebarFoot {{
+        border: none;
+        border-top: 1px solid {seam};
+    }}
+    QPushButton#sidebarToggle {{
+        border: none;
+        background: transparent;
+        padding: 0;
+    }}
+    QPushButton#sidebarToggle:hover {{
+        background-color: {hover};
+    }}
 
     /* Nav: compact rows, accent only on the selected one. */
     QPushButton#sidebarItem {{
         border: none;
         border-left: 3px solid transparent;
         border-radius: 0px;
-        /* Extra left padding clears the selection caret. */
-        padding: 5px 10px 5px 15px;
+        /* Extra left padding clears the selection caret and the pixel tag. */
+        padding: 5px 10px 5px 44px;
         min-height: 26px;
         font-size: {f.SIZE_MD}pt;
         font-weight: 500;
@@ -559,6 +580,28 @@ def _base_qss() -> str:
     QFrame#sidebar {{
         background-color: {c.BG_RAISED};
         border: none;
+    }}
+    QFrame#sidebarBrandBand {{
+        background: transparent;
+        border: none;
+        border-bottom: 1px solid {c.BORDER_SUBTLE};
+    }}
+    QFrame#sidebarSeam {{
+        background-color: {c.BORDER_SUBTLE};
+        border: none;
+    }}
+    QFrame#sidebarFoot {{
+        border: none;
+        border-top: 1px solid {c.BORDER_SUBTLE};
+    }}
+    QPushButton#sidebarToggle {{
+        border: none;
+        background: transparent;
+        border-radius: 4px;
+        padding: 0;
+    }}
+    QPushButton#sidebarToggle:hover {{
+        background-color: {c.BG_HOVER};
     }}
 
     QLabel#sidebarBrand {{

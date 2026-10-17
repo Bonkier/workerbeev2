@@ -269,21 +269,21 @@ def test_the_sp_badge_is_read_beside_the_right_portrait(screen):
 def test_the_starting_gift_is_found_by_its_art(screen, monkeypatch):
     monkeypatch.setattr(H.time, "sleep", lambda s: None)
     assert H.starting_gift_row() is None            # nothing on screen
-    art = cv2.imread(U.PTH["holder"])
+    art = cv2.imread(U.PTH["bandolier"])
     big = cv2.resize(art, None, fx=1.35, fy=1.35, interpolation=cv2.INTER_CUBIC)
     h, w = big.shape[:2]
     x, y = 1237 - w // 2, 549 - h // 2              # the middle row's icon
     screen.canvas[y:y + h, x:x + w] = big
     assert H.starting_gift_row() == 1
     screen.canvas[y:y + h, x:x + w] = 30
-    screen("holder", 1237 - 45, 703 - 45)           # bottom row, unscaled
+    screen("bandolier", 1237 - 55, 703 - 51)        # bottom row, unscaled
     assert H.starting_gift_row() == 2
 
 
-def test_the_starter_keyword_is_poise():
+def test_the_starter_keyword_is_pierce():
     team = H.starting_team()
-    assert team["checks"][0] == "Poise"
-    assert team["checks"][2] == (535, 665)
+    assert team["checks"][0] == "Pierce"
+    assert team["checks"][2] == (315, 840)
 
 
 class _Clicks:
@@ -336,13 +336,13 @@ def test_the_archetype_screen_keeps_its_old_picks(archetype):
     assert _picked(archetype) == [(1239, 395), (1239, 703)]
 
 
-def test_hollow_clicks_poise_and_the_row_its_gift_is_on(archetype, monkeypatch):
+def test_hollow_clicks_pierce_and_the_row_its_gift_is_on(archetype, monkeypatch):
     B._select_archetype_gifts(H.starting_team(), lambda: 2)
-    assert archetype[0] == ((535, 665), "gifts!")
+    assert archetype[0] == ((315, 840), "gifts!")
     assert _picked(archetype) == [(1239, 703)]
     del archetype[:]
     B._select_archetype_gifts(H.starting_team(), lambda: None)   # art not seen
-    assert _picked(archetype) == [(1239, 549)]                   # Poise's usual row
+    assert _picked(archetype) == [(1239, 549)]                   # Pierce's usual row
     del archetype[:]
     p.BUFF[3] = 1
     B._select_archetype_gifts(H.starting_team(), lambda: 0)
@@ -369,7 +369,7 @@ def test_hollow_searches_the_sheets_two_gifts_and_leaves_a_slot(monkeypatch):
     B.select_starting_gift()
     assert seen["targets"] == ["Grand Welcome", "Sharp Needle & Thread", "Equalizer"]
     # The starter gift is never searched for, even when the picker has it.
-    monkeypatch.setattr(p, "GIFT_SEARCH", ["Cigarette Holder", "Equalizer"])
+    monkeypatch.setattr(p, "GIFT_SEARCH", ["Torn Bandolier", "Equalizer"])
     B.select_starting_gift()
     assert seen["targets"] == ["Grand Welcome", "Sharp Needle & Thread", "Equalizer"]
 
@@ -437,10 +437,13 @@ def steps(monkeypatch):
     monkeypatch.setattr(H, "_start_shown", lambda: state["start"])
     monkeypatch.setattr(H, "_swap_in_the_ego",
                         lambda gs, ge, sx: calls.append("swap") or False)
+    monkeypatch.setattr(H, "_drag_in_the_ego",
+                        lambda gs, ge: calls.append("drag") or state.get("dragged", True))
     monkeypatch.setattr(H.time, "sleep", lambda s: None)
     monkeypatch.setattr(p, "HOLLOW_TURN", 0)
     monkeypatch.setattr(p, "HOLLOW_CORRODED", False)
     monkeypatch.setattr(p, "SELECTED", ["FAUST"])
+    monkeypatch.setitem(H._soft_gears, "gears", None)
     return calls, state
 
 
@@ -456,27 +459,23 @@ def test_with_the_fallback_squad_fielded_every_turn_is_win_rate(steps, monkeypat
     monkeypatch.setattr(p, "SELECTED", ["FAUST"])          # alone again
     p.HOLLOW_TURN = 0
     H.chain_turn((100, 845), (355, 845))
-    assert calls == ["find", "overclock", "slot:True", "winrate", "swap",
-                     "execute"]
+    assert calls == ["find", "overclock", "slot:True", "drag", "hold"]
 
 
 def test_a_chain_battle_overclocks_on_turn_one_only(steps):
     calls, _ = steps
     H.chain_turn((100, 845), (355, 845))
-    assert calls == ["find", "overclock", "slot:True", "winrate", "swap",
-                     "execute"]
+    assert calls == ["find", "overclock", "slot:True", "drag", "hold"]
     del calls[:]
     H.chain_turn((100, 845), (355, 845))
-    assert calls == ["find", "slot:False", "winrate", "swap", "execute"]
+    assert calls == ["find", "slot:False", "drag", "hold"]
     assert p.HOLLOW_TURN == 2
 
 
-def test_the_floor_1_boss_chains_the_ego_by_drag(steps, monkeypatch):
+def test_every_unfocused_turn_chains_the_ego_by_drag_unless_corroded(steps, monkeypatch):
     calls, state = steps
-    monkeypatch.setattr(p, "LVL", 1)
-    monkeypatch.setattr(p, "HOLLOW_NODE", "Boss")
-    monkeypatch.setattr(H, "_drag_in_the_ego",
-                        lambda gs, ge: calls.append("drag") or state.get("dragged", True))
+    monkeypatch.setattr(p, "LVL", 2)
+    monkeypatch.setattr(p, "HOLLOW_NODE", "Normal")           # any node, any floor
     H.chain_turn((100, 845), (355, 845))
     assert calls == ["find", "overclock", "slot:True", "drag", "hold"]
     del calls[:]
@@ -484,18 +483,13 @@ def test_the_floor_1_boss_chains_the_ego_by_drag(steps, monkeypatch):
     H.chain_turn((100, 845), (355, 845))
     assert calls == ["find", "slot:False", "drag", "winrate", "swap", "execute"]
     del calls[:]
+    state["dragged"] = True
     monkeypatch.setattr(p, "HOLLOW_NODE", "")                 # resumed mid-fight
     H.chain_turn((100, 845), (355, 845))
-    assert calls == ["find", "slot:False", "winrate", "swap", "execute"]
+    assert calls == ["find", "slot:False", "drag", "hold"]
     del calls[:]
-    monkeypatch.setattr(p, "HOLLOW_NODE", "Boss")
-    monkeypatch.setattr(p, "LVL", 2)                          # floor 1 only
-    H.chain_turn((100, 845), (355, 845))
-    assert calls == ["find", "slot:False", "winrate", "swap", "execute"]
-    del calls[:]
-    monkeypatch.setattr(p, "LVL", 1)
     monkeypatch.setattr(p, "HOLLOW_CORRODED", True)           # corroded: win rate
-    monkeypatch.setattr(p, "HOLLOW_CORRODED_FLOOR", 1)
+    monkeypatch.setattr(p, "HOLLOW_CORRODED_FLOOR", 2)
     H.chain_turn((100, 845), (355, 845))
     assert calls == ["winrate", "swap", "execute"]
     del calls[:]
@@ -534,8 +528,7 @@ def test_a_corroded_faust_skips_the_menu_on_her_floor_only(steps, monkeypatch):
     monkeypatch.setattr(p, "LVL", 3)
     p.HOLLOW_TURN = 0
     H.chain_turn((100, 845), (355, 845))
-    assert calls == ["find", "overclock", "slot:True", "winrate", "swap",
-                     "execute"]
+    assert calls == ["find", "overclock", "slot:True", "drag", "hold"]
 
 
 def test_two_upties_wait_for_the_floor_3_shop(monkeypatch):
@@ -567,18 +560,19 @@ def test_the_upties_are_ready_once_all_four_are_crafted_or_on_floor_4():
 def test_the_market_plan_follows_the_owners_summary(monkeypatch):
     conceit, decay = "Fragment of Conceit", "Fragment of Decay"
     mirror, sense = "Clear Mirror, Calm Water", "Artistic Sense"
-    thread, welcome, holder = "Sharp Needle & Thread", "Grand Welcome", "Cigarette Holder"
+    thread, welcome, bandolier = "Sharp Needle & Thread", "Grand Welcome", "Torn Bandolier"
     f1 = H.market_plan(1)
-    assert set(f1["protected"]) == {conceit, decay, welcome, holder, thread, mirror, sense}
+    assert set(f1["protected"]) == {conceit, decay, welcome, bandolier, thread, mirror, sense}
     assert f1["fuse"] == [conceit, decay, mirror, sense] and f1["enhance2"] == []
     assert f1["must"] == [conceit, decay]
     f2 = H.market_plan(2)
-    assert set(f2["protected"]) == {conceit, decay, holder, thread}
+    assert set(f2["protected"]) == {conceit, decay, welcome, bandolier, thread}
     assert f2["fuse"] == [conceit, decay, mirror, sense] and f2["enhance2"] == []
     f3 = H.market_plan(3)
-    assert set(f3["protected"]) == {conceit, decay, holder, thread, mirror, sense}
+    assert set(f3["protected"]) == {conceit, decay, bandolier, thread, mirror, sense}
+    assert welcome not in f3["protected"]                    # fuel from floor 3
     for floor in (1, 2, 3, 4, 5):
-        assert holder in H.market_plan(floor)["protected"]   # every floor
+        assert bandolier in H.market_plan(floor)["protected"]   # every floor
     assert f3["fuse"] == [conceit, decay, mirror, sense]      # still owed
     assert f3["enhance2"] == [mirror, sense]
     assert H.market_plan(3, crafted={conceit})["fuse"] == [decay, mirror, sense]
@@ -792,6 +786,19 @@ def test_a_chain_turn_runs_without_gears_on_the_early_floors(steps):
     assert calls == ["find", "overclock", "slot:True", "winrate", "swap",
                      "execute"]
     assert H._swap_in_the_ego(None, None, 902) is False
+
+
+def test_the_drag_takes_the_soft_gear_match_when_the_fight_loop_missed_them(steps, monkeypatch):
+    calls, _ = steps
+    monkeypatch.setattr(p, "LVL", 2)
+    monkeypatch.setitem(H._soft_gears, "gears", ((100, 845), (355, 845)))
+    H.chain_turn(None, None)
+    assert calls == ["find", "overclock", "slot:True", "drag", "hold"]
+    del calls[:]
+    monkeypatch.setattr(p, "HOLLOW_CORRODED", True)        # no menu: the old gears stay unused
+    monkeypatch.setattr(p, "HOLLOW_CORRODED_FLOOR", 2)
+    H.chain_turn(None, None)
+    assert calls == ["winrate", "swap", "execute"]
 
 
 def test_a_skill_3_on_top_gets_one_click_on_the_bottom_card(monkeypatch):
@@ -1015,18 +1022,23 @@ def test_the_builder_pins_the_hollow_run():
     assert settings["hard_from_floor"] == 5
     assert settings["winrate"] is False
     assert settings["infinity"] is False
-    assert settings["swap_max_energy"] is False
     assert settings["skip_ego_check"] is False
     assert settings["default_market_workflow"] is False
-    assert settings["pack_search"] is True
+    assert settings["pack_search"] is True and settings["swap_max_energy"] is False
+    # Swap for max energy and Pack search are the user's.
+    own = RC.build_md_run(dict(_MD, behaviour={"swap_max_energy": True,
+                                               "pack_search": False,
+                                               "winrate": True}), {}, {})[2]
+    assert own["swap_max_energy"] is True and own["pack_search"] is False
+    assert own["winrate"] is False
     assert settings["pack_search_floors"] == {
         1: "Flat-broke gamblers", 2: "Hell's Chicken",
         3: "Emotional Seduction", 4: "Hatred and Despair", 5: "Line 2"}
-    assert settings["buff"] == [1, 0, 1, 0, 0, 0, 0, 0, 0, 0]
-    # The grace panel defaults to four graces on; the sheet's pair is pinned.
+    assert settings["buff"] == [1, 0, 1, 0, 0, 0, 0, 0, 0, 0]   # none picked: the sheet's
+    # The BUILD panel's graces are the user's to change.
     md = dict(_MD, grace={"Star of the Beginning": 1, "Cumulating Starcloud": 1,
-                          "Interstellar Travel": 1, "Star Shower": 1})
-    assert RC.build_md_run(md, {}, {})[2]["buff"] == [1, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+                          "Interstellar Travel": 1, "Star Shower": 2})
+    assert RC.build_md_run(md, {}, {})[2]["buff"] == [1, 1, 1, 2, 0, 0, 0, 0, 0, 0]
     assert settings["hollow_heal"] == "GREGOR"
     assert settings["hollow_fallback"] == ["YISANG", "GREGOR"]
     team = teams[0]
@@ -1077,16 +1089,21 @@ def test_the_start_summary_describes_the_run():
               pack_refreshes=2)
     rows = _rows(RS.md_summary(md))
     assert rows["Difficulty"] == "Normal, then Hard from floor 5"
-    assert rows["Graces"] == "Star of the Beginning, Interstellar Travel"
+    assert rows["Graces"] == ("Star of the Beginning, Interstellar Travel "
+                              "(none picked, so the sheet's)")
+    picked = _rows(RS.md_summary(dict(md, grace={"Star Shower": 1, "Chance Comet": 3})))
+    assert picked["Graces"] == "Star Shower, Chance Comet ++"
     assert rows["Squad"] == "Faust alone"
     assert rows["Fallback (miniboss)"] == "Yi Sang, Gregor"      # no Faust
     assert rows["Shop heals"] == "Gregor on floor 1, Faust on floors 4 and 5"
     assert rows["Team keyword"] == "Poise"
     assert rows["Market"].startswith("Heal, then the floor plan")
-    assert rows["Pack search"] == "On, one pack per floor, 2 refreshes"
+    assert rows["Pack search"] == "Off, 2 refreshes"          # the user's toggle
+    on = dict(md, behaviour=dict(md["behaviour"], pack_search=True))
+    assert _rows(RS.md_summary(on))["Pack search"] == "On, one pack per floor, 2 refreshes"
     assert rows["Packs"] == ("Flat-broke gamblers, Hell's Chicken, Emotional "
                              "Seduction, Hatred and Despair, Line 2")
-    assert rows["Switched on"] == "Claim bonus"      # the overridden three hidden
+    assert rows["Switched on"] == "Claim bonus, Swap for max energy"   # win rate and the check hidden
     rows = _rows(RS.md_summary({"custom_run": True,
                                 "custom_strategy": RC.HOLLOW_LABEL}))
     assert rows["Fallback (miniboss)"] == "None"
@@ -1189,7 +1206,7 @@ def test_the_mirror_dungeon_page_pins_the_search_gifts_for_hollow(ui):
     # The starter gift comes from the starter screen, not the search picker;
     # the picker pins the two gifts the sheet searches for.
     assert md._gift_gallery._locked == {"Grand Welcome", "Sharp Needle & Thread"}
-    assert "Cigarette Holder" not in md.state()["gift_search"]
+    assert "Torn Bandolier" not in md.state()["gift_search"]
     assert set(md.state()["gift_search"]) >= {"Grand Welcome",
                                               "Sharp Needle & Thread"}
     from PySide6.QtWidgets import QPushButton
@@ -1201,3 +1218,57 @@ def test_the_mirror_dungeon_page_pins_the_search_gifts_for_hollow(ui):
     assert md._gift_gallery._locked == set()
     assert md._stk_link.isHidden()
     md._custom_run.setChecked(False)
+
+
+def test_hollow_keeps_its_own_graces(ui):
+    md = ui.page("mirror_dungeon")
+    chips = md._grace_chips
+    md._custom_run.setChecked(False)                      # a known start: the panel default
+    md._grace_slot, md._grace_slots = "normal", {"normal": None, "hollow": None}
+    for i, c in enumerate(chips.values()):
+        c.set_state(1 if i < 4 else 0)
+    before = {n: c.state() for n, c in chips.items()}
+    md._custom_run.setChecked(True)
+    md._custom_strategy._buttons["Hollow"].click()
+    assert {n: c.state() for n, c in chips.items() if c.state()} == {
+        "Star of the Beginning": 1, "Interstellar Travel": 1}
+    chips["Chance Comet"].set_state(2)
+    assert md.state()["grace_slots"]["normal"] == before
+    md._custom_run.setChecked(False)                      # the other runs' picks are back
+    assert {n: c.state() for n, c in chips.items()} == before
+    md._custom_run.setChecked(True)                       # and Hollow's are kept
+    assert chips["Chance Comet"].state() == 2 and chips["Interstellar Travel"].state() == 1
+    assert chips["Cumulating Starcloud"].state() == 0
+
+
+def test_one_bonus_per_run_follows_claim_bonus(ui):
+    md = ui.page("mirror_dungeon")
+    md._behaviour["bonus"].setChecked(True)
+    assert md._behaviour["bonus_one"].isEnabled()
+    md._behaviour["bonus"].setChecked(False)
+    assert not md._behaviour["bonus_one"].isEnabled()
+
+
+def test_an_existing_hollow_config_starts_from_the_sheets_graces(ui, monkeypatch):
+    from gui_v2 import mirror_dungeon_page as MDP
+    md = ui.page("mirror_dungeon")
+    old = {n: 0 for n in md._grace_chips}                 # a full panel, as state() saves it
+    old.update({"Star of the Beginning": 1, "Interstellar Travel": 1, "Star Shower": 1})
+    saved = dict(md.state(), custom_run=True, custom_strategy=MDP.HOLLOW_LABEL, grace=old)
+    saved.pop("grace_slots", None)                        # saved before Hollow had its own
+    monkeypatch.setattr(MDP, "load_section", lambda section: saved)
+    md._restore_state()
+    chips = md._grace_chips
+    assert {n: c.state() for n, c in chips.items() if c.state()} == {
+        "Star of the Beginning": 1, "Interstellar Travel": 1}
+    assert md._grace_slot == "hollow" and md._grace_slots["normal"] == old
+    md._custom_run.setChecked(False)                      # the other runs get their picks back
+    assert {n: c.state() for n, c in chips.items()} == old
+
+
+def test_skip_sinner_healing_applies_to_hollow(monkeypatch, caplog):
+    clicks, left = _heal_screen(monkeypatch)
+    monkeypatch.setattr(p, "SKIP_SINNER_HEALING", True)
+    with caplog.at_level("INFO"):
+        assert H.shop_visit()
+    assert clicks == [] and left == [] and "Skip sinner healing" in caplog.text

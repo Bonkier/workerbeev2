@@ -40,7 +40,7 @@ def _migrate_legacy_stats(path: str) -> None:
 
 _STATS_PATH = _stats_path()
 _migrate_legacy_stats(_STATS_PATH)
-_MAX_RUNS = 1000  # cap history so the file can't grow without limit
+_MAX_RUNS = 10000  # cap history so the file can't grow without limit
 
 
 def _load() -> dict:

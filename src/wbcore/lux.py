@@ -57,8 +57,8 @@ _THD_LEVEL_TEMPLATES = {
     60: "lux_lv60",
 }
 
-# Stage (1..9) -> PTH stem for the EXP Lux stage card.
-_EXP_STAGE_TEMPLATES = {n: f"lux_stage{n}" for n in range(1, 10)}
+# Stage (1..10) -> PTH stem for the EXP Lux stage card.
+_EXP_STAGE_TEMPLATES = {n: f"lux_stage{n}" for n in range(1, 11)}
 
 
 def _setup_lux_consecutive_batch(remaining: int, chevron_box=None) -> int:
@@ -238,44 +238,74 @@ _BADGE_CROP_H = 110
 # maximise the worst-case margin between confusable digits across captures).
 _DIGIT_Y0, _DIGIT_Y1 = 0.50, 0.97
 _DIGIT_X0, _DIGIT_X1 = 0.55, 0.97
+# A two-digit badge ("STAGE 10") has no leading zero: its whole digits row
+# is the discriminator and is read first, since its "0" alone reads as an 8.
+_TWO_DIGIT_STAGES = {10}
+_TWO_DIGIT_X0 = 0.03
+_TWO_DIGIT_CONF = 0.88
+_BADGE_IN_CROP = 26      # the badge's left edge sits this far into the crop
 
 _STAGE_DIGIT_CACHE: dict[str, object] = {}
+_STAGE_WORD_CACHE: dict = {}
 
 
-def _stage_units_digit(name: str):
+def _stage_units_digit(name: str, two_digit: bool = False):
     if name not in _STAGE_DIGIT_CACHE:
         sub = None
         if name in PTH:
             t = cv2.imread(PTH[name])
             if t is not None:
                 h, w = t.shape[:2]
+                x0 = _TWO_DIGIT_X0 if two_digit else _DIGIT_X0
                 sub = t[int(h * _DIGIT_Y0):int(h * _DIGIT_Y1),
-                        int(w * _DIGIT_X0):int(w * _DIGIT_X1)]
+                        int(w * x0):int(w * _DIGIT_X1)]
         _STAGE_DIGIT_CACHE[name] = sub
     return _STAGE_DIGIT_CACHE[name]
 
 
-def _read_card_stage(chevron_cx: int):
-    """Read the STAGE digit of the card whose chevron centre is at chevron_cx.
-    Slides each badge's units-digit template inside a chevron-anchored crop and
-    returns the best-scoring stage (1..9), or None."""
-    x0 = max(0, chevron_cx - _BADGE_DX)
-    try:
-        crop = screenshot(region=(x0, _BADGE_TOP, _BADGE_CROP_W, _BADGE_CROP_H))
-    except Exception:
-        return None
-    if crop is None or crop.ndim != 3:
+def _read_stage_crop(crop):
+    """The stage a badge crop shows: a two-digit row when it is there, else
+    the best-scoring units digit (1..9); None when nothing can be read."""
+    if crop is None or getattr(crop, "ndim", 0) != 3:
         return None
     crop = crop[:, :, :3]
     best_n, best_c = None, -2.0
     for n, name in _EXP_STAGE_TEMPLATES.items():
-        sub = _stage_units_digit(name)
+        two = n in _TWO_DIGIT_STAGES
+        sub = _stage_units_digit(name, two)
         if sub is None or crop.shape[0] < sub.shape[0] or crop.shape[1] < sub.shape[1]:
             continue
         c = float(cv2.matchTemplate(crop, sub, cv2.TM_CCOEFF_NORMED).max())
+        if two:
+            if c >= _TWO_DIGIT_CONF:
+                return n
+            continue
         if c > best_c:
             best_c, best_n = c, n
     return best_n
+
+
+def _badge_crop(x0: int):
+    try:
+        return screenshot(region=(max(0, int(x0)), _BADGE_TOP, _BADGE_CROP_W,
+                                  _BADGE_CROP_H))
+    except Exception:
+        return None
+
+
+def _read_card_stage(chevron_cx: int):
+    """Read the STAGE digit of the card whose chevron centre is at chevron_cx:
+    the badge templates slide inside a chevron-anchored crop."""
+    return _read_stage_crop(_badge_crop(chevron_cx - _BADGE_DX))
+
+
+def _stage_word():
+    """The STAGE word, the top of any badge template: the anchor for a card
+    that has no consecutive bar yet (a stage before its first clear)."""
+    if "tpl" not in _STAGE_WORD_CACHE:
+        t = cv2.imread(PTH["lux_stage8"]) if "lux_stage8" in PTH else None
+        _STAGE_WORD_CACHE["tpl"] = None if t is None else t[:int(t.shape[0] * 0.46), :]
+    return _STAGE_WORD_CACHE["tpl"]
 
 
 # Drag gestures to pull an off-screen EXP stage card into view.
@@ -391,15 +421,44 @@ def _scan_for_stage(stage: int):
     return None
 
 
-def _find_exp_stage_chevron(stage: int):
-    """Scroll until the requested stage card is visible; return its chevron box.
+def _scan_for_badge(stage: int):
+    """The badge box of a visible card reading `stage`, found by its STAGE
+    word instead of the consecutive bar (a stage not cleared yet has no
+    bar), or None."""
+    word = _stage_word()
+    if word is None:
+        return None
+    for box in LocateRGB.locate_all(word, region=(0, _BADGE_TOP - 15, 1920,
+                                                  _BADGE_CROP_H + 30), conf=0.85):
+        left = int(box[0])
+        read = _read_stage_crop(_badge_crop(left - _BADGE_IN_CROP))
+        logging.info("EXP Luxcavation: badge at x=%d reads stage %s.", left, read)
+        if read == stage:
+            return (left, _BADGE_TOP, 75, 64)
+    return None
 
-    Anchors on the consecutive chevron (a digit-independent landmark) and reads
-    the badge digit per card, so it can never accept a look-alike sibling.
-    """
+
+def _look_for_stage(stage: int):
+    """(chevron box, None) for a visible card with a consecutive bar that
+    reads `stage`, (None, badge box) for one without the bar, else None."""
     chev = _scan_for_stage(stage)
     if chev:
-        return chev
+        return chev, None
+    badge = _scan_for_badge(stage)
+    return (None, badge) if badge else None
+
+
+def _find_exp_stage(stage: int):
+    """Scroll until the requested stage card is visible; return (chevron box,
+    badge box), one of them None.
+
+    Anchors on the consecutive chevron (a digit-independent landmark) and reads
+    the badge digit per card, so it can never accept a look-alike sibling; a
+    card with no bar yet is found by its STAGE word.
+    """
+    found = _look_for_stage(stage)
+    if found:
+        return found
 
     for i in range(_EXP_SCROLL_LEFT_ATTEMPTS):
         logging.info(
@@ -407,9 +466,9 @@ def _find_exp_stage_chevron(stage: int):
             stage, i + 1, _EXP_SCROLL_LEFT_ATTEMPTS)
         _scroll_exp("left_to_right")
         time.sleep(_EXP_DRAG_INTER_GAP)
-        chev = _scan_for_stage(stage)
-        if chev:
-            return chev
+        found = _look_for_stage(stage)
+        if found:
+            return found
 
     # Rightward sweep: first 5 undo the leftward shift, next 5 push past start.
     for i in range(_EXP_SCROLL_RIGHT_ATTEMPTS):
@@ -418,9 +477,9 @@ def _find_exp_stage_chevron(stage: int):
             i + 1, _EXP_SCROLL_RIGHT_ATTEMPTS)
         _scroll_exp("right_to_left")
         time.sleep(_EXP_DRAG_INTER_GAP)
-        chev = _scan_for_stage(stage)
-        if chev:
-            return chev
+        found = _look_for_stage(stage)
+        if found:
+            return found
 
     raise RuntimeError(
         f"EXP Luxcavation: stage {stage} card not found after scrolling left "
@@ -436,15 +495,20 @@ def select_exp_stage(remaining: int) -> int:
     """
     stage = int(getattr(p, "LUX_EXP_STAGE", 6) or 6)
 
-    chevron = _find_exp_stage_chevron(stage)
-    logging.info("EXP Luxcavation: stage %d card located.", stage)
-
-    # Open the consecutive-battle popup on THIS card and dial the count.
-    batch = _setup_lux_consecutive_batch(remaining, chevron_box=chevron)
-
-    # The EnterDoor sits under the same card; project a badge x-band from the
-    # chevron (badge is _BADGE_DX left of the chevron) to pick the right door.
-    badge_box = (gui.center(chevron)[0] - _BADGE_DX, _BADGE_TOP, 75, 64)
+    chevron, badge = _find_exp_stage(stage)
+    if chevron is not None:
+        logging.info("EXP Luxcavation: stage %d card located.", stage)
+        # Open the consecutive-battle popup on THIS card and dial the count.
+        batch = _setup_lux_consecutive_batch(remaining, chevron_box=chevron)
+        # The EnterDoor sits under the same card; project a badge x-band from
+        # the chevron (badge is _BADGE_DX left of it) to pick the right door.
+        badge_box = (gui.center(chevron)[0] - _BADGE_DX, _BADGE_TOP, 75, 64)
+    else:
+        # No consecutive bar yet: the stage's first clear, entered once.
+        logging.info("EXP Luxcavation: stage %d card located without a "
+                     "consecutive bar (first clear); entering once.", stage)
+        batch = 1
+        badge_box = badge
 
     # Either skip the battle (scheduler task with Skip on) or enter it.
     if getattr(p, "LUX_SKIP_EXP", False):

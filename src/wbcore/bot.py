@@ -1,4 +1,5 @@
 from .utils.utils import *
+import cv2
 from itertools import cycle
 
 from .battle import fight, select_team, squad_swap
@@ -6,7 +7,7 @@ from .event import event
 from .pack import pack
 from .move import move
 from .grab import grab_card, grab_EGO, confirm, get_adversity
-from .shop import shop
+from .shop import shop, finish_gift_scan
 from .lux import grind_lux, check_enkephalin
 from .teams import TEAMS, HARD
 from .utils import params as p
@@ -23,11 +24,11 @@ start_locations = {
     "MD": 1, 
     "Start": 2, 
     "enterInvert": 5, 
-    "ConfirmTeam": 6, 
-    "enterBonus": 12, 
-    "Confirm.0": 15, 
-    "refuse": 17,
-    "Confirm": 19
+    "ConfirmTeam": 8, 
+    "enterBonus": 14, 
+    "Confirm.0": 17, 
+    "refuse": 19,
+    "Confirm": 21
 }
 
 def select_grace():
@@ -86,16 +87,17 @@ def saikai_gift_search():
 
 # General start-of-run EGO gift search (up to 3 user-picked gifts). Regions in
 # FHD: the keyword filter-tab row sits at y~287, the thumbnail grid below it.
-_GIFT_TAB_REGION = (110, 250, 940, 80)     # spans all 11 keyword tabs incl. Keywordless
-_GIFT_TAB_Y = 287
-# Fixed FHD x-centres of the keyword tabs - used as a fallback when the template
-# match can't confirm a tab (e.g. it is drawn in its selected/dimmed state).
+_GIFT_TAB_REGION = (110, 250, 1060, 80)    # spans all 11 keyword tabs incl. Keywordless
+_GIFT_TAB_Y = 286
+# Fixed FHD x-centres of the keyword tabs (the Mirror of Sisyphe layout, 93 px
+# apart) - the fallback when the template match can't confirm a tab.
 _GIFT_TAB_X = {
-    "burn": 154, "bleed": 237, "tremor": 320, "rupture": 403,
-    "sinking": 486, "poise": 569, "charge": 652, "slash": 735,
-    "pierce": 818, "blunt": 901, "keywordless": 984,
+    "burn": 170, "bleed": 263, "tremor": 355, "rupture": 448,
+    "sinking": 541, "poise": 634, "charge": 727, "slash": 820,
+    "pierce": 912, "blunt": 1005, "keywordless": 1098,
 }
-_GIFT_GRID_REGION = (140, 350, 1000, 575)
+_GIFT_GRID_REGION = (140, 350, 1000, 585)  # down to the panel border, so a
+                                           # clipped bottom row still fits
 _GIFT_GRID_HOOK = (600, 620)        # cursor point for wheel-scrolling the grid
 
 
@@ -136,11 +138,51 @@ def _gift_scroll(clicks):
     time.sleep(0.4)
 
 
+_GIFT_THUMBS = {}
+
+
+def _hit_is_gift(box, path) -> bool:
+    """Every gift of a tier shares the same frame, so a thumbnail can pass
+    the gate on a neighbour's cell while its own is clipped or off screen.
+    The cell is the gift only when its thumbnail beats every other
+    thumbnail of that keyword on the cell itself."""
+    from . import gift_catalog
+    cat = gift_catalog.load_catalog()
+    info = next((i for i in cat.values() if i["path"] == path), None)
+    if info is None:
+        return True
+    x, y, w, h = [int(round(v)) for v in box]
+    cell = screenshot(region=(x, y, w, h))
+    if cell is None or cell.size == 0:
+        return True
+
+    def score(tpl_path):
+        tpl = _GIFT_THUMBS.get(tpl_path)
+        if tpl is None:
+            tpl = _GIFT_THUMBS[tpl_path] = cv2.imread(tpl_path)
+        if tpl is None:
+            return -1.0
+        frame = cell if cell.shape[:2] == tpl.shape[:2] else cv2.resize(
+            cell, (tpl.shape[1], tpl.shape[0]), interpolation=cv2.INTER_AREA)
+        return float(cv2.matchTemplate(frame, tpl, cv2.TM_CCOEFF_NORMED).max())
+
+    own = score(path)
+    rival = max((score(i["path"]) for i in cat.values()
+                 if i["keyword"] == info["keyword"] and i["path"] != path),
+                default=-1.0)
+    if own >= rival:
+        return True
+    logging.info("gift search: the cell at (%d, %d) reads as another %s gift "
+                 "(%.2f against %.2f); looking on.", x, y, info["keyword"],
+                 rival, own)
+    return False
+
+
 def _find_and_click_gift(path, max_scrolls=6):
     """Match the gift thumbnail in the grid, scrolling down until found."""
     for attempt in range(max_scrolls + 1):
         box = LocateRGB.locate(path, region=_GIFT_GRID_REGION, conf=_GIFT_CONF)
-        if box:
+        if box and _hit_is_gift(box, path):
             win_click(*gui.center(box), tsize=(34, 34))
             return True
         if attempt < max_scrolls:
@@ -268,7 +310,7 @@ def select_starting_gift():
     """Run-start gift selection: archetype picks, then (if any are chosen) the
     EGO Gift Search for the user's gifts. SAIKAI always searches Spiderweb,
     first and mandatory; Thrill and standard runs search the user's picks.
-    HOLLOW takes Cigarette Holder from the Poise starter list and searches
+    HOLLOW takes Torn Bandolier from the Pierce starter list and searches
     Grand Welcome and Sharp Needle & Thread, leaving one slot to the user."""
     if p.RUN_SCRIPT == "hollow":
         from .hollow import starting_gift_row, starting_team
@@ -313,8 +355,11 @@ def dungeon_start() -> bool:
         Action("MD", ver="Start"),
         lambda: time.sleep(1.4),
         lambda: win_click(1588, 567) if p.EXTREME and now_rgb.button("infinite_off") else None,
-        Action("Start"),
-        Action("enterInvert", ver="ConfirmTeam"),
+        Action("Start", retries=0),
+        Action("enterInvert", ver="connecting"),
+        # The dungeon connects before the team screen comes up.
+        lambda: wait_while_condition(lambda: now.button("connecting"), interval=0.2, timer=20),
+        lambda: wait_while_condition(lambda: not now.button("ConfirmTeam"), interval=0.2, timer=10),
         select_team,
         squad_swap,   # swap 0-energy IDs for +5 before confirming (THRILL / opt-in)
         lambda: try_click.button("ConfirmTeam"),
@@ -353,7 +398,8 @@ def dungeon_start() -> bool:
     last_failed_exc = ""
     while True:
         try:
-            now_click.button("resume")
+            if now_click.button("resume"):
+                wait_while_condition(lambda: now.button("Start"), timer=5)
             matched_key = None
             for key in start_locations.keys():
                 if now.button(key):
@@ -395,29 +441,61 @@ def collect_rewards():
         interval=0.1
     )
 
-def click_bonus():
-    if p.HARD:
-        now_rgb.button("bonus", "hardbonus", click=True)
-    else:
-        now_rgb.button("bonus", click=True)
-    x, y = random.randint(770, 1080), random.randint(428, 500)
-    win_moveTo(x, y)
+# The reward screen's three weekly bonus toggles. Switching one off takes
+# the ones after it along; three OFF means the week's charges are used up.
+_BONUS_TOGGLES = ("bonus", "bonus2", "bonus3")
 
-def bonus_gone():
-    if p.HARD:
-        if not loc_rgb.button("bonus", "hardbonus", wait=1):
-            return now_rgb.button("bonus_off", "hardbonus", conf=0.7)
-        else: return False
-    elif not loc_rgb.button("bonus", wait=1):
-        return now_rgb.button("bonus_off", conf=0.7)
-    else: return False
+
+def _bonus_state(key):
+    """'on', 'off', or None when the toggle cannot be read."""
+    if now_rgb.button("bonus", key):
+        return "on"
+    if now_rgb.button("bonus_off", key, conf=0.7):
+        return "off"
+    return None
+
+
+def _set_bonus(key, want) -> bool:
+    """Click the toggle until it reads `want`; False when it will not take
+    (no charge left to switch on)."""
+    for _ in range(2):
+        if _bonus_state(key) == want:
+            return True
+        now_rgb.button("bonus_off" if want == "on" else "bonus", key,
+                       click=True, conf=0.7 if want == "on" else 0.9)
+        win_moveTo(random.randint(770, 1080), random.randint(428, 500))
+        if wait_while_condition(lambda: _bonus_state(key) != want,
+                                interval=0.2, timer=1.5):
+            return True
+    return False
+
 
 def handle_bonus():
     time.sleep(0.5)
-    if p.BONUS or bonus_gone(): return
-
-    if not wait_while_condition(lambda: not bonus_gone(), click_bonus):
-        raise RuntimeError
+    wait_while_condition(lambda: _bonus_state("bonus") is None, interval=0.2,
+                         timer=2)
+    states = [_bonus_state(key) for key in _BONUS_TOGGLES]
+    if states[0] is None:
+        logging.warning("Weekly bonus toggles not readable; claiming as is.")
+        return
+    if not p.BONUS:
+        if states[0] == "on":
+            _set_bonus("bonus", "off")
+    else:
+        # Three OFF is the week used up, or last run's choice kept by the
+        # game: one try at the first toggle tells them apart.
+        if all(s == "off" for s in states) and not _set_bonus("bonus", "on"):
+            logging.info("Weekly bonuses: used up for the week.")
+            return
+        if p.BONUS_ONE:
+            _set_bonus("bonus", "on")
+            _set_bonus("bonus2", "off")
+        else:
+            for key in _BONUS_TOGGLES:
+                if not _set_bonus(key, "on"):
+                    break
+    logging.info("Weekly bonuses: %s.", ", ".join(
+        _bonus_state(key) or "?" for key in _BONUS_TOGGLES))
 
 TERMIN = [
     Action("victory", click=(1693, 841)),
@@ -434,7 +512,7 @@ TERMIN = [
 end_locations = {
     "victory": 0,
     "Claim": 2,
-    "ClaimInvert": 4,
+    "ClaimInvert": 3,            # the toggles first, then the button
     "ConfirmInvert": 5,
     "Confirm.0": 6,
 }
@@ -928,6 +1006,7 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
     p.STUCK_FORFEIT = False
 
     p.BONUS = settings['bonus']
+    p.BONUS_ONE = bool(settings.get('bonus_one', False))
     p.RESTART = settings['restart']
     p.ALTF4, p.ALTF4_lux = settings['altf4']
     p.NETZACH = settings['enkephalin']
@@ -1127,6 +1206,7 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
                         tele.restart(time.time() - run_t0)
                         completed = False
                         continue
+                    finish_gift_scan()      # the last shop's shelf, named off the shop
                     tele.run_result(completed, duration=time.time() - run_t0,
                                     team=(p.TEAM[0] if p.TEAM else ""),
                                     mode="mirror")

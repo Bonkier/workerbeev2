@@ -13,6 +13,7 @@ LOG = True
 # confidence against its threshold, misses included, into game.log.
 DEBUG_MATCH_CONF = False
 BONUS = False
+BONUS_ONE = False
 RESTART = True
 ALTF4 = False
 ALTF4_lux = False

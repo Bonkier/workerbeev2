@@ -13,7 +13,8 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from .run_config import HOLLOW_LABEL, HOLLOW_SEARCH_GIFTS, SAIKAI_LABEL
+from .run_config import (HOLLOW_GRACE_SEED, HOLLOW_LABEL, HOLLOW_SEARCH_GIFTS,
+                         SAIKAI_LABEL)
 
 _MARKET_SLOT_HINTS = {
     "saikai": ("Editing the SAIKAI market config (used by SAIKAI runs only). "
@@ -1753,7 +1754,7 @@ class MirrorDungeonPage(QWidget):
     def _update_gift_lock(self, *_):
         """SAIKAI pins its Spiderweb gift in the picker (mandatory, locked);
         Hollow pins Grand Welcome and Sharp Needle & Thread the same way
-        (its Cigarette Holder comes from the starter screen, not from here).
+        (its Torn Bandolier comes from the starter screen, not from here).
         Each custom strategy edits its own Market/Fuse tag slot, and picking
         Hollow clears the gift search first, so no earlier config bleeds
         into its run."""
@@ -1785,6 +1786,20 @@ class MirrorDungeonPage(QWidget):
                 self._market_gallery.set_config(cfg or {})
             self._market_slot_hint.setText(_MARKET_SLOT_HINTS.get(want, ""))
             self._market_slot_hint.setVisible(want != "normal")
+        if hasattr(self, "_grace_chips") and not self._loading:
+            # Hollow keeps its own graces, seeded with the sheet's pair, so
+            # the other runs' picks survive a switch either way.
+            slot = "hollow" if hollow else "normal"
+            if slot != self._grace_slot:
+                self._grace_slots[self._grace_slot] = {
+                    n: c.state() for n, c in self._grace_chips.items()}
+                self._grace_slot = slot
+                picks = self._grace_slots.get(slot)
+                if picks is None and slot == "hollow":
+                    picks = dict(HOLLOW_GRACE_SEED)
+                if picks is not None:
+                    for n, c in self._grace_chips.items():
+                        c.set_state(int(picks.get(n, 0) or 0))
         if not hasattr(self, "_gift_gallery"):
             return
         strategy = (SAIKAI_LABEL if saikai else HOLLOW_LABEL if hollow
@@ -1906,6 +1921,10 @@ class MirrorDungeonPage(QWidget):
                           for k, t in self._behaviour.items()},
             "teams": self._teams,
             "grace": {n: c.state() for n, c in self._grace_chips.items()},
+            "grace_slots": {
+                **{k: v for k, v in self._grace_slots.items() if v is not None},
+                self._grace_slot: {n: c.state() for n, c in self._grace_chips.items()},
+            },
             "card": self._card_priority.order(),
             "packs": self._floor_packs.state(),
             "global_packs": self._floor_packs.global_state(),
@@ -2040,13 +2059,29 @@ class MirrorDungeonPage(QWidget):
             for k, v in (s.get("behaviour") or {}).items():
                 if k in self._behaviour:
                     self._behaviour[k].setChecked(bool(v))
+            self._behaviour["bonus_one"].setEnabled(self._behaviour["bonus"].isChecked())
             teams = s.get("teams")
             if isinstance(teams, list) and teams:
                 self._teams = teams
                 self._rebuild_team_rows()
+            slots = s.get("grace_slots")
+            if isinstance(slots, dict):
+                for k in ("normal", "hollow"):
+                    v = slots.get(k)
+                    self._grace_slots[k] = v if isinstance(v, dict) else None
+            self._grace_slot = ("hollow" if (bool(s.get("custom_run"))
+                                             and s.get("custom_strategy") == HOLLOW_LABEL)
+                                else "normal")
             for n, st in (s.get("grace") or {}).items():
                 if n in self._grace_chips:
                     self._grace_chips[n].set_state(int(st))
+            if self._grace_slot == "hollow" and not isinstance(slots, dict):
+                # First start since Hollow got its own graces: the chips held
+                # the other runs' picks, and Hollow starts from the sheet's pair.
+                self._grace_slots["normal"] = {
+                    n: c.state() for n, c in self._grace_chips.items()}
+                for n, c in self._grace_chips.items():
+                    c.set_state(int(HOLLOW_GRACE_SEED.get(n, 0)))
             card = s.get("card")
             if isinstance(card, list) and card:
                 self._card_priority.set_state(card, [])
@@ -2097,7 +2132,11 @@ class MirrorDungeonPage(QWidget):
 
         rows = [
             ("bonus", "Claim bonus",
-             "Auto-claim the floor-end bonus reward.", True),
+             "Spend the week's bonus charges on the reward screen.", True),
+            ("bonus_one", "One weekly bonus per run",
+             "Spend one of the week's three charges per run instead of every "
+             "charge left, so three runs each get one. Needs Claim bonus.",
+             False),
             ("restart", "Restart on failure",
              "If the run fails, immediately start another with the same team.", True),
             ("altf4", "Close Limbus when finished",
@@ -2182,7 +2221,7 @@ class MirrorDungeonPage(QWidget):
         }
         by_key = {r[0]: r for r in rows}
         groups = (
-            ("RUN", ("bonus", "enkephalin", "skip", "winrate",
+            ("RUN", ("bonus", "bonus_one", "enkephalin", "skip", "winrate",
                      "swap_max_energy")),
             ("PACKS", ("pack_search",)),
             ("ON DEFEAT", ("restart", "claim_on_defeat")),
@@ -2216,6 +2255,9 @@ class MirrorDungeonPage(QWidget):
                 col.addWidget(group, 0, Qt.AlignmentFlag.AlignLeft)
             col.addStretch(1)
             cols.addLayout(col, 1)
+        # One weekly bonus per run only means something while Claim bonus is on.
+        self._behaviour["bonus"].toggled.connect(self._behaviour["bonus_one"].setEnabled)
+        self._behaviour["bonus_one"].setEnabled(self._behaviour["bonus"].isChecked())
         section.body.addLayout(cols)
         return section
 
@@ -2315,6 +2357,8 @@ class MirrorDungeonPage(QWidget):
         # fully editable. The gallery edits whichever slot is active.
         self._market_slot = "normal"
         self._market_slots = {"normal": {}, "saikai": None, "hollow": None}
+        self._grace_slot = "normal"
+        self._grace_slots = {"normal": None, "hollow": None}
         self._market_slot_hint = QLabel(_MARKET_SLOT_HINTS["saikai"],
                                         page, objectName="inlineHint")
         self._market_slot_hint.setWordWrap(True)

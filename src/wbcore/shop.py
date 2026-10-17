@@ -3,6 +3,7 @@ from itertools import combinations_with_replacement
 from .utils import params as p
 from .teams import TEAMS
 from .cache import CACHE
+import threading
 
 loc_shop = loc_rgb(conf=0.83, wait=False, method=cv2.TM_SQDIFF_NORMED)
 shop_click = loc_shop(click=True, wait=5)
@@ -727,11 +728,12 @@ def confirm_affinity(teams=None):
         else:
             ClickAction((469, 602), ver="keywordSel").execute(shop_click)
 
-def scan_run_gifts():
-    """End-of-run gift inventory (last-shop floor): open the fuse menu, page
-    the owned shelf, and name every team + catalog gift found with its uptie
-    state. Returns [(name, uptied)], and emits it to telemetry so the run
-    record and the Discord embed carry it."""
+def scan_run_gifts(wait=False):
+    """End-of-run gift inventory (last-shop floor): open the fuse menu,
+    capture every page of the owned shelf, close it, and name every team +
+    catalog gift with its uptie state in the background. finish_gift_scan
+    hands the result to telemetry before the run record is written; with
+    `wait` it is returned right here."""
     if getattr(p, "SKIP_EGO_CHECK", False):
         return []
     found = {}
@@ -754,9 +756,9 @@ def scan_run_gifts():
         except RuntimeError:
             logging.warning("Gift scan: fuse menu did not open - skipping.")
             return []
+    started = time.time()
+    frames = []
     try:
-        time.sleep(0.2)
-
         comp = p.WINDOW[2] / 1920
         reg = REG["fuse_shelf"]
         hook_x = random.choice([1083, 1228, 1370, 1515])
@@ -767,83 +769,145 @@ def scan_run_gifts():
                and now_rgb.button("scroll", "scroll_full")
                and guard < 8):
             browse_fast(hook_x, up=True)
-            time.sleep(0.5)
+            _shelf_frame()
             guard += 1
 
         team_names = set((p.KEYWORDLESS or {}).keys())
         for aff in p.GIFTS:
             team_names |= set(aff.get("all") or [])
         team_names = {g for g in team_names if g in PTH}
-        # Full sell_path catalog (~5s/page): fuel gifts can carry ANY keyword,
-        # so trimming to the run's keywords silently drops them from the
-        # report. Run keywords lead so their blackouts land before the long
-        # tail scans; buy-crop-only entries stay excluded (false positives).
+        # Full sell_path catalog: fuel gifts can carry ANY keyword, so
+        # trimming to the run's keywords silently drops them from the report.
+        # Run keywords lead so their blackouts land before the long tail;
+        # buy-crop-only entries stay excluded (false positives).
         from .market_catalog import load_market_catalog
         kw_run = {str(t).lower() for t in (p.TEAM or [])} | {"keywordless"}
         _cat = load_market_catalog()
         cat_names = sorted(
             (n for n, e in _cat.items() if e.get("sell_path")),
             key=lambda n: _cat[n].get("keyword") not in kw_run)
-
-        for _page in range(8):
-            shelf = screenshot(region=reg)
-            image = amplify(shelf)
-
-            def _badge(x, y):
-                crop = shelf[int((y-66-reg[1])*comp):int((y-22-reg[1])*comp),
-                             int((x-14-reg[0])*comp):int((x+55-reg[0])*comp)]
-                try:
-                    return bool(LocateRGB.check(PTH["+"], image=crop, wait=False))
-                except cv2.error:
-                    return False
-
-            def _blackout(x, y):
-                # Remove the hit so the catalog pass cannot re-report the
-                # same gift under its display name (inventory_check pattern).
-                nonlocal image, shelf
-                shelf = rectangle(shelf, (int(x - 62 - reg[0]), int(y - 72 - reg[1])),
-                                  (int(x + 60 - reg[0]), int(y + 60 - reg[1])), (0, 0, 0), -1)
-                image = rectangle(image, (int(x - 62 - reg[0]), int(y - 72 - reg[1])),
-                                  (int(x + 60 - reg[0]), int(y + 60 - reg[1])), (0, 0, 0), -1)
-
-            new = 0
-            for gift in team_names:
-                # Already-found gifts are re-located every pass PURELY to
-                # black out their tile: a skipped gift stays visible on the
-                # fresh screenshot and the catalog pass then re-reports the
-                # same tile under its display name (13 gifts scanned as 15).
-                try:
-                    tpl = CACHE[gift] if gift in CACHE else amplify(cv2.imread(PTH[gift]))
-                    x, y = gui.center(LocateRGB.try_locate(tpl, image=image,
-                                                           region=reg, conf=0.87))
-                except gui.ImageNotFoundException:
-                    continue
-                if gift not in found:
-                    found[gift] = _badge(x, y)
-                    new += 1
-                _blackout(x, y)
-            for name, (x, y) in _market_scan(image, reg, cat_names).items():
-                if name not in found:
-                    found[name] = _badge(x, y)
-                    new += 1
-                _blackout(x, y)
-
-            if _page > 0 and new == 0:
-                break
-            if not now_rgb.button("scroll", "scroll_full"):
-                # Single-page shelf: everything is on screen, no second
-                # verification pass needed.
-                break
-            browse_fast(hook_x)
-            time.sleep(0.5)
+        frames = _capture_shelf(hook_x)
     finally:
         # Never leave the fuse menu open: leave() cannot cope with it.
         close_panel()
+    logging.info("Gift scan: %d shelf page(s) captured in %.1fs; naming them "
+                 "off the shop.", len(frames), time.time() - started)
+    _GIFT_SCAN.update(thread=None, items=None)
+    if not frames:
+        return []
+    worker = threading.Thread(
+        target=_name_shelf_later, name="gift-scan", daemon=True,
+        args=(frames, reg, comp, team_names, cat_names))
+    _GIFT_SCAN["thread"] = worker
+    worker.start()
+    if wait:
+        return finish_gift_scan(timeout=120.0)
+    return []
 
-    items = sorted(found.items())
+
+_GIFT_SCAN = {"thread": None, "items": None}
+
+
+def _shelf_frame(timeout=0.6):
+    """The owned shelf once it stops moving after a drag (two reads 0.1 s
+    apart the same), or the last read at the timeout."""
+    reg = REG["fuse_shelf"]
+    last = screenshot(region=reg)
+    start = time.time()
+    while time.time() - start < timeout:
+        time.sleep(0.1)
+        cur = screenshot(region=reg)
+        if cur.shape == last.shape and not np.any(cv2.absdiff(cur, last)):
+            return cur
+        last = cur
+    return last
+
+
+def _capture_shelf(hook_x, max_pages=8) -> list:
+    """Every page of the owned shelf as raw frames, top to bottom. The
+    naming happens off the shop, so the visit only pays for the drags."""
+    frames = []
+    for _ in range(max_pages):
+        frame = _shelf_frame()
+        if frames and np.array_equal(frame, frames[-1]):
+            break                              # the drag moved nothing: the end
+        frames.append(frame)
+        if (not now_rgb.button("scroll", "scroll_full")
+                or now_rgb.button("scroll.0")):
+            break                              # one page, or the bottom reached
+        browse_fast(hook_x)
+    return frames
+
+
+def _name_shelf(frames, reg, comp, team_names, cat_names) -> list:
+    """[(name, uptied)] for every team and catalogue gift on the frames."""
+    found = {}
+    for shelf in frames:
+        shelf = shelf.copy()
+        image = amplify(shelf)
+
+        def _badge(x, y):
+            crop = shelf[int((y-66-reg[1])*comp):int((y-22-reg[1])*comp),
+                         int((x-14-reg[0])*comp):int((x+55-reg[0])*comp)]
+            try:
+                return bool(LocateRGB.check(PTH["+"], image=crop, wait=False))
+            except cv2.error:
+                return False
+
+        def _blackout(x, y):
+            # Remove the hit so the catalog pass cannot re-report the same
+            # gift under its display name (inventory_check pattern).
+            nonlocal image, shelf
+            shelf = rectangle(shelf, (int(x - 62 - reg[0]), int(y - 72 - reg[1])),
+                              (int(x + 60 - reg[0]), int(y + 60 - reg[1])), (0, 0, 0), -1)
+            image = rectangle(image, (int(x - 62 - reg[0]), int(y - 72 - reg[1])),
+                              (int(x + 60 - reg[0]), int(y + 60 - reg[1])), (0, 0, 0), -1)
+
+        for gift in team_names:
+            # Already-found gifts are re-located on every page PURELY to
+            # black out their tile, or the catalog pass re-reports the same
+            # tile under its display name (13 gifts scanned as 15).
+            try:
+                tpl = CACHE[gift] if gift in CACHE else amplify(cv2.imread(PTH[gift]))
+                x, y = gui.center(LocateRGB.try_locate(tpl, image=image,
+                                                       region=reg, conf=0.87))
+            except gui.ImageNotFoundException:
+                continue
+            if gift not in found:
+                found[gift] = _badge(x, y)
+            _blackout(x, y)
+        for name, (x, y) in _market_scan(image, reg, cat_names).items():
+            if name not in found:
+                found[name] = _badge(x, y)
+            _blackout(x, y)
+    return sorted(found.items())
+
+
+def _name_shelf_later(frames, reg, comp, team_names, cat_names):
+    try:
+        items = _name_shelf(frames, reg, comp, team_names, cat_names)
+    except Exception as exc:
+        logging.warning("Gift scan: naming the shelf failed: %s", exc)
+        items = []
+    _GIFT_SCAN["items"] = items
     logging.info("Run gifts (%d): %s", len(items),
                  ", ".join(n + (" [uptied]" if u else "") for n, u in items)
                  or "none detected")
+
+
+def finish_gift_scan(timeout=20.0) -> list:
+    """Wait for the shelf naming started at the last shop and hand the run
+    record its gifts; [] when no scan ran or it is still going."""
+    worker = _GIFT_SCAN.get("thread")
+    if worker is None:
+        return []
+    worker.join(timeout)
+    _GIFT_SCAN["thread"] = None
+    if worker.is_alive():
+        logging.warning("Gift scan: still naming the shelf after %.0fs; the run "
+                        "record goes without it.", timeout)
+        return []
+    items = _GIFT_SCAN.get("items") or []
     tele.gifts(items)
     return items
 
@@ -2475,7 +2539,7 @@ def shop():
                 logging.info("SCAN DEBUG: mid-start at a shop - running the "
                              "gift scan here, then stopping (shop stays open).")
                 try:
-                    items = scan_run_gifts()
+                    items = scan_run_gifts(wait=True)
                     logging.info("SCAN DEBUG: scan returned %d gift(s).",
                                  len(items))
                 except gui.PauseException:

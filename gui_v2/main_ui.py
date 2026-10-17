@@ -6,8 +6,8 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QStyle,
+    QStyleOptionButton, QStylePainter, QVBoxLayout, QWidget,
 )
 
 from .dashboard_page import DashboardPage
@@ -17,10 +17,12 @@ from .luxcavation_page import LuxcavationPage
 from .mirror_dungeon_page import MirrorDungeonPage
 from .scheduler_page import SchedulerPage
 from .settings_page import SettingsPage
+from .settings import load_settings, save_settings
 from .splash import _load_app_icon, _read_version
 from .stats_page import StatsPage
 from . import seasonal
 from .theme import Colors, Motion, Sizing
+from .voxel import draw_pixel_text, pixel_text_width
 from .widgets import AnimatedStack, ElidedLabel, PageBackdrop
 
 
@@ -37,10 +39,24 @@ _NAV_ITEMS = (
 )
 
 
+# The rail the sidebar closes to: the logo, the toggle and the tags fit it.
+_RAIL_WIDTH = 56
+# Two-letter pixel tags: beside the label when open, the whole row when closed.
+_TAGS = {
+    "dashboard": "DB", "mirror_dungeon": "MD", "luxcavation": "LX",
+    "scheduler": "SC", "stats": "ST", "logs": "LG", "settings": "SE",
+    "help": "HP",
+}
+_TAG_PIXEL = 2
+_TAG_X = 16                       # tag left when open, past the caret
+
+
 class _SidebarItem(QPushButton):
-    """Text-only nav row. The selected row is marked with a stepped caret that
-    slides in from the left, the way a menu cursor does - the legacy skin keeps
-    its v2 accent edge bar instead."""
+    """Nav row: a pixel tag, the label, and for the selected row a stepped
+    caret that slides in from the left the way a menu cursor does (the
+    legacy skin keeps its v2 accent edge bar and shows no tag). On the rail
+    only the tag is painted, in the accent when selected; the label stays
+    the button text for tooltips and tests."""
 
     _UNIT = 3                      # caret pixel size
     _STEPS = (1, 2, 3, 2, 1)       # blocks per row, giving a right-pointing wedge
@@ -49,12 +65,14 @@ class _SidebarItem(QPushButton):
                  parent: QWidget | None = None):
         super().__init__(label, parent)
         self.key = key
+        self.tag = _TAGS.get(key, key[:2].upper())
         self.setObjectName("sidebarItem")
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFlat(True)
         self._grow = 0.0
         self._caret = False
+        self._rail = False
         self.refresh_theme()
         self._anim = QPropertyAnimation(self, b"caretGrow", self)
         self._anim.setDuration(Motion.QUICK)
@@ -81,21 +99,86 @@ class _SidebarItem(QPushButton):
 
     caretGrow = Property(float, _get_grow, _set_grow)
 
+    def set_rail(self, on: bool):
+        """Closed sidebar: the tag alone, the label as the tooltip."""
+        self._rail = bool(on)
+        self.setToolTip(self.text() if self._rail else "")
+        self.update()
+
     def paintEvent(self, event):
-        super().paintEvent(event)
-        if not self._caret or self._grow <= 0.0:
-            return
-        u = self._UNIT
-        h = len(self._STEPS) * u
-        y = (self.height() - h) // 2
-        # Slides in from the left and fades up together.
-        x = 3 - int(round((1.0 - self._grow) * 7))
-        col = QColor(Colors.ACCENT)
-        col.setAlpha(int(255 * self._grow))
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+        if self._rail:
+            opt.text = ""
+        sp = QStylePainter(self)
+        sp.drawControl(QStyle.ControlElement.CE_PushButton, opt)
+        sp.end()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        for i, n in enumerate(self._STEPS):
-            p.fillRect(x, y + i * u, n * u, u, col)
+        if self._rail or self._caret:
+            tw = pixel_text_width(self.tag, _TAG_PIXEL)
+            th = 7 * _TAG_PIXEL
+            x = (self.width() - tw) // 2 if self._rail else _TAG_X
+            tint = Colors.ACCENT if self.isChecked() else Colors.TEXT_TERTIARY
+            draw_pixel_text(p, x, (self.height() - th) // 2, self.tag,
+                            _TAG_PIXEL, color=tint)
+        if self._caret and self._grow > 0.0 and not self._rail:
+            u = self._UNIT                 # on the rail the tag alone marks the row
+            h = len(self._STEPS) * u
+            y = (self.height() - h) // 2
+            # Slides in from the left and fades up together.
+            x = 3 - int(round((1.0 - self._grow) * 7))
+            col = QColor(Colors.ACCENT)
+            col.setAlpha(int(255 * self._grow))
+            for i, n in enumerate(self._STEPS):
+                p.fillRect(x, y + i * u, n * u, u, col)
+        p.end()
+
+
+class _SidebarToggle(QPushButton):
+    """Opens and closes the sidebar: a pixel double chevron pointing the way
+    the sidebar will move."""
+
+    _UNIT = 2
+    _STEPS = (1, 2, 3, 2, 1)
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("sidebarToggle")
+        self.setFixedSize(26, 22)
+        self.setFlat(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._open = True
+        self.set_open(True)
+
+    def set_open(self, on: bool):
+        self._open = bool(on)
+        self.setToolTip("Close the sidebar" if self._open else "Open the sidebar")
+        self.update()
+
+    def refresh_theme(self):
+        self.update()
+
+    def paintEvent(self, event):
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+        sp = QStylePainter(self)
+        sp.drawControl(QStyle.ControlElement.CE_PushButton, opt)
+        sp.end()
+        u = self._UNIT
+        wedge, gap = 3 * u, 2 * u
+        total = 2 * wedge + gap
+        x0 = (self.width() - total) // 2
+        y0 = (self.height() - len(self._STEPS) * u) // 2
+        col = QColor(Colors.TEXT_SECONDARY)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        for k in range(2):
+            x = x0 + k * (wedge + gap)
+            for i, n in enumerate(self._STEPS):
+                # Open: wedges point left (the way out); closed: right.
+                left = x + (wedge - n * u) if self._open else x
+                p.fillRect(left, y0 + i * u, n * u, u, col)
         p.end()
 
 
@@ -106,10 +189,13 @@ class MainUI(QWidget):
     start_requested = Signal()
     stop_requested = Signal()
 
+    sidebar_width_changed = Signal(int)
+
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("root")
         self._items: dict[str, _SidebarItem] = {}
+        self._sidebar_open = True
         self._pages: dict[str, QWidget] = {}
         self._build()
 
@@ -137,6 +223,12 @@ class MainUI(QWidget):
         root.addWidget(content_wrap, stretch=1)
 
         self._select("dashboard")
+        self._side_anim = QPropertyAnimation(self, b"sidebarWidth", self)
+        self._side_anim.setDuration(Motion.NORMAL)
+        self._side_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.set_sidebar_open(
+            not bool(load_settings().get("sidebar_collapsed", False)),
+            animate=False, persist=False)
 
         # Deferred so it runs after the window is shown and allWidgets()
         # is fully populated.
@@ -222,40 +314,130 @@ class MainUI(QWidget):
         """Skin switch hook (skins._rebrand_running_app)."""
         if hasattr(self, "_brand_row"):
             self._build_brand()
+            self._apply_brand_rail(not self._sidebar_open)
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame(self)
         sidebar.setObjectName("sidebar")
         sidebar.setFixedWidth(Sizing.SIDEBAR_WIDTH)
+        self._sidebar = sidebar
         col = QVBoxLayout(sidebar)
-        col.setContentsMargins(
-            Sizing.SPACE_MD, Sizing.SPACE_XXL,
-            Sizing.SPACE_MD, Sizing.SPACE_LG,
-        )
-        col.setSpacing(Sizing.SPACE_XXS)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
 
-        self._brand_host = QWidget(sidebar)
+        # The brand on a header band, the toggle under it.
+        band = QFrame(sidebar)
+        band.setObjectName("sidebarBrandBand")
+        band_col = QVBoxLayout(band)
+        band_col.setContentsMargins(Sizing.SPACE_MD, Sizing.SPACE_XXL,
+                                    Sizing.SPACE_MD, Sizing.SPACE_SM)
+        band_col.setSpacing(Sizing.SPACE_SM)
+        self._brand_host = QWidget(band)
         self._brand_row = QHBoxLayout(self._brand_host)
         self._brand_row.setContentsMargins(0, 0, 0, 0)
         self._brand_row.setSpacing(Sizing.SPACE_SM)
         self._build_brand()
-        col.addWidget(self._brand_host)
+        band_col.addWidget(self._brand_host)
+        self._toggle_row = QHBoxLayout()
+        self._toggle_row.setContentsMargins(0, 0, 0, 0)
+        self._sidebar_toggle = _SidebarToggle(band)
+        self._sidebar_toggle.clicked.connect(self.toggle_sidebar)
+        self._toggle_row.addStretch(1)
+        self._toggle_row.addWidget(self._sidebar_toggle)
+        self._toggle_row.addStretch(0)
+        band_col.addLayout(self._toggle_row)
+        col.addWidget(band)
 
-        col.addSpacing(Sizing.SPACE_LG)
-
+        nav = QWidget(sidebar)
+        nav_col = QVBoxLayout(nav)
+        nav_col.setContentsMargins(Sizing.SPACE_MD, Sizing.SPACE_LG,
+                                   Sizing.SPACE_MD, Sizing.SPACE_LG)
+        nav_col.setSpacing(Sizing.SPACE_XXS)
         for key, label in _NAV_ITEMS:
-            btn = _SidebarItem(key, seasonal.title(label), sidebar)
+            if key == "settings":
+                seam = QFrame(nav)
+                seam.setObjectName("sidebarSeam")
+                seam.setFixedHeight(1)
+                nav_col.addSpacing(Sizing.SPACE_SM)
+                nav_col.addWidget(seam)
+                nav_col.addSpacing(Sizing.SPACE_SM)
+            btn = _SidebarItem(key, seasonal.title(label), nav)
             btn.clicked.connect(lambda _c=False, k=key: self._select(k))
-            col.addWidget(btn)
+            nav_col.addWidget(btn)
             self._items[key] = btn
+        nav_col.addStretch(1)
+        col.addWidget(nav, 1)
 
-        col.addStretch(1)
-
-        version_lbl = QLabel(f"v{_read_version().lstrip('v')}", sidebar)
-        version_lbl.setObjectName("sidebarVersion")
-        col.addWidget(version_lbl)
-
+        foot = QFrame(sidebar)
+        foot.setObjectName("sidebarFoot")
+        foot_row = QHBoxLayout(foot)
+        foot_row.setContentsMargins(Sizing.SPACE_MD, Sizing.SPACE_SM,
+                                    Sizing.SPACE_MD, Sizing.SPACE_SM)
+        self._version_lbl = QLabel(f"v{_read_version().lstrip('v')}", foot)
+        self._version_lbl.setObjectName("sidebarVersion")
+        foot_row.addWidget(self._version_lbl)
+        foot_row.addStretch(1)
+        col.addWidget(foot)
         return sidebar
+
+    # --- Sidebar open / closed ----------------------------------------
+    def _get_sidebar_width(self):
+        return self._sidebar.width()
+
+    def _set_sidebar_width(self, w):
+        self._sidebar.setFixedWidth(int(w))
+        self.sidebar_width_changed.emit(int(w))
+
+    sidebarWidth = Property(int, _get_sidebar_width, _set_sidebar_width)
+
+    def sidebar_width(self) -> int:
+        return self._sidebar.width()
+
+    def is_sidebar_open(self) -> bool:
+        return self._sidebar_open
+
+    def toggle_sidebar(self):
+        self.set_sidebar_open(not self._sidebar_open)
+
+    def set_sidebar_open(self, open_: bool, animate: bool = True,
+                         persist: bool = True):
+        """Open: brand, labels and version. Closed: the 56 px rail of pixel
+        tags, labels as tooltips. The choice is kept across starts."""
+        self._sidebar_open = bool(open_)
+        rail = not self._sidebar_open
+        for btn in self._items.values():
+            btn.set_rail(rail)
+        self._apply_brand_rail(rail)
+        self._sidebar_toggle.set_open(self._sidebar_open)
+        self._toggle_row.setStretch(2, 1 if rail else 0)    # centred on the rail
+        self._version_lbl.setVisible(not rail)
+        target = _RAIL_WIDTH if rail else Sizing.SIDEBAR_WIDTH
+        self._side_anim.stop()
+        if animate:
+            self._side_anim.setStartValue(self._sidebar.width())
+            self._side_anim.setEndValue(target)
+            self._side_anim.start()
+        else:
+            self._set_sidebar_width(target)
+        if persist:
+            save_settings({"sidebar_collapsed": rail})
+
+    def _apply_brand_rail(self, rail: bool):
+        """On the rail only the logo (the first widget of the brand row) stays."""
+        first = [True]
+
+        def walk(layout):
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                w, sub = item.widget(), item.layout()
+                if w is not None:
+                    if first[0]:
+                        first[0] = False
+                        continue
+                    w.setVisible(not rail)
+                elif sub is not None:
+                    walk(sub)
+        walk(self._brand_row)
 
     # --- Content stack ---------------------------------------------
     def _build_content(self) -> QWidget:

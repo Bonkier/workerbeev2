@@ -11,6 +11,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QIcon, QPainter
 from PySide6.QtWidgets import (
+    QSizePolicy, QSpacerItem,
     QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMainWindow,
     QPushButton, QStackedWidget, QVBoxLayout, QWidget,
 )
@@ -149,7 +150,10 @@ class _TitleBar(QFrame):
         # No title text - the sidebar shows the brand. The search box sits
         # centred over the pages, so it starts clear of the sidebar.
         from .search_bar import SearchBox
-        layout.addSpacing(Sizing.SIDEBAR_WIDTH - Sizing.SPACE_MD)
+        self._side_gap = QSpacerItem(Sizing.SIDEBAR_WIDTH - Sizing.SPACE_MD, 0,
+                                     QSizePolicy.Policy.Fixed,
+                                     QSizePolicy.Policy.Minimum)
+        layout.addItem(self._side_gap)
         layout.addStretch(1)
         self.search = SearchBox(self)
         layout.addWidget(self.search, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -160,6 +164,14 @@ class _TitleBar(QFrame):
         self._max_btn = self._mk_btn(layout, "max", "\u25a1",
                                      self._toggle_max, close=False)
         self._mk_btn(layout, "close", "\u00d7", self._win.close, close=True)
+
+    def set_sidebar_width(self, width: int):
+        """The search box stays centred over the pages as the sidebar opens
+        and closes."""
+        self._side_gap.changeSize(max(0, int(width) - Sizing.SPACE_MD), 0,
+                                  QSizePolicy.Policy.Fixed,
+                                  QSizePolicy.Policy.Minimum)
+        self.layout().invalidate()
 
     def _mk_btn(self, layout, kind, glyph, handler, close: bool):
         b = _WinButton(kind, glyph, self)
@@ -261,6 +273,8 @@ class MainWindow(QMainWindow):
         # make the QStackedWidget sizeHint max(splash, main) and force the
         # window taller than the splash. Added in _morph_to_main.
         self._main = MainUI(self._stack)
+        self._main.sidebar_width_changed.connect(self._titlebar.set_sidebar_width)
+        self._titlebar.set_sidebar_width(self._main.sidebar_width())
         self._coordinator = RunCoordinator(self._main, self)
         from PySide6.QtGui import QKeySequence, QShortcut
         from .search_bar import FeatureSearch

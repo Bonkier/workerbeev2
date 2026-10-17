@@ -119,6 +119,7 @@ HOLLOW_LABEL = "Hollow"
 HOLLOW_SCRIPT = "hollow"
 # Graces: Star of the Beginning (0), Interstellar Travel (2).
 _HOLLOW_BUFF = [1, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+HOLLOW_GRACE_SEED = {name: v for name, v in zip(_GRACE_ORDER, _HOLLOW_BUFF) if v}
 _HOLLOW_AFFINITY = "Poise"
 _HOLLOW_FAUST = 1
 # One pack per floor, pinned to it, and hunted through Pack Search; the
@@ -149,18 +150,17 @@ _ROSTER_KEYS = ("YISANG", "FAUST", "DONQUIXOTE", "RYOSHU", "MEURSAULT",
 
 def _build_hollow_run(md_state: dict):
     """Fixed (count, teams, settings, hard) for the HOLLOW run: Normal to
-    floor 4 then Hard, the floor packs above, Cigarette Holder taken from
-    the Poise starter list, Grand Welcome and Sharp Needle & Thread from the
+    floor 4 then Hard, the floor packs above, Torn Bandolier taken from
+    the Pierce starter list, Grand Welcome and Sharp Needle & Thread from the
     gift search, and the shop run from the floor plan after its heal."""
     settings = build_settings(md_state)
-    settings["buff"] = list(_HOLLOW_BUFF)   # the sheet's graces, pinned
+    if not any(settings["buff"]):           # the BUILD panel's graces, else the sheet's
+        settings["buff"] = list(_HOLLOW_BUFF)
     settings["infinity"] = False
     settings["winrate"] = False             # the battle script decides
     settings["hard_from_floor"] = 5         # the sheet converts after floor 4
-    settings["pack_search"] = True
-    settings["pack_search_floors"] = {
+    settings["pack_search_floors"] = {     # the sheet's packs, when Pack search is on
         floor: name for floor, (_key, name) in _HOLLOW_FLOOR_PACKS.items()}
-    settings["swap_max_energy"] = False     # the squad is Faust, full stop
     settings["default_market_workflow"] = False   # the floor plan runs the shop
     settings["skip_ego_check"] = False      # the plan scans the owned shelf
     settings["run_script"] = HOLLOW_SCRIPT
@@ -440,6 +440,7 @@ def build_settings(md_state: dict) -> dict:
 
     return {
         "bonus": bool(beh.get("bonus", True)),
+        "bonus_one": bool(beh.get("bonus_one", False)),
         "restart": bool(beh.get("restart", True)),
         "altf4": (bool(beh.get("altf4", False)), bool(beh.get("altf4", False))),
         "enkephalin": bool(beh.get("enkephalin", True)),
