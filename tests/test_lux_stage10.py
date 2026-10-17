@@ -13,7 +13,8 @@ def _crop_with(name, dx=26, dy=16):
     t = cv2.imread(U.PTH[name])
     crop = np.full((L._BADGE_CROP_H, L._BADGE_CROP_W, 3), 20, np.uint8)
     h, w = t.shape[:2]
-    crop[dy:dy + h, dx:dx + w] = t
+    h = min(h, L._BADGE_CROP_H - dy)
+    crop[dy:dy + h, dx:dx + w] = t[:h]
     return crop
 
 
@@ -23,6 +24,24 @@ def test_the_badge_reader_tells_10_from_1_and_8():
     assert L._read_stage_crop(_crop_with("lux_stage1")) == 1
     assert L._read_stage_crop(_crop_with("lux_stage8")) == 8
     assert L._read_stage_crop(None) is None
+
+
+def test_a_scaled_window_crop_is_brought_back_to_fhd_before_reading():
+    for name, stage in (("lux_stage9", 9), ("lux_stage6", 6), ("lux_stage10", 10)):
+        small = cv2.resize(_crop_with(name), None, fx=0.71, fy=0.71,
+                           interpolation=cv2.INTER_AREA)          # a 1366 window
+        assert L._read_stage_crop(small) == stage, name
+
+
+def test_a_crop_without_clear_digits_reads_nothing():
+    blank = np.full((L._BADGE_CROP_H, L._BADGE_CROP_W, 3), 20, np.uint8)
+    assert L._read_stage_crop(blank) is None
+    noise = np.random.default_rng(3).integers(
+        0, 255, size=(L._BADGE_CROP_H, L._BADGE_CROP_W, 3), dtype=np.uint8)
+    assert L._read_stage_crop(noise) is None
+    assert L._read_stage_crop(_crop_with("lux_stage6", dy=72)) is None   # digits below the crop
+    assert L._read_stage_crop(_crop_with("lux_stage6")) == 6
+    assert "6 at" in L._read_note()
 
 
 def test_the_stage_search_falls_back_to_the_badge(monkeypatch):

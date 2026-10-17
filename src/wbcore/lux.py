@@ -244,9 +244,16 @@ _TWO_DIGIT_STAGES = {10}
 _TWO_DIGIT_X0 = 0.03
 _TWO_DIGIT_CONF = 0.88
 _BADGE_IN_CROP = 26      # the badge's left edge sits this far into the crop
+# A units digit counts only when it is clear: FHD captures read 0.99 with
+# the runner-up at 0.91 or less, a 1366 window about 0.95 against 0.91. A
+# scaled or shifted window puts the digits elsewhere in the crop, and a
+# guess there enters the wrong stage.
+_DIGIT_CONF = 0.85
+_DIGIT_MARGIN = 0.02
 
 _STAGE_DIGIT_CACHE: dict[str, object] = {}
 _STAGE_WORD_CACHE: dict = {}
+_LAST_READ: dict = {"best": None, "next": None}
 
 
 def _stage_units_digit(name: str, two_digit: bool = False):
@@ -265,24 +272,51 @@ def _stage_units_digit(name: str, two_digit: bool = False):
 
 def _read_stage_crop(crop):
     """The stage a badge crop shows: a two-digit row when it is there, else
-    the best-scoring units digit (1..9); None when nothing can be read."""
+    the best-scoring units digit (1..9) when it is clear; None when nothing
+    reads well enough to act on."""
+    _LAST_READ.update(best=None, next=None)
     if crop is None or getattr(crop, "ndim", 0) != 3:
         return None
     crop = crop[:, :, :3]
-    best_n, best_c = None, -2.0
+    if crop.shape[:2] != (_BADGE_CROP_H, _BADGE_CROP_W):
+        # The capture is at window scale; the templates are FHD cuts.
+        crop = cv2.resize(crop, (_BADGE_CROP_W, _BADGE_CROP_H),
+                          interpolation=cv2.INTER_CUBIC)
+    scores = {}
     for n, name in _EXP_STAGE_TEMPLATES.items():
         two = n in _TWO_DIGIT_STAGES
         sub = _stage_units_digit(name, two)
         if sub is None or crop.shape[0] < sub.shape[0] or crop.shape[1] < sub.shape[1]:
             continue
         c = float(cv2.matchTemplate(crop, sub, cv2.TM_CCOEFF_NORMED).max())
+        if c != c:
+            c = -1.0                      # a flat crop: no correlation at all
         if two:
             if c >= _TWO_DIGIT_CONF:
+                _LAST_READ.update(best=(n, c))
                 return n
             continue
-        if c > best_c:
-            best_c, best_n = c, n
+        scores[n] = c
+    if not scores:
+        return None
+    ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+    best_n, best_c = ranked[0]
+    runner = ranked[1] if len(ranked) > 1 else None
+    _LAST_READ.update(best=ranked[0], next=runner)
+    if best_c < _DIGIT_CONF or (runner and best_c - runner[1] < _DIGIT_MARGIN):
+        return None
     return best_n
+
+
+def _read_note() -> str:
+    """The scores behind the last read, for the log."""
+    best, runner = _LAST_READ.get("best"), _LAST_READ.get("next")
+    if not best:
+        return ""
+    note = " (%d at %.2f" % best
+    if runner:
+        note += ", next %d at %.2f" % runner
+    return note + ")"
 
 
 def _badge_crop(x0: int):
@@ -414,8 +448,8 @@ def _scan_for_stage(stage: int):
     for chev in LocateRGB.locate_all(PTH["lux_consecutive2"], conf=0.85):
         cx = gui.center(chev)[0]
         read = _read_card_stage(cx)
-        logging.info("EXP Luxcavation: card at chevron x=%d reads stage %s.",
-                     cx, read)
+        logging.info("EXP Luxcavation: card at chevron x=%d reads stage %s%s.",
+                     cx, read, _read_note())
         if read == stage:
             return chev
     return None
@@ -432,7 +466,8 @@ def _scan_for_badge(stage: int):
                                                   _BADGE_CROP_H + 30), conf=0.85):
         left = int(box[0])
         read = _read_stage_crop(_badge_crop(left - _BADGE_IN_CROP))
-        logging.info("EXP Luxcavation: badge at x=%d reads stage %s.", left, read)
+        logging.info("EXP Luxcavation: badge at x=%d reads stage %s%s.", left,
+                     read, _read_note())
         if read == stage:
             return (left, _BADGE_TOP, 75, 64)
     return None
@@ -484,7 +519,8 @@ def _find_exp_stage(stage: int):
     raise RuntimeError(
         f"EXP Luxcavation: stage {stage} card not found after scrolling left "
         f"{_EXP_SCROLL_LEFT_ATTEMPTS} and right {_EXP_SCROLL_RIGHT_ATTEMPTS} "
-        f"times; it may not be unlocked.")
+        f"times; it may not be unlocked, or the stage badges could not be "
+        f"read (a scaled or fullscreen window: try windowed mode).")
 
 
 def select_exp_stage(remaining: int) -> int:

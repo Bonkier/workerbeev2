@@ -268,37 +268,161 @@ def debug_dir():
         return tempfile.gettempdir()
 
 
-def dump_template_diag(tag, *template_names):
-    """Diagnose a template-find failure. Logs gray + RGB best-match confidence
-    (distinguishes near-miss from total miss), notes any loading overlay, flags
-    templates missing from PTH, dumps a timestamped full-screen PNG. Never raises."""
+def annotate_matches(frame, items, header=()):
+    """The match report image: the frame with each candidate's search region
+    (blue), its best-match box (green at or over its gate, orange under)
+    labelled with the template name and confidence, the templates themselves
+    along the bottom, and `header` lines top left. Boxes and regions are FHD
+    coordinates; the frame may be at window scale."""
+    out = frame[:, :, :3].copy()
+    comp = out.shape[1] / 1920.0
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    def sc(v):
+        return int(round(v * comp))
+
+    def text(img, s, x, y, colour, scale=0.5):
+        (tw, th), _b = cv2.getTextSize(s, font, scale, 1)
+        cv2.rectangle(img, (x, y - th - 4), (x + tw + 4, y + 3), (0, 0, 0), -1)
+        cv2.putText(img, s, (x + 2, y), font, scale, colour, 1, cv2.LINE_AA)
+
+    for it in items:
+        reg = it.get("region")
+        if reg:
+            rx, ry, rw, rh = reg
+            cv2.rectangle(out, (sc(rx), sc(ry)), (sc(rx + rw), sc(ry + rh)),
+                          (255, 160, 60), 1)
+    placed = 0
+    for it in items:
+        box, score, gate = it.get("box"), it.get("score"), it.get("gate", 0.9)
+        label = "%s %s" % (it.get("label", "?"),
+                           "%.2f" % score if score is not None else "no read")
+        if box:
+            bx, by, bw, bh = box
+            good = score is not None and score >= gate
+            colour = (80, 220, 80) if good else (0, 150, 255)
+            cv2.rectangle(out, (sc(bx), sc(by)), (sc(bx + bw), sc(by + bh)), colour, 2)
+            # Neighbouring boxes (a tab row) take turns between two label rows.
+            row = placed % 2
+            text(out, label, sc(bx), max(14 + 18 * (1 - row), sc(by) - 6 - 18 * row),
+                 colour, 0.45)
+            placed += 1
+        else:
+            text(out, label + " (not placed)", 8, out.shape[0] - 8, (0, 150, 255))
+    y = 22
+    for line in header:
+        if line:
+            text(out, str(line), 8, y, (235, 235, 235), 0.55)
+            y += 22
+    thumbs = [it for it in items if it.get("thumb") is not None]
+    if thumbs:
+        tiles = []
+        for it in thumbs:
+            t = it["thumb"][:, :, :3]
+            h, w = t.shape[:2]
+            f = min(1.0, 60.0 / max(1, h))
+            t = cv2.resize(t, (max(1, int(w * f)), max(1, int(h * f))))
+            pad = np.zeros((84, t.shape[1] + 12, 3), np.uint8)
+            pad[4:4 + t.shape[0], 6:6 + t.shape[1]] = t
+            cv2.putText(pad, str(it.get("label", ""))[:14], (2, 80), font, 0.4,
+                        (235, 235, 235), 1, cv2.LINE_AA)
+            tiles.append(pad)
+        strip = np.hstack(tiles)
+        if strip.shape[1] > out.shape[1]:
+            strip = strip[:, :out.shape[1]]
+        panel = np.zeros((84, out.shape[1], 3), np.uint8)
+        panel[:, :strip.shape[1]] = strip
+        out = np.vstack([out, panel])
+    return out
+
+
+def recent_misses(limit=6):
+    """The last templates the finder looked for and did not find, newest
+    first and each once, as (label, path, region) rows for dump_template_diag."""
+    from ..vision import finder as _finder
+    rows, seen = [], set()
+    try:
+        recent = list(_finder.RECENT_MISSES)   # the scan thread appends to it
+        for name, path, region in reversed(recent):
+            if name in seen or not os.path.exists(path):
+                continue
+            seen.add(name)
+            rows.append((name, path, region))
+            if len(rows) >= limit:
+                break
+    except Exception as exc:
+        logging.debug("recent_misses: %s", exc)
+    return rows
+
+
+def _write_png(path, image):
+    """imwrite cannot take a non-ASCII path on Windows; encode and write."""
+    try:
+        ok, data = cv2.imencode(".png", image)
+        if not ok:
+            return False
+        data.tofile(path)
+        return os.path.exists(path)
+    except Exception as exc:
+        logging.error("DIAG: writing %s failed: %s", path, exc)
+        return False
+
+
+def dump_template_diag(tag, *template_names, region=None, extra=None, note=None,
+                       gate=0.9):
+    """Diagnose a template-find failure: the frame is dumped as is and once
+    more as a match report (annotate_matches) for every PTH name given and
+    every (label, path) or (label, path, region) in `extra`. Each template is
+    matched the way the bot matches it, through the finder on a fresh capture
+    of its region (`region` unless the row brings its own), and its best box
+    and RGB confidence are logged and drawn against `gate`, the caller's
+    floor. Returns the report path, or None. Never raises."""
     import os
     import time as _time
+    region = tuple(region) if region else (0, 0, 1920, 1080)
     try:
         frame = screenshot((0, 0, 1920, 1080))
     except Exception as exc:
         logging.error("DIAG[%s]: could not grab screen: %s", tag, exc)
         frame = None
 
+    wanted = []
     for name in template_names:
         if name not in PTH:
             logging.error("DIAG[%s]: template %r is NOT in PTH "
                           "(asset missing from this build).", tag, name)
             continue
-        try:
-            gconf = LocateGray.get_conf(PTH[name], image=frame,
-                                        region=(0, 0, 1920, 1080))
-            rconf = LocateRGB.get_conf(PTH[name], image=frame,
-                                       region=(0, 0, 1920, 1080))
-            logging.error(
-                "DIAG[%s]: %r best match gray=%.4f rgb=%.4f "
-                "(detection floor is 0.90).", tag, name, gconf, rconf)
-        except Exception as exc:
-            logging.error("DIAG[%s]: get_conf(%r) raised: %s",
-                          tag, name, exc)
+        wanted.append((name, PTH[name], region))
+    for row in extra or []:
+        if len(row) > 1 and row[1]:
+            wanted.append((str(row[0]), row[1],
+                           tuple(row[2]) if len(row) > 2 and row[2] else region))
+
+    items = []
+    for label, path, where in wanted:
+        score, box, gray = None, None, None
+        if frame is not None:
+            try:
+                hit = _select_finder(LocateRGB._color_mode_name).find(
+                    path, region=where, conf=0.0)
+                if hit is not None:
+                    score = float(hit.confidence)
+                    box = tuple(int(v) for v in hit.box)
+                ghit = _select_finder(LocateGray._color_mode_name).find(
+                    path, region=where, conf=0.0)
+                if ghit is not None:
+                    gray = float(ghit.confidence)
+            except Exception as exc:
+                logging.error("DIAG[%s]: match of %r raised: %s", tag, label, exc)
+        logging.error("DIAG[%s]: %r best match rgb=%s gray=%s at %s in %s (gate %.2f)",
+                      tag, label, "%.3f" % score if score is not None else "n/a",
+                      "%.3f" % gray if gray is not None else "n/a",
+                      box or "-", where, gate)
+        items.append({"label": label, "box": box, "score": score, "gate": gate,
+                      "region": where, "thumb": cv2.imread(path)})
 
     try:
-        if "loading" in PTH:
+        if frame is not None and "loading" in PTH:
             up = LocateGray.locate(PTH["loading"], image=frame,
                                    region=(0, 0, 1920, 1080)) is not None
             logging.error("DIAG[%s]: loading/connection overlay present=%s",
@@ -306,18 +430,37 @@ def dump_template_diag(tag, *template_names):
     except Exception:
         pass
 
-    if frame is not None:
+    if frame is None:
+        return None
+    report = None
+    try:
+        stamp = _time.strftime("%Y%m%d_%H%M%S")
+        folder = debug_dir()
+        raw = os.path.join(folder, f"diag_{tag}_{stamp}.png")
+        if not _write_png(raw, frame):
+            logging.error("DIAG[%s]: could not write %s", tag, raw)
+        header = ["%s  %s" % (tag, _time.strftime("%Y-%m-%d %H:%M:%S")),
+                  "window %s" % (tuple(p.WINDOW),), note or ""]
         try:
-            stamp = _time.strftime("%Y%m%d_%H%M%S")
-            out = os.path.join(debug_dir(), f"diag_{tag}_{stamp}.png")
-            cv2.imwrite(out, frame)
-            logging.error("DIAG[%s]: screen dumped to %s", tag, out)
-            _prune_diag_dumps(os.path.dirname(out))
+            from . import envcheck
+            env = envcheck.last_report() or envcheck.collect(probe=False)
+            header += envcheck.summary(env)[:4]
         except Exception as exc:
-            logging.error("DIAG[%s]: screen dump failed: %s", tag, exc)
+            header.append("environment: %s" % exc)
+        report = os.path.join(folder, f"diag_{tag}_{stamp}_report.png")
+        if _write_png(report, annotate_matches(frame, items, header)):
+            logging.error("DIAG[%s]: screen dumped to %s and the match report to %s",
+                          tag, raw, report)
+        else:
+            logging.error("DIAG[%s]: could not write the match report %s", tag, report)
+            report = None
+        _prune_diag_dumps(folder)
+    except Exception as exc:
+        logging.error("DIAG[%s]: screen dump failed: %s", tag, exc)
+    return report
 
 
-_DIAG_KEEP = 30
+_DIAG_KEEP = 40
 
 
 def _prune_diag_dumps(folder):

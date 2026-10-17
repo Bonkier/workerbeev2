@@ -183,6 +183,11 @@ def _build_hollow_run(md_state: dict):
         "affinity_idx": 0,
         "duplicates": False,
         "sinners": [_HOLLOW_FAUST],
+        # Swap exclusion (Settings > Custom run teams): sinners the
+        # max-energy swap leaves alone, Faust herself by default.
+        "swap_exclude": [_SINNER_INDEX[n]
+                         for n in (md_state.get("hollow_exclude") or [])
+                         if n in _SINNER_INDEX],
         "priority": _HOLLOW_PRIORITY,
         "avoid": _scripted_avoid_with_user(_HOLLOW_AVOID, _HOLLOW_PRIORITY,
                                            md_state),

@@ -11,6 +11,7 @@ from .shop import shop, finish_gift_scan
 from .lux import grind_lux, check_enkephalin
 from .teams import TEAMS, HARD
 from .utils import params as p
+from .utils import envcheck
 from .utils import telemetry as tele
 
 
@@ -101,34 +102,70 @@ _GIFT_GRID_REGION = (140, 350, 1000, 585)  # down to the panel border, so a
 _GIFT_GRID_HOOK = (600, 620)        # cursor point for wheel-scrolling the grid
 
 
-def _gift_click_template(path, region, tsize=(30, 30), conf=0.9, wait=3.0):
-    """Locate a template by file path within region and click its centre."""
-    box = None
-    for _ in range(max(1, int(wait * 5))):
-        box = LocateRGB.locate(path, region=region, conf=conf)
-        if box:
-            break
-        time.sleep(0.2)
-    if not box:
-        return False
-    win_click(*gui.center(box), tsize=tsize)
-    return True
+def _diag_once(tag, advise=None, **kw):
+    """One match-report dump per run for a tag (dump_template_diag kwargs),
+    raised to the user as a Detection check advisory with `advise`."""
+    done = getattr(p, "DIAG_DONE", None)
+    if done is None:
+        done = p.DIAG_DONE = set()
+    if tag in done:
+        return None
+    done.add(tag)
+    path = dump_template_diag(tag, **kw)
+    if advise and callable(getattr(p, "WARNING", None)):
+        try:
+            report = envcheck.last_report() or envcheck.collect()
+            found = envcheck.issues(report)
+            text = envcheck.advisory_text(found, report, lead=advise)
+            if path:
+                text += "\nThis one: %s" % os.path.basename(path)
+            p.WARNING(text)
+        except Exception as exc:
+            logging.warning("Detection check: advisory failed: %s", exc)
+    return path
 
 
 def _click_keyword_tab(kw):
-    """Click a keyword filter tab. Prefers the catalog tab template (verified),
-    falling back to the tab's fixed FHD coordinate so a selected/dimmed tab the
-    template can't match is still clicked."""
+    """Click a keyword filter tab: the catalog tab template when it reads,
+    else the tab's fixed FHD coordinate. Either way the log says which, and
+    a template that does not read leaves a match report of the whole row."""
     from . import gift_catalog
     tab = gift_catalog.tab_path(kw)
-    if tab and _gift_click_template(tab, _GIFT_TAB_REGION, tsize=(24, 24),
-                                    conf=0.85, wait=2):
+    box = None
+    if tab:
+        for _ in range(10):
+            box = LocateRGB.locate(tab, region=_GIFT_TAB_REGION, conf=0.85)
+            if box:
+                break
+            time.sleep(0.2)
+    if box:
+        cx, cy = gui.center(box)
+        win_click(cx, cy, tsize=(24, 24))
+        logging.info("gift search: tab '%s' by template at (%d, %d).", kw, cx, cy)
         return True
     x = _GIFT_TAB_X.get(kw)
-    if x is not None:
-        win_click(x, _GIFT_TAB_Y, tsize=(16, 16))
-        return True
-    return False
+    if x is None:
+        return False
+    best = None
+    if tab:
+        try:
+            best = float(LocateRGB.get_conf(tab, region=_GIFT_TAB_REGION))
+        except Exception as exc:
+            logging.debug("gift search: tab '%s' confidence read failed: %s", kw, exc)
+    logging.warning("gift search: tab '%s' template best %s (gate 0.85); clicking "
+                    "its fixed spot (%d, %d).", kw,
+                    "%.2f" % best if best is not None else "unreadable", x, _GIFT_TAB_Y)
+    _diag_once("gifttab_" + kw,
+               advise="the '%s' keyword tab was not recognised (best %s against "
+                      "0.85), so its fixed spot (%d, %d) was clicked instead." % (
+                          kw, "%.2f" % best if best is not None else "unreadable",
+                          x, _GIFT_TAB_Y),
+               extra=[(k, gift_catalog.tab_path(k)) for k in _GIFT_TAB_X
+                      if gift_catalog.tab_path(k)],
+               region=_GIFT_TAB_REGION, gate=0.85,
+               note="tab '%s' fell back to (%d, %d)" % (kw, x, _GIFT_TAB_Y))
+    win_click(x, _GIFT_TAB_Y, tsize=(16, 16))
+    return True
 
 
 def _gift_scroll(clicks):
@@ -230,6 +267,11 @@ def gift_search(targets):
             logging.info("gift search: selected '%s' (%s).", name, kw)
         else:
             logging.warning("gift search: '%s' not found in the '%s' grid.", name, kw)
+            _diag_once("gift_" + "".join(c for c in name if c.isalnum())[:24],
+                       advise="the gift '%s' was not found on the '%s' tab." % (name, kw),
+                       extra=[(name, info["path"])], region=_GIFT_GRID_REGION,
+                       gate=_GIFT_CONF,
+                       note="gift '%s' not found on the '%s' tab" % (name, kw))
     if selected:
         tap_center("searchselect", tsize=(46, 18), wait=3)
         _leave_gift_menu()
@@ -888,6 +930,7 @@ def main_loop():
                     if time.time() - last_error > 30:
                         # Stuck >30s, no phase claimed the screen. Log which
                         # known markers are visible so the cause is traceable.
+                        missed = recent_misses()
                         seen = []
                         for k in ("EGObin", "trials", "encounterreward",
                                   "PackChoice", "Move", "shop", "supershop",
@@ -907,7 +950,8 @@ def main_loop():
                             # The screen as it was BEFORE recovery touches it.
                             stuck_dumped = True
                             dump_template_diag(
-                                "stuck", "PackChoice", "packconfirm", "forfeit")
+                                "stuck", "PackChoice", "packconfirm", "forfeit",
+                                extra=missed, note="stuck >30s on floor %d" % p.LVL)
                         handle_fuckup()
                         error += 1
                         # Restart the clock: without this the window stays
@@ -923,7 +967,8 @@ def main_loop():
         if error > 20:
             logging.error('We are stuck')
             dump_template_diag(
-                "stuck_final", "PackChoice", "packconfirm", "forfeit")
+                "stuck_final", "PackChoice", "packconfirm", "forfeit",
+                extra=recent_misses(), note="stuck, giving up on floor %d" % p.LVL)
             if p.ALTF4: close_limbus()
             if p.APP: QMetaObject.invokeMethod(p.APP, "stop_execution", Qt.ConnectionType.QueuedConnection)
             raise StopExecution
@@ -1128,6 +1173,8 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
         # wrong is reported again instead of only once per session.
         gui._advised_window_size = None
         gui.set_window()
+        p.DIAG_DONE = set()
+        envcheck.run_start_check()
         lux_keys = [key for key in teams.keys() if key >= 7]
         team_keys = [key for key in teams.keys() if key < 7]
 

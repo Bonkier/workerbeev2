@@ -17,7 +17,7 @@ import time
 from PySide6.QtCore import QObject, Signal, Qt
 
 from .automation_controller import AutomationController
-from .dialogs import show_notice
+from .dialogs import show_advisory, show_notice
 from .resolution_help import show_resolution_help
 from .overlay import RunOverlay
 from .run_config import build_md_run, build_lux_run
@@ -597,6 +597,18 @@ class RunCoordinator(QObject):
 
     def _on_warning(self, msg: str):
         logging.warning("%s", msg)
+        if str(msg).startswith("Detection check:"):
+            # Advice about the machine, raised while the bot may be driving
+            # the game: it must not take focus from it, and a newer one
+            # replaces the last so they never pile up.
+            prev = getattr(self, "_advisory", None)
+            if prev is not None:
+                try:
+                    prev.close()
+                except RuntimeError:
+                    pass
+            self._advisory = show_advisory(self._ui, msg, title="Detection check")
+            return
         if str(msg).startswith("Game window ("):
             # Advice, not a failure: no Discord "stuck" ping, and it must
             # not take focus from the game. A modal box did; the bot

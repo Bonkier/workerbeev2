@@ -128,6 +128,8 @@ def md_summary(md: dict, app: dict | None = None) -> list:
             ("Shop heals", "%s on floor 1, Faust on floors 4 and 5"
              % (md.get("hollow_heal") or "Yi Sang")),
         ]
+        if (md.get("behaviour") or {}).get("swap_max_energy"):
+            team.append(("Swap exclusion", _join(md.get("hollow_exclude"), "None")))
     elif saikai or thrill:
         key = "saikai" if saikai else "thrill"
         default = "Poise" if saikai else "Rupture"

@@ -8,6 +8,7 @@ are Input and Verifier concerns.
 """
 from __future__ import annotations
 
+from collections import deque
 from typing import Callable, Union
 
 import cv2
@@ -36,6 +37,10 @@ TemplateRef = Union[PathLike, np.ndarray]
 # own lower conf instead.
 # Scales this close to 1.0 are treated as FHD: no upscale.
 _FHD_SCALE_EPS = 0.999
+
+# The last templates looked for and not found, as (name, path, region), so a
+# stuck report can show what the bot was waiting on.
+RECENT_MISSES: deque = deque(maxlen=12)
 
 
 class Finder:
@@ -156,6 +161,7 @@ class Finder:
         region = Region.coerce(region)
         conf = conf if conf is not None else self.default_conf
         name = self._name_of(template)
+        captured = frame is None
 
         frame, tmpl, conf, lift_window = self._prepare_inputs(
             template, region, conf, frame, load_kwargs
@@ -167,6 +173,9 @@ class Finder:
             template_name=name,
         )
         if raw is None:
+            if captured and conf > 0 and not isinstance(template, np.ndarray):
+                RECENT_MISSES.append((name, str(template),
+                                      (region.x, region.y, region.w, region.h)))
             return None
         hit = self._lift(raw, region, lift_window)
         self._emit(name, hit)

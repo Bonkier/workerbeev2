@@ -41,3 +41,68 @@ def test_the_search_scrolls_past_a_look_alike(monkeypatch):
     monkeypatch.setattr(B, "_gift_scroll", lambda n: scrolls.append(n))
     assert B._find_and_click_gift("x", max_scrolls=2) is True
     assert scrolls == [-3] and len(clicks) == 1
+
+
+def test_a_tab_that_does_not_read_is_logged_dumped_and_clicked_at_its_spot(monkeypatch, caplog):
+    monkeypatch.setattr(B.LocateRGB, "locate", lambda *a, **k: None)
+    monkeypatch.setattr(B.LocateRGB, "get_conf", lambda *a, **k: 0.81)
+    clicks, dumps = [], []
+    monkeypatch.setattr(B, "win_click", lambda x, y, *a, **k: clicks.append((int(x), int(y))))
+    monkeypatch.setattr(B, "_diag_once", lambda tag, advise=None, **kw: dumps.append((tag, advise, kw)))
+    monkeypatch.setattr(B.time, "sleep", lambda s: None)
+    with caplog.at_level("INFO"):
+        assert B._click_keyword_tab("keywordless") is True
+    assert clicks == [(1098, 286)]
+    assert "template best 0.81" in caplog.text
+    tag, advise, kw = dumps[0]
+    assert tag == "gifttab_keywordless" and "0.81" in advise
+    assert len(kw["extra"]) == 11 and kw["region"] == B._GIFT_TAB_REGION
+    assert kw["gate"] == 0.85
+    # A template that reads is clicked where it is, with no dump.
+    del clicks[:], dumps[:]
+    monkeypatch.setattr(B.LocateRGB, "locate", lambda *a, **k: (1064, 251, 68, 69))
+    with caplog.at_level("INFO"):
+        assert B._click_keyword_tab("keywordless") is True
+    assert clicks == [(1098, 285)] and dumps == []
+    assert "by template at (1098, 285)" in caplog.text
+
+
+def test_a_dump_happens_once_per_run_and_raises_the_advisory(monkeypatch):
+    from wbcore.utils import params as p, envcheck as E
+    said, dumped = [], []
+    monkeypatch.setattr(p, "DIAG_DONE", set())
+    monkeypatch.setattr(p, "WARNING", lambda msg: said.append(msg))
+    monkeypatch.setattr(B, "dump_template_diag", lambda tag, **kw: dumped.append(tag) or "C:/x/report.png")
+    monkeypatch.setattr(E, "last_report", lambda: {"window": {"left": 0, "top": 0, "width": 1920, "height": 1080},
+                                                   "monitors": [], "host": None, "hdr": True,
+                                                   "night_light": False, "color_filter": False,
+                                                   "specs": {}, "capture": {"width": 1920, "height": 1080,
+                                                                            "brightness": 50.0, "saturation": 30.0}})
+    assert B._diag_once("gifttab_keywordless", advise="the tab was not recognised.") == "C:/x/report.png"
+    assert B._diag_once("gifttab_keywordless", advise="again") is None
+    assert dumped == ["gifttab_keywordless"] and len(said) == 1
+    assert said[0].startswith("Detection check: the tab was not recognised.")
+    assert "HDR" in said[0] and "report.png" in said[0]
+
+
+def test_the_advisory_is_shown_without_taking_focus_and_one_at_a_time(monkeypatch):
+    from gui_v2 import run_coordinator as RC
+    shown, pinged, closed = [], [], []
+
+    class Dlg:
+        def close(self):
+            closed.append(1)
+    monkeypatch.setattr(RC, "show_advisory",
+                        lambda parent, text, title="": shown.append((title, text)) or Dlg())
+    monkeypatch.setattr(RC, "show_notice", lambda parent, text, title="": pinged.append(("notice", text)))
+
+    class Fake:
+        _ui = None
+
+        def _discord_stuck(self, reason):
+            pinged.append(("discord", reason))
+    fake = Fake()
+    RC.RunCoordinator._on_warning(fake, "Detection check: HDR is on.")
+    assert shown == [("Detection check", "Detection check: HDR is on.")] and pinged == []
+    RC.RunCoordinator._on_warning(fake, "Detection check: the tab was not recognised.")
+    assert len(shown) == 2 and closed == [1]                 # the first was replaced

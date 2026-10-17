@@ -64,6 +64,7 @@ SAIKAI_S3_ONLY = False
 SAIKAI_DEPLOYED = 7
 # Set once the end-of-run gift scan has run for the current attempt.
 RUN_GIFTS_SCANNED = False
+DIAG_DONE = set()      # diagnostic dump tags already written this run
 # SAIKAI "Go to floor 10": >0 = run the Infinite MD and leave after this floor,
 # claiming rewards (0 = normal 5-floor run, ended by the game at floor 5).
 SAIKAI_STOP_FLOOR = 0

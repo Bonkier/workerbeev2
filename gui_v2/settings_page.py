@@ -64,6 +64,7 @@ _TEAM_TYPES = (
 # Hollow heals one sinner other than Faust on floors 1 to 3.
 _HOLLOW_HEAL_NAMES = tuple(n for n in _SINNER_NAMES if n != "Faust")
 _HOLLOW_HEAL_DEFAULT = "Yi Sang"
+_HOLLOW_EXCLUDE_DEFAULT = ["Faust"]
 # Statuses with a Mirror Dungeon team-select icon (the SAIKAI/THRILL keyword).
 _STK_STATUSES = (
     "Burn", "Bleed", "Tremor", "Rupture", "Sinking", "Poise", "Charge",
@@ -612,8 +613,9 @@ class SettingsPage(QWidget):
                        "only_hard": False, "full_normal": False,
                        "floor10": False, "s3_only": False},
             "Thrill": {"order": [], "exclude": [], "keyword": "Rupture"},
-            "Hollow": {"order": [], "exclude": [], "keyword": "Poise",
-                       "heal": _HOLLOW_HEAL_DEFAULT},
+            "Hollow": {"order": [], "exclude": list(_HOLLOW_EXCLUDE_DEFAULT),
+                       "keyword": "Poise", "heal": _HOLLOW_HEAL_DEFAULT,
+                       "exclude_set": False},
         }
         self._stk_run = "SAIKAI"
 
@@ -723,6 +725,7 @@ class SettingsPage(QWidget):
             st["s3_only"] = self._stk_s3_only.isChecked()
         elif self._stk_run == "Hollow":
             st["heal"] = self._stk_heal.currentText()
+            st["exclude_set"] = True
 
     def _stk_apply(self, run):
         prev = self._stk_loading
@@ -756,7 +759,6 @@ class SettingsPage(QWidget):
             self._stk_heal_row.setVisible(hollow)
             self._stk_order_label.setText(
                 "Fallback sinners" if hollow else "Sinner order")
-            self._stk_exclude_box.setVisible(not hollow)
             if hollow:
                 heal = st.get("heal")
                 if heal in _HOLLOW_HEAL_NAMES:
@@ -816,6 +818,7 @@ class SettingsPage(QWidget):
             "thrill_exclude": list(t["exclude"]),
             "thrill_status": t["keyword"],
             "hollow_order": [n for n in h["order"] if n != "Faust"],
+            "hollow_exclude": list(h["exclude"]),
             "hollow_status": h["keyword"],
             "hollow_heal": h.get("heal") or _HOLLOW_HEAL_DEFAULT,
         }
@@ -852,6 +855,13 @@ class SettingsPage(QWidget):
                 self._stk_states["Hollow"]["order"] = [
                     n for n in self._stk_states["Hollow"]["order"]
                     if n != "Faust"]
+                if st.get("exclude_set"):
+                    self._stk_states["Hollow"]["exclude_set"] = True
+                else:
+                    # Saved while the grid was hidden for Hollow (before
+                    # v2.5.2e): that empty list was never a choice.
+                    self._stk_states["Hollow"]["exclude"] = list(
+                        _HOLLOW_EXCLUDE_DEFAULT)
         if hasattr(self, "_stk_apply"):
             self._stk_apply(self._stk_run)
 

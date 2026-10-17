@@ -1042,6 +1042,9 @@ def test_the_builder_pins_the_hollow_run():
     assert settings["hollow_heal"] == "GREGOR"
     assert settings["hollow_fallback"] == ["YISANG", "GREGOR"]
     team = teams[0]
+    assert team["swap_exclude"] == []                     # nothing excluded yet
+    kept = RC.build_md_run(dict(_MD, hollow_exclude=["Faust", "Gregor", "Nobody"]), {}, {})[1][0]
+    assert kept["swap_exclude"] == [1, 11]
     assert team["sinners"] == [1]
     assert team["affinity"] == [RC._STATUS_INDEX["Poise"]]
     assert team["priority"][0] == ["FlatbrokeGamblers", "HellsChicken",
@@ -1156,7 +1159,8 @@ def test_settings_shows_the_heal_pick_for_hollow_only(ui):
     assert page._stk_run == "Hollow"
     assert not page._stk_order._chips["Faust"].isEnabled()
     assert not page._stk_heal_row.isHidden()
-    assert page._stk_exclude_box.isHidden()
+    assert not page._stk_exclude_box.isHidden()          # Hollow swaps too
+    assert "hollow_exclude" in page.saikai_thrill_config()
     assert not hasattr(page, "_stk_order_hint")
     assert page._stk_order_label.text() == "Fallback sinners"
     names = [page._stk_heal.itemText(i) for i in range(page._stk_heal.count())]
@@ -1194,6 +1198,25 @@ def test_settings_restores_a_saved_hollow_block(ui):
     assert page.saikai_thrill_config()["hollow_heal"] == "Ishmael"
     page._stk_seg._buttons["Hollow"].click()
     assert page._stk_heal.currentText() == "Ishmael"
+    page._stk_seg._buttons["SAIKAI"].click()
+
+
+def test_an_exclusion_saved_while_the_grid_was_hidden_keeps_the_faust_default(ui):
+    page = ui.page("settings")
+    page._restore_stk({"Hollow": {"order": ["Gregor"], "exclude": [],
+                                  "keyword": "Rupture", "heal": "Hong Lu"}})   # a v2.5.1e save
+    assert page.saikai_thrill_config()["hollow_exclude"] == ["Faust"]
+    page._restore_stk({"Hollow": {"exclude": [], "exclude_set": True}})       # cleared on purpose
+    assert page.saikai_thrill_config()["hollow_exclude"] == []
+    page._restore_stk({"Hollow": {"exclude": ["Gregor"], "exclude_set": True}})
+    assert page.saikai_thrill_config()["hollow_exclude"] == ["Gregor"]
+    page._restore_stk({"Hollow": {"exclude": ["Gregor"]}})
+    assert page.saikai_thrill_config()["hollow_exclude"] == ["Faust"]
+    page._stk_seg._buttons["Hollow"].click()
+    page._stk_exclude.set_order(["Faust", "Gregor"])
+    page._stk_sync()                                                          # the grid was used
+    assert page._stk_states["Hollow"]["exclude_set"] is True
+    assert page.saikai_thrill_config()["hollow_exclude"] == ["Faust", "Gregor"]
     page._stk_seg._buttons["SAIKAI"].click()
 
 
