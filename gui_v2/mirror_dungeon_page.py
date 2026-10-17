@@ -2236,14 +2236,20 @@ class MirrorDungeonPage(QWidget):
         cols.setSpacing(Sizing.SPACE_XXL)
         self._behaviour_groups = {}
         for group_ids in columns:
-            col = QVBoxLayout()
+            # Each column is a widget fixed at the rail width: the groups'
+            # wrapped descriptions are then sized for the width they are
+            # laid out at. In a wider column they were sized for the column
+            # and clipped at the rail.
+            colw = QWidget(section)
+            colw.setFixedWidth(_BEHAVIOUR_RAIL)
+            col = QVBoxLayout(colw)
+            col.setContentsMargins(0, 0, 0, 0)
             col.setSpacing(0)
             for gid in group_ids:
                 name, keys = groups[gid]
                 if gid != group_ids[0]:
                     col.addSpacing(Sizing.SPACE_MD)
-                group = CollapsibleSection(name, section)
-                group.setMaximumWidth(_BEHAVIOUR_RAIL)
+                group = CollapsibleSection(name, colw)
                 self._behaviour_groups[name] = group
                 for key in keys:
                     _k, title, subtitle, default = by_key[key]
@@ -2252,9 +2258,10 @@ class MirrorDungeonPage(QWidget):
                     group.body.addWidget(SettingRow(
                         title, subtitle, tog, parent=section,
                         leading_icon=_icons.get(key), rail=_BEHAVIOUR_RAIL))
-                col.addWidget(group, 0, Qt.AlignmentFlag.AlignLeft)
+                col.addWidget(group)
             col.addStretch(1)
-            cols.addLayout(col, 1)
+            cols.addWidget(colw, 0, Qt.AlignmentFlag.AlignTop)
+        cols.addStretch(1)
         # One weekly bonus per run only means something while Claim bonus is on.
         self._behaviour["bonus"].toggled.connect(self._behaviour["bonus_one"].setEnabled)
         self._behaviour["bonus_one"].setEnabled(self._behaviour["bonus"].isChecked())
