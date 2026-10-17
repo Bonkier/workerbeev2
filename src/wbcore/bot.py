@@ -41,11 +41,6 @@ def select_grace():
             if p.BUFF[i] > 1:
                 ClickAction((x + 60*(1 - 2*(p.BUFF[i] < 3)), y + 155), ver="money!").execute(try_click)
 
-# Full-screen region for SAIKAI gift-search template matches.
-SAIKAI_FULL = (0, 0, 1920, 1080)
-# Templates the keyword-less gift pick needs (in ImageAssets/UI/saikai/).
-SAIKAI_GIFT_ASSETS = ("keywordless", "spiderwebego", "searchselect")
-
 # Gift thumbnails are detailed art that matches ~0.86 (vs ~0.95 for buttons)
 # when captured below FHD and upscaled; gift-icon lookups pass this lower floor
 # so the default 0.9 gate stays strict everywhere else (matching FHD behaviour).
@@ -63,27 +58,6 @@ def ensure_gift_search_on():
         win_click(cx, cy)
         time.sleep(0.4)
     return bool(loc.button("giftSearch", wait=1))
-
-
-def saikai_gift_search():
-    """SAIKAI start-of-run gift pick via the in-game gift search: filter to
-    Keywordless, pick Spiderweb Entangled, Select, then clear two confirms."""
-    time.sleep(1.0)
-    if "egoGiftSearch" in PTH:
-        loc.button("egoGiftSearch", SAIKAI_FULL, wait=3)
-    # Filter to keyword-less; re-click if Spiderweb doesn't appear (radio-select tabs).
-    for _ in range(3):
-        tap_center("keywordless", tsize=(34, 16), wait=4)
-        time.sleep(0.7)
-        if loc.button("spiderwebego", SAIKAI_FULL, wait=2, conf=_GIFT_CONF):
-            break
-    tap_center("spiderwebego", tsize=(34, 34), wait=3, conf=_GIFT_CONF)
-    time.sleep(0.3)
-    tap_center("searchselect", tsize=(46, 18), wait=3)
-    time.sleep(0.4)
-    for _ in range(2):
-        gui.press("enter")
-        time.sleep(0.6)
 
 
 # General start-of-run EGO gift search (up to 3 user-picked gifts). Regions in
@@ -125,11 +99,43 @@ def _diag_once(tag, advise=None, **kw):
     return path
 
 
-def _click_keyword_tab(kw):
+def _wait_gift_menu(timer=5.0):
+    """The upstream gate before a keyword tab is touched: the Selected E.G.O
+    Gift header is up, any confirm still showing cleared on the way."""
+    end = time.time() + timer
+    while time.time() < end:
+        if now.button("startGift"):
+            return True
+        if now.button("Confirm"):
+            gui.press("enter")
+        time.sleep(0.2)
+    logging.info("gift search: the Selected E.G.O Gift header did not show "
+                 "within %.0fs.", timer)
+    return False
+
+
+def _click_tab_fixed(kw, why):
+    """A keyword tab the way Charge-Grinder does it: wait for the header,
+    click the tab's fixed spot, give the grid a second to follow."""
+    x = _GIFT_TAB_X.get(kw)
+    if x is None:
+        return False
+    _wait_gift_menu()
+    logging.info("gift search: tab '%s' at its fixed spot (%d, %d), %s.",
+                 kw, x, _GIFT_TAB_Y, why)
+    win_click(x, _GIFT_TAB_Y, tsize=(16, 16))
+    time.sleep(1.0)
+    return True
+
+
+def _click_keyword_tab(kw, fixed=False):
     """Click a keyword filter tab: the catalog tab template when it reads,
-    else the tab's fixed FHD coordinate. Either way the log says which, and
-    a template that does not read leaves a match report of the whole row."""
+    else (or with `fixed`) its fixed FHD spot the upstream way. Either way
+    the log says which, and a template that does not read leaves a match
+    report of the whole row."""
     from . import gift_catalog
+    if fixed:
+        return _click_tab_fixed(kw, "the upstream way")
     tab = gift_catalog.tab_path(kw)
     box = None
     if tab:
@@ -143,29 +149,26 @@ def _click_keyword_tab(kw):
         win_click(cx, cy, tsize=(24, 24))
         logging.info("gift search: tab '%s' by template at (%d, %d).", kw, cx, cy)
         return True
-    x = _GIFT_TAB_X.get(kw)
-    if x is None:
+    if kw not in _GIFT_TAB_X:
         return False
+    x = _GIFT_TAB_X[kw]
     best = None
     if tab:
         try:
             best = float(LocateRGB.get_conf(tab, region=_GIFT_TAB_REGION))
         except Exception as exc:
             logging.debug("gift search: tab '%s' confidence read failed: %s", kw, exc)
-    logging.warning("gift search: tab '%s' template best %s (gate 0.85); clicking "
-                    "its fixed spot (%d, %d).", kw,
-                    "%.2f" % best if best is not None else "unreadable", x, _GIFT_TAB_Y)
+    shown = "%.2f" % best if best is not None else "unreadable"
+    logging.warning("gift search: tab '%s' template best %s (gate 0.85).", kw, shown)
     _diag_once("gifttab_" + kw,
                advise="the '%s' keyword tab was not recognised (best %s against "
                       "0.85), so its fixed spot (%d, %d) was clicked instead." % (
-                          kw, "%.2f" % best if best is not None else "unreadable",
-                          x, _GIFT_TAB_Y),
+                          kw, shown, x, _GIFT_TAB_Y),
                extra=[(k, gift_catalog.tab_path(k)) for k in _GIFT_TAB_X
                       if gift_catalog.tab_path(k)],
                region=_GIFT_TAB_REGION, gate=0.85,
                note="tab '%s' fell back to (%d, %d)" % (kw, x, _GIFT_TAB_Y))
-    win_click(x, _GIFT_TAB_Y, tsize=(16, 16))
-    return True
+    return _click_tab_fixed(kw, "template best %s" % shown)
 
 
 def _gift_scroll(clicks):
@@ -247,6 +250,7 @@ def gift_search(targets):
         logging.info("gift search: EGO Gift Search menu not detected; skipping.")
         return 0
     time.sleep(0.5)
+    _wait_gift_menu()
     # Group by keyword so same-keyword picks share one tab click; order kept.
     picks.sort(key=lambda x: x[1]["keyword"])
     selected = 0
@@ -261,8 +265,17 @@ def gift_search(targets):
             time.sleep(0.7)
         # Straight to the gift when it is already on screen; the scroll
         # reset and the top-down scan only when it is not.
-        if (_find_and_click_gift(info["path"], max_scrolls=0)
-                or (_gift_scroll(12) or _find_and_click_gift(info["path"]))):
+        found = (_find_and_click_gift(info["path"], max_scrolls=0)
+                 or (_gift_scroll(12) or _find_and_click_gift(info["path"])))
+        if not found:
+            # Upstream never reads the tab: it clicks the spot once the
+            # header shows. The same here when the template click gave a
+            # grid without the gift.
+            logging.info("gift search: '%s' not on the '%s' tab; selecting the "
+                         "tab the upstream way and looking again.", name, kw)
+            found = (_click_keyword_tab(kw, fixed=True)
+                     and (_gift_scroll(12) or _find_and_click_gift(info["path"])))
+        if found:
             selected += 1
             logging.info("gift search: selected '%s' (%s).", name, kw)
         else:

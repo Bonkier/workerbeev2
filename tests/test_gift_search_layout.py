@@ -50,10 +50,13 @@ def test_a_tab_that_does_not_read_is_logged_dumped_and_clicked_at_its_spot(monke
     monkeypatch.setattr(B, "win_click", lambda x, y, *a, **k: clicks.append((int(x), int(y))))
     monkeypatch.setattr(B, "_diag_once", lambda tag, advise=None, **kw: dumps.append((tag, advise, kw)))
     monkeypatch.setattr(B.time, "sleep", lambda s: None)
+    gated = []
+    monkeypatch.setattr(B, "_wait_gift_menu", lambda timer=5.0: gated.append(1) or True)
     with caplog.at_level("INFO"):
         assert B._click_keyword_tab("keywordless") is True
-    assert clicks == [(1098, 286)]
+    assert clicks == [(1098, 286)] and gated == [1]          # the upstream way: header, then the spot
     assert "template best 0.81" in caplog.text
+    assert "at its fixed spot (1098, 286), template best 0.81" in caplog.text
     tag, advise, kw = dumps[0]
     assert tag == "gifttab_keywordless" and "0.81" in advise
     assert len(kw["extra"]) == 11 and kw["region"] == B._GIFT_TAB_REGION
@@ -106,3 +109,48 @@ def test_the_advisory_is_shown_without_taking_focus_and_one_at_a_time(monkeypatc
     assert shown == [("Detection check", "Detection check: HDR is on.")] and pinged == []
     RC.RunCoordinator._on_warning(fake, "Detection check: the tab was not recognised.")
     assert len(shown) == 2 and closed == [1]                 # the first was replaced
+
+
+def test_the_upstream_way_waits_for_the_header_and_clicks_the_spot(monkeypatch, caplog):
+    clicks, pressed, asked = [], [], []
+    monkeypatch.setattr(B.LocateRGB, "locate", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no template read")))
+    monkeypatch.setattr(B, "win_click", lambda x, y, *a, **k: clicks.append((int(x), int(y))))
+    monkeypatch.setattr(B.time, "sleep", lambda s: None)
+    monkeypatch.setattr(B.gui, "press", lambda key: pressed.append(key))
+    answers = {"startGift": [False, False, True], "Confirm": [True, False, False]}
+
+    class Now:
+        def button(self, key, *a, **k):
+            asked.append(key)
+            return answers[key].pop(0) if answers.get(key) else False
+    monkeypatch.setattr(B, "now", Now())
+    with caplog.at_level("INFO"):
+        assert B._click_keyword_tab("keywordless", fixed=True) is True
+    assert clicks == [(1098, 286)]
+    assert pressed == ["enter"]                               # a confirm in the way is cleared
+    assert asked.index("startGift") == 0 and "the upstream way" in caplog.text
+    assert B.REG["startGift"] == (1265, 220, 312, 70) and "startGift" in B.PTH
+    assert "keywordless" not in B.PTH                         # the old-layout SAIKAI tab is gone
+    assert not hasattr(B, "saikai_gift_search")
+
+
+def test_a_gift_missing_after_the_template_click_gets_the_upstream_tab_click(monkeypatch, caplog):
+    tabs, finds = [], []
+    monkeypatch.setattr(B.loc, "button", lambda *a, **k: True)
+    monkeypatch.setattr(B, "_wait_gift_menu", lambda timer=5.0: True)
+    monkeypatch.setattr(B.time, "sleep", lambda s: None)
+    monkeypatch.setattr(B, "_click_keyword_tab", lambda kw, fixed=False: tabs.append((kw, fixed)) or True)
+    monkeypatch.setattr(B, "_gift_scroll", lambda n: None)
+    monkeypatch.setattr(B, "tap_center", lambda *a, **k: True)
+    monkeypatch.setattr(B, "_leave_gift_menu", lambda *a, **k: True)
+    monkeypatch.setattr(B, "_diag_once", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no dump")))
+
+    def find(path, max_scrolls=6):
+        finds.append(max_scrolls)
+        return len(finds) >= 3                                # only after the tab was re-selected
+    monkeypatch.setattr(B, "_find_and_click_gift", find)
+    with caplog.at_level("INFO"):
+        assert B.gift_search(["Spiderweb Entangled in Red"]) == 1
+    assert tabs == [("keywordless", False), ("keywordless", True)]
+    assert finds == [0, 6, 6]
+    assert "selecting the tab the upstream way" in caplog.text
