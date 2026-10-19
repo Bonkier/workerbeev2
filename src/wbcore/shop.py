@@ -255,11 +255,12 @@ def inventory_check(reg, h, uptie_det=True, market_mode=None):
 
     fuse_shelf = screenshot(region=reg)
     image = amplify(fuse_shelf)
-    # A scripted fuse session protects exactly what its floor plan names;
-    # the team gifts it leaves out are fuel like any other.
-    custom = (market_mode == "fuse" and p.RUN_SCRIPT == "hollow"
-              and getattr(p, "CUSTOM_FUSE_ACTIVE", False))
-    kept = ((getattr(p, "MARKET_GIFTS", None) or {}).get("keep_fuse") or []) if custom else []
+    # A scripted fuse or sell session protects exactly what its floor plan
+    # names; the team gifts it leaves out are fuel like any other.
+    custom = (p.RUN_SCRIPT == "hollow" and market_mode in ("fuse", "sell")
+              and getattr(p, "CUSTOM_%s_ACTIVE" % market_mode.upper(), False))
+    kept = ((getattr(p, "MARKET_GIFTS", None) or {}).get(
+        "keep_%s" % market_mode) or []) if custom else []
 
     for i in range(len(p.GIFTS)):
         if p.GIFTS[i]["sin"]:
@@ -2224,6 +2225,51 @@ def _uptie_reserve(targets, done_enh, pending_fuse=()) -> int:
     return total
 
 
+def _hollow_sell(plan, done_fuse, targets):
+    """The floor 4 shop on, with every gift of the plan crafted: the gifts
+    the plan does not protect (nor the tab's Keep sell tags) are sold until
+    the cost covers the upties still owed."""
+    if not plan or not targets:
+        return
+    from .hollow import sell_ready
+    if not sell_ready(done_fuse):
+        return
+    need = _uptie_reserve(targets, getattr(p, "CUSTOM_ENHANCE_DONE", None) or {})
+    if not need:
+        return
+    have = balance()
+    if have >= need:
+        logging.info("HOLLOW: %d cost covers the %d the upties need; nothing sold.",
+                     have, need)
+        return
+    logging.info("HOLLOW: %d cost, the upties need %d; selling the gifts the "
+                 "plan does not protect.", have, need)
+    gifts = p.MARKET_GIFTS
+    saved = gifts.get("keep_sell")
+    gifts["keep_sell"] = list(dict.fromkeys(list(plan["protected"]) + list(saved or [])))
+    p.CUSTOM_SELL_ACTIVE = True
+    try:
+        if sell({"upties": need}):
+            logging.info("HOLLOW: the upties' cost is covered.")
+        else:
+            logging.info("HOLLOW: nothing more to sell; the upties take what "
+                         "the cost allows.")
+    except gui.PauseException:
+        raise
+    except Exception as exc:
+        logging.warning("HOLLOW: the sell pass errored: %s", exc)
+        try:
+            close_panel()
+        except Exception:
+            pass
+    finally:
+        p.CUSTOM_SELL_ACTIVE = False
+        if saved is None:
+            gifts.pop("keep_sell", None)
+        else:
+            gifts["keep_sell"] = saved
+
+
 def _confirm_lit() -> bool:
     """The enhance dialog's Confirm is cream when the cost allows and dark
     grey when it does not."""
@@ -2469,6 +2515,7 @@ def custom_market():
                          "crafted (floor 4 at the latest).")
             targets = []
         if targets and not getattr(p, "SKIP_EGO_ENHANCING", False):
+            _hollow_sell(plan, done_fuse, targets)
             try:
                 _enhance_catalog(targets)
             except gui.PauseException:

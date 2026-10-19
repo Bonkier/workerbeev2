@@ -557,6 +557,16 @@ def test_the_upties_are_ready_once_all_four_are_crafted_or_on_floor_4():
     assert H.enhance_ready(set(four), floor=2) is True        # the floor 3 gate is elsewhere
 
 
+def test_the_sell_pass_needs_floor_4_and_every_craft():
+    four = ("Fragment of Conceit", "Fragment of Decay",
+            "Clear Mirror, Calm Water", "Artistic Sense")
+    assert H.sell_ready(set(four), floor=4) is True
+    assert H.sell_ready(set(four), floor=5) is True
+    assert H.sell_ready(set(four), floor=3) is False
+    assert H.sell_ready(set(four[:3]), floor=4) is False
+    assert H.sell_ready(set(), floor=5) is False
+
+
 def test_the_market_plan_follows_the_owners_summary(monkeypatch):
     conceit, decay = "Fragment of Conceit", "Fragment of Decay"
     mirror, sense = "Clear Mirror, Calm Water", "Artistic Sense"

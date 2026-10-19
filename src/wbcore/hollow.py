@@ -64,6 +64,7 @@ MARKET_MUST = (_CONCEIT, _DECAY)
 MARKET_OTHERS = (_MIRROR, _SENSE)
 MARKET_ENHANCE_TWICE = (_MIRROR, _SENSE)
 ENHANCE_ALL_BY_FLOOR = 4          # upties wait for every craft until this floor
+SELL_FROM_FLOOR = 4               # unprotected gifts go for uptie cost from this shop
 
 # --- geometry (FHD) ----------------------------------------------------
 _PORTRAIT_Y = 990                 # the sinner badge under the chain bar
@@ -201,13 +202,25 @@ def enhance_allowed(name: str) -> bool:
     return floor >= ENHANCE_FROM_FLOOR.get(name, 1)
 
 
+def all_crafted(crafted) -> bool:
+    """Whether every gift of the plan is owned."""
+    return all(n in (crafted or ()) for n in MARKET_MUST + MARKET_OTHERS)
+
+
 def enhance_ready(crafted, floor=None) -> bool:
     """Whether the upties may start: every gift of the plan crafted, or
     floor 4 reached with some still missing."""
     floor = int(floor or getattr(p, "LVL", 1) or 1)
     if floor >= ENHANCE_ALL_BY_FLOOR:
         return True
-    return all(n in (crafted or ()) for n in MARKET_MUST + MARKET_OTHERS)
+    return all_crafted(crafted)
+
+
+def sell_ready(crafted, floor=None) -> bool:
+    """Whether the shop may sell the gifts the plan does not protect for
+    the upties' cost: the floor 4 shop on, every gift of the plan crafted."""
+    floor = int(floor or getattr(p, "LVL", 1) or 1)
+    return floor >= SELL_FROM_FLOOR and all_crafted(crafted)
 
 
 def market_plan(floor=None, crafted=()) -> dict:

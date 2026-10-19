@@ -187,7 +187,8 @@ def md_summary(md: dict, app: dict | None = None) -> list:
         ("Market", "Torn Bandolier uptied first on floor 1, then the heal and "
                    "the floor plan (Conceit, then Decay; Clear Mirror and "
                    "Artistic Sense after, uptied once all four are crafted, "
-                   "floor 4 at the latest)" if hollow
+                   "floor 4 at the latest; from the floor 4 shop the gifts "
+                   "the plan does not protect are sold for that cost)" if hollow
          else _market(md, saikai)),
         ("Skill replacement", _join(active, "Off")),
         ("Pack search", _pack_search(md, hollow, saikai, thrill)),

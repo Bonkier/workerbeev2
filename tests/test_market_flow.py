@@ -549,3 +549,120 @@ def test_an_unscanned_shelf_ends_the_session_with_a_warning(fuse_menu, monkeypat
         S._fuse_session(names, set(), must=names)
     assert log["keywords"] == ["repoise"] and log["crafts"] == []
     assert "Skip EGO check" in caplog.text
+
+
+# --- the floor 4 and 5 shops sell for the upties' cost ----------------------
+
+FOUR = ["Fragment of Conceit", "Fragment of Decay",
+        "Clear Mirror, Calm Water", "Artistic Sense"]
+TWICE = [(n, 2) for n in FOUR[2:]]
+
+
+@pytest.fixture
+def sell_pass(monkeypatch):
+    log = {"funds": 150, "sold": [], "order": [], "keep": None, "active": None}
+
+    def sell(gifts):
+        log["sold"].append(dict(gifts))
+        log["keep"] = list(p.MARKET_GIFTS.get("keep_sell") or [])
+        log["active"] = p.CUSTOM_SELL_ACTIVE
+        log["order"].append("sell")
+        log["funds"] = 900
+        return True
+    monkeypatch.setattr(S, "sell", sell)
+    monkeypatch.setattr(S, "balance", lambda: log["funds"])
+    monkeypatch.setattr(S, "close_panel", lambda: None)
+    monkeypatch.setattr(p, "RUN_SCRIPT", "hollow")
+    monkeypatch.setattr(p, "MARKET_GIFTS", {})
+    monkeypatch.setattr(p, "CUSTOM_ENHANCE_DONE", {})
+    monkeypatch.setattr(p, "CUSTOM_SELL_ACTIVE", False, raising=False)
+    monkeypatch.setattr(p, "LVL", 4)
+    import wbcore.market_catalog as MC
+    monkeypatch.setattr(MC, "load_market_catalog",
+                        lambda: {n: {"tier": 4} for n in FOUR})
+    return log
+
+
+def test_the_unprotected_gifts_are_sold_for_the_owed_upties(sell_pass):
+    log = sell_pass
+    plan = {"protected": ["Torn Bandolier"] + FOUR, "fuse": [], "must": FOUR[:2],
+            "enhance2": FOUR[2:]}
+    p.MARKET_GIFTS["keep_sell"] = ["Grand Welcome"]
+    S._hollow_sell(plan, set(FOUR), TWICE)
+    assert log["sold"] == [{"upties": 600}]
+    assert log["keep"] == ["Torn Bandolier"] + FOUR + ["Grand Welcome"]
+    assert log["active"] is True and p.CUSTOM_SELL_ACTIVE is False
+    assert p.MARKET_GIFTS["keep_sell"] == ["Grand Welcome"]      # the tab's own, back
+
+
+def test_the_sell_pass_waits_for_floor_4_and_every_craft(sell_pass, monkeypatch):
+    log = sell_pass
+    plan = {"protected": FOUR, "fuse": [], "must": FOUR[:2], "enhance2": FOUR[2:]}
+    monkeypatch.setattr(p, "LVL", 3)
+    S._hollow_sell(plan, set(FOUR), TWICE)
+    monkeypatch.setattr(p, "LVL", 4)
+    S._hollow_sell(plan, set(FOUR[:3]), TWICE)
+    S._hollow_sell(None, set(FOUR), TWICE)                    # not a Hollow run
+    assert log["sold"] == []
+    monkeypatch.setattr(p, "LVL", 5)
+    S._hollow_sell(plan, set(FOUR), TWICE)
+    assert log["sold"] == [{"upties": 600}]
+
+
+def test_nothing_is_sold_when_the_cost_already_covers_the_upties(sell_pass):
+    log = sell_pass
+    plan = {"protected": FOUR, "fuse": [], "must": FOUR[:2], "enhance2": FOUR[2:]}
+    log["funds"] = 600
+    S._hollow_sell(plan, set(FOUR), TWICE)
+    log["funds"] = 150
+    p.CUSTOM_ENHANCE_DONE.update({n: 2 for n in FOUR[2:]})   # nothing owed
+    S._hollow_sell(plan, set(FOUR), TWICE)
+    assert log["sold"] == [] and "keep_sell" not in p.MARKET_GIFTS
+    p.CUSTOM_ENHANCE_DONE.update({"Artistic Sense": 1})
+    S._hollow_sell(plan, set(FOUR), TWICE)                    # 150 covers the 100 owed
+    assert log["sold"] == []
+    log["funds"] = 50
+    S._hollow_sell(plan, set(FOUR), TWICE)
+    assert log["sold"] == [{"upties": 100}]
+
+
+def test_the_floor_4_visit_sells_between_the_fuse_session_and_the_upties(sell_pass, monkeypatch):
+    log = sell_pass
+    plan = {"protected": FOUR, "fuse": [], "must": FOUR[:2], "enhance2": FOUR[2:]}
+    monkeypatch.setattr(S, "_hollow_plan", lambda: plan)
+    monkeypatch.setattr(S, "_scripted_order", lambda names: list(names or []))
+    monkeypatch.setattr(S, "_fuse_session", lambda *a, **k: log["order"].append("fuse"))
+    monkeypatch.setattr(S, "_enhance_catalog", lambda t: log["order"].append("enhance"))
+    monkeypatch.setattr(p, "CUSTOM_MARKET_DONE", False)
+    monkeypatch.setattr(p, "CUSTOM_FUSE_DONE", set(FOUR))
+    for flag in ("SKIP_EGO_BUYING", "SKIP_EGO_FUSION", "SKIP_EGO_ENHANCING"):
+        monkeypatch.setattr(p, flag, False, raising=False)
+    S.custom_market()
+    assert log["order"] == ["sell", "enhance"]                # no fuse: all crafted
+    assert log["sold"] == [{"upties": 600}]
+    monkeypatch.setattr(p, "CUSTOM_MARKET_DONE", False)
+    monkeypatch.setattr(p, "SKIP_EGO_ENHANCING", True)
+    log["funds"], log["order"], log["sold"] = 150, [], []
+    S.custom_market()
+    assert log["order"] == [] and log["sold"] == []           # no upties, no selling
+
+
+def test_a_sell_error_leaves_the_tags_and_the_upties_intact(sell_pass, monkeypatch):
+    log = sell_pass
+    plan = {"protected": FOUR, "fuse": [], "must": FOUR[:2], "enhance2": FOUR[2:]}
+
+    def boom(gifts):
+        log["order"].append("sell")
+        raise RuntimeError("Infinite loop exited")
+    monkeypatch.setattr(S, "sell", boom)
+    monkeypatch.setattr(S, "_hollow_plan", lambda: plan)
+    monkeypatch.setattr(S, "_scripted_order", lambda names: list(names or []))
+    monkeypatch.setattr(S, "_fuse_session", lambda *a, **k: None)
+    monkeypatch.setattr(S, "_enhance_catalog", lambda t: log["order"].append("enhance"))
+    monkeypatch.setattr(p, "CUSTOM_MARKET_DONE", False)
+    monkeypatch.setattr(p, "CUSTOM_FUSE_DONE", set(FOUR))
+    for flag in ("SKIP_EGO_BUYING", "SKIP_EGO_FUSION", "SKIP_EGO_ENHANCING"):
+        monkeypatch.setattr(p, flag, False, raising=False)
+    S.custom_market()
+    assert log["order"] == ["sell", "enhance"]
+    assert p.CUSTOM_SELL_ACTIVE is False and "keep_sell" not in p.MARKET_GIFTS

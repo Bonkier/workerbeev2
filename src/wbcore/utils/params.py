@@ -111,6 +111,7 @@ CUSTOM_ENHANCE_DONE = {}
 # open-menu/verify dance for them. Reset per attempt in execute_me.
 CUSTOM_FUSE_DONE = set()
 CUSTOM_FUSE_ACTIVE = False
+CUSTOM_SELL_ACTIVE = False
 CLAIM_ON_DEFEAT = False
 # Run `shutdown /l` after the run queue finishes (unattended runs).
 LOGOUT_ON_FINISH = False
