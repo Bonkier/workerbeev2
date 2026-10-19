@@ -2221,13 +2221,15 @@ class FloorPacks(QWidget):
                 "Click a pack to cycle: neutral  >  prioritise  >  avoid. "
                 "Packs left neutral inherit the Global preference.")
 
-    def set_data(self, floor_data: dict, banned=()):
+    def set_data(self, floor_data: dict, banned=(), banned_by_floor=None):
         """Rebuild the Global + floor tabs and chips from a new dataset.
         Preserves prior non-neutral selections (floor and Global) for packs
-        that still exist."""
+        that still exist. `banned_by_floor` gives a floor its own banned
+        list (its difficulty's), else `banned` applies to every floor."""
         prior = self.state() if self._chips else {}
         prior_global = self.global_state() if self._global_chips else {}
         banned_set = set(banned)
+        banned_by_floor = banned_by_floor or {}
 
         # Tear down the existing stack + tabs.
         while self._stack.count():
@@ -2276,7 +2278,7 @@ class FloorPacks(QWidget):
                 # Restore prior selection, else default banned -> avoid.
                 if floor in prior and pack in prior[floor]:
                     chip.set_state(prior[floor][pack])
-                elif pack in banned_set:
+                elif pack in set(banned_by_floor.get(floor, banned_set)):
                     chip.set_state("avoid")
                 chip.state_changed.connect(lambda *_: self.changed.emit())
                 flow.addWidget(chip)

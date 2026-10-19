@@ -47,7 +47,7 @@ def test_saikai_summary_reads_like_the_run_that_will_happen():
     assert rows["Team keyword"] == "Poise"
     assert rows["Market"] == "Custom: buy 6, fuse 2, uptie 4"
     assert rows["Skill replacement"] == "Ryōshū"
-    assert rows["Pack search"] == "On, 3 refreshes"
+    assert rows["Pack search"] == "The run's own packs, 3 refreshes"
     # A pack set on two floors is one pack, not two.
     assert rows["Packs"] == "1 prioritised, 2 avoided"
     assert rows["Switched on"] == "Claim bonus, Restart on failure"
@@ -57,8 +57,9 @@ def test_saikai_summary_reads_like_the_run_that_will_happen():
 def test_saikai_difficulty_variants():
     def diff(**over):
         return _rows(R.md_summary(dict(_SAIKAI, **over)))["Difficulty"]
-    assert diff(saikai_only_hard=True) == "Hard on every floor"
-    assert diff(saikai_full_normal=True) == "Normal on every floor"
+    assert diff(hard_from_floor=1) == "Hard on every floor"
+    assert diff(hard_from_floor=0) == "Normal on every floor"
+    assert diff(hard_from_floor=2) == "Normal, then Hard from floor 2"
     assert diff(saikai_floor10=True).endswith("leaving after floor 10")
 
 
@@ -79,7 +80,7 @@ def test_standard_run_summary():
     assert rows["Team rotation"] == "Burn (Burn, Wrath), Poise (Poise)"
     assert rows["Market"] == "Default workflow"
     assert rows["Skill replacement"] == "Off"
-    assert rows["Pack search"] == "Off, 1 refresh"
+    assert rows["Pack search"] == "No floor configured, 1 refresh"
     assert rows["Switched on"] == "Nothing"
     assert "Mouse" not in rows                  # no app settings given
 

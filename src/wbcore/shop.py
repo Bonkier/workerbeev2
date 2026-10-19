@@ -157,6 +157,10 @@ def is_in_range(res, coord):
 
 _MARKET_TPL_CACHE = {}
 _MARKET_CONF = 0.85
+# An uptied gift wears a + or ++ badge over the top of its shelf cell, on
+# top of the tier bars; a match that fails whole is tried again with that
+# band masked out.
+_BADGE_BAND = 0.40
 # Safety net: cap fuse_loop passes so a stuck shop (e.g. buy() reporting success
 # without obtaining the needed fuel) leaves instead of looping forever.
 _FUSE_LOOP_CAP = 12
@@ -172,6 +176,40 @@ def _stem_named(stem, names) -> bool:
     return bool(key) and any(
         key in "".join(c for c in str(n).lower() if c.isalnum())
         for n in names or ())
+
+
+def _ccoeff_best(image, tpl, mask=None):
+    """Best normalised correlation of `tpl` over `image` (0..1 like the
+    finder's) and where it is."""
+    if image.shape[0] < tpl.shape[0] or image.shape[1] < tpl.shape[1]:
+        return 0.0, (0, 0)
+    if mask is None:
+        res = cv2.matchTemplate(image, tpl, cv2.TM_CCOEFF_NORMED)
+    else:
+        res = cv2.matchTemplate(image, tpl, cv2.TM_CCOEFF_NORMED, mask=mask)
+    res = np.nan_to_num(res, nan=-1.0, posinf=-1.0, neginf=-1.0)
+    _min, best, _at, loc = cv2.minMaxLoc(res)
+    return (float(best) + 1.0) / 2.0, loc
+
+
+def _catalog_hit(image, reg, tpl):
+    """FHD centre of catalogue template `tpl` on the shelf `image` (the
+    capture of `reg`, at window scale), or None. Whole first; an uptied
+    gift's badge band masked out when the whole does not reach the gate."""
+    comp = p.WINDOW[2] / 1920.0
+    if abs(comp - 1.0) > 1e-3:
+        tpl = cv2.resize(tpl, None, fx=comp, fy=comp,
+                         interpolation=cv2.INTER_AREA if comp < 1 else cv2.INTER_CUBIC)
+    th, tw = tpl.shape[:2]
+    conf, loc = _ccoeff_best(image, tpl)
+    if conf < _MARKET_CONF:
+        mask = np.full((th, tw), 255, np.uint8)
+        mask[: int(th * _BADGE_BAND), :] = 0
+        conf, loc = _ccoeff_best(image, tpl, mask)
+        if conf < _MARKET_CONF:
+            return None
+    return (int(reg[0] + (loc[0] + tw / 2.0) / comp),
+            int(reg[1] + (loc[1] + th / 2.0) / comp))
 
 
 def _market_scan(image, reg, names, path_key="path"):
@@ -200,11 +238,9 @@ def _market_scan(image, reg, names, path_key="path"):
                     continue
                 tpl = amplify(raw)
                 _MARKET_TPL_CACHE[ck] = tpl
-            x, y = gui.center(LocateRGB.try_locate(tpl, image=image, region=reg,
-                                                   conf=_MARKET_CONF))
-            out[name] = (x, y)
-        except gui.ImageNotFoundException:
-            continue
+            hit = _catalog_hit(image, reg, tpl)
+            if hit is not None:
+                out[name] = hit
         except Exception as exc:
             logging.debug("Market scan: '%s' failed: %s", name, exc)
     return out
@@ -317,13 +353,22 @@ def inventory_check(reg, h, uptie_det=True, market_mode=None):
     # enter the fusion/sell pool.
     if market_mode in ("fuse", "sell"):
         _mkey = "keep_fuse" if market_mode == "fuse" else "keep_sell"
-        for _mn, (_mx, _my) in _market_scan(
-                image, reg, p.MARKET_GIFTS.get(_mkey) or []).items():
+        _mnames = list(p.MARKET_GIFTS.get(_mkey) or [])
+        _mfound = _market_scan(image, reg, _mnames)
+        for _mn, (_mx, _my) in _mfound.items():
             fuse_shelf = rectangle(fuse_shelf,
                 (int(_mx - 62 - reg[0]), int(_my - 72 - reg[1])),
                 (int(_mx + 60 - reg[0]), int(_my + 60 - reg[1])), (0, 0, 0), -1)
             logging.info("Market: %s '%s' at (%d,%d) - excluded from this pass.",
                          _mkey, _mn, _mx, _my)
+        if custom and _mnames:
+            # The plan's protected gifts that are not on this shelf page: an
+            # owned one missing here is the first thing to check when a
+            # gift went as fuel.
+            _missing = [n for n in _mnames if n not in _mfound]
+            if _missing:
+                logging.info("Market: %s not on this shelf page: %s.",
+                             _mkey, ", ".join(_missing))
 
     found_aff = []
     for aff in p.GIFTS:
@@ -2297,6 +2342,26 @@ def _enhance_catalog(targets):
         close_panel()
 
 
+def _hollow_first_uptie():
+    """The Hollow floor 1 shop begins with Torn Bandolier uptied to ++,
+    before the heal and the plan touch the cost. Once per run."""
+    from .hollow import FIRST_UPTIE
+    if getattr(p, "HOLLOW_FIRST_UPTIE_DONE", False):
+        return
+    p.HOLLOW_FIRST_UPTIE_DONE = True
+    name, levels = FIRST_UPTIE
+    if getattr(p, "SKIP_EGO_ENHANCING", False):
+        logging.info("HOLLOW: %s not uptied first (Behaviour: Skip EGO enhancing).", name)
+        return
+    logging.info("HOLLOW: floor 1 shop, %s first (%d levels).", name, levels)
+    try:
+        _enhance_catalog([(name, levels)])
+    except gui.PauseException:
+        raise
+    except Exception as exc:
+        logging.warning("HOLLOW: the %s uptie errored: %s", name, exc)
+
+
 def custom_market():
     """Market behaviour when Default market workflow is OFF: buy only the
     tagged 'buy' gifts (with the configured reroll), fuse the 'fuse'-tagged
@@ -2477,10 +2542,13 @@ def shop():
             )
         ): return False
 
-    # HOLLOW heals its own way (one sinner on floor 1, Faust on floors 4
-    # and 5) and then shops from its own floor plan.
+    # HOLLOW upties its starter gift first on floor 1, heals its own way
+    # (one sinner on floor 1, Faust on floors 4 and 5) and then shops from
+    # its own floor plan.
     if p.RUN_SCRIPT == "hollow":
         from .hollow import shop_visit
+        if p.LVL == 1:
+            _hollow_first_uptie()
         shop_visit()
     # Revive/heal on any difficulty - a dead sinner costs every later battle.
     elif p.DEAD > 0:

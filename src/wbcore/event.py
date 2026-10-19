@@ -2,7 +2,9 @@ from .utils.utils import *
 
 PROBS = ["VeryHigh", "High", "Normal", "Low", "VeryLow"]
 
-favorites = ["chicken", "factory"]
+# Choice titles taken over the E.G.O text rule: the "I've failed to protect
+# others, too." option of the Sinking-check event (owner, 2026-10-19).
+favorites = ["chicken", "factory", "failedprotect"]
 
 # Sinner-check selection frame detection. The selected portrait wears a bright
 # orange frame; a colour mask over the slot box PERIMETER band (portrait art

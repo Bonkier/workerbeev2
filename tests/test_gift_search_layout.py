@@ -112,11 +112,13 @@ def test_the_advisory_is_shown_without_taking_focus_and_one_at_a_time(monkeypatc
 
 
 def test_the_upstream_way_waits_for_the_header_and_clicks_the_spot(monkeypatch, caplog):
+    import types
     clicks, pressed, asked = [], [], []
     monkeypatch.setattr(B.LocateRGB, "locate", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no template read")))
     monkeypatch.setattr(B, "win_click", lambda x, y, *a, **k: clicks.append((int(x), int(y))))
     monkeypatch.setattr(B.time, "sleep", lambda s: None)
     monkeypatch.setattr(B.gui, "press", lambda key: pressed.append(key))
+    monkeypatch.setattr(B, "now_click", types.SimpleNamespace(button=lambda *a, **k: False))
     answers = {"startGift": [False, False, True], "Confirm": [True, False, False]}
 
     class Now:
@@ -154,3 +156,49 @@ def test_a_gift_missing_after_the_template_click_gets_the_upstream_tab_click(mon
     assert tabs == [("keywordless", False), ("keywordless", True)]
     assert finds == [0, 6, 6]
     assert "selecting the tab the upstream way" in caplog.text
+
+
+def test_the_menu_wait_takes_either_marker_clears_dialogs_and_stops_when_the_run_moved_on(monkeypatch):
+    import types
+    pressed, asked = [], []
+    monkeypatch.setattr(B.time, "sleep", lambda s: None)
+    monkeypatch.setattr(B.gui, "press", lambda key: pressed.append(key))
+    monkeypatch.setattr(B, "now_click", types.SimpleNamespace(button=lambda *a, **k: False))
+
+    def fake(answers):
+        class Now:
+            def button(self, key, *a, **k):
+                asked.append(key)
+                return answers[key].pop(0) if answers.get(key) else False
+        return Now()
+    # A GET dialog in front, then the menu by its title.
+    monkeypatch.setattr(B, "now", fake({"packconfirm": [True], "giftsearch": [False, False, True]}))
+    assert B._wait_gift_menu(timer=5.0) is True
+    assert pressed == ["enter"]
+    # The run moved on without the menu: no waiting out the timer.
+    del asked[:]
+    monkeypatch.setattr(B, "now", fake({"loading": [True]}))
+    assert B._wait_gift_menu(timer=5.0) is False
+    assert asked.count("startGift") == 1
+
+
+def test_a_menu_that_never_shows_skips_the_search_with_a_report(monkeypatch, caplog):
+    dumps = []
+    monkeypatch.setattr(B, "_wait_gift_menu", lambda timer=8.0: False)
+    monkeypatch.setattr(B, "_diag_once", lambda tag, advise=None, **kw: dumps.append((tag, kw)))
+    with caplog.at_level("WARNING"):
+        assert B.gift_search(["Spiderweb Entangled in Red"]) == 0
+    assert dumps and dumps[0][0] == "giftmenu"
+    labels = [row[0] for row in dumps[0][1]["extra"]]
+    assert "giftsearch" in labels and "startGift" in labels and "packconfirm" in labels
+    assert "menu not detected" in caplog.text
+
+
+def test_the_search_targets_follow_the_run(monkeypatch):
+    from wbcore.utils import params as p
+    monkeypatch.setattr(p, "RUN_SCRIPT", "saikai_ryoshu")
+    monkeypatch.setattr(p, "GIFT_SEARCH", ["Blanket", "Spiderweb Entangled in Red", "Soda Pop", "Cartilage"])
+    assert B._starting_gift_targets() == ["Spiderweb Entangled in Red", "Blanket", "Soda Pop"]
+    monkeypatch.setattr(p, "RUN_SCRIPT", "")
+    monkeypatch.setattr(p, "GIFT_SEARCH", [])
+    assert B._starting_gift_targets() == []

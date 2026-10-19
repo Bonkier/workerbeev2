@@ -1029,7 +1029,7 @@ def test_the_builder_pins_the_hollow_run():
     own = RC.build_md_run(dict(_MD, behaviour={"swap_max_energy": True,
                                                "pack_search": False,
                                                "winrate": True}), {}, {})[2]
-    assert own["swap_max_energy"] is True and own["pack_search"] is False
+    assert own["swap_max_energy"] is True and own["pack_search"] is True   # the floors decide
     assert own["winrate"] is False
     assert settings["pack_search_floors"] == {
         1: "Flat-broke gamblers", 2: "Hell's Chicken",
@@ -1053,6 +1053,31 @@ def test_the_builder_pins_the_hollow_run():
     assert team["priority"][1] == {"FlatbrokeGamblers": 1, "HellsChicken": 2,
                                    "EmotionalSeduction": 3, "EmotionalCraving": 3,
                                    "HatredandDespair": 4, "Line2": 5}
+
+
+def test_a_pack_search_floor_switched_on_replaces_the_sheets_pack():
+    from wbcore.pack_search_catalog import PACK_SEARCH_KEYS
+    by_key = {v: k for k, v in PACK_SEARCH_KEYS.items()}
+    forgotten, nagel = by_key["TheForgotten"], by_key["NagelundHammer"]
+    md = dict(_MD, pack_search_cfg={"floors": {
+        "2": {"enabled": True, "pack": forgotten},        # the user's floor 2
+        "3": {"enabled": True, "pack": nagel},            # and floor 3
+        "4": {"enabled": False, "pack": forgotten},       # switched off: the sheet's
+        "5": {"enabled": True, "pack": "Not A Pack"},     # unknown: the sheet's
+        "9": {"enabled": True, "pack": forgotten}}})      # no such floor
+    _count, teams, settings, _hard = RC.build_md_run(md, {}, {})
+    assert settings["pack_search_floors"] == {
+        1: "Flat-broke gamblers", 2: forgotten, 3: nagel,
+        4: "Hatred and Despair", 5: "Line 2"}
+    team = teams[0]
+    assert team["priority"][0] == ["FlatbrokeGamblers", "TheForgotten", "NagelundHammer",
+                                   "HatredandDespair", "Line2"]   # no floor 3 alternative
+    assert team["priority"][1] == {"FlatbrokeGamblers": 1, "TheForgotten": 2,
+                                   "NagelundHammer": 3, "HatredandDespair": 4, "Line2": 5}
+    assert team["avoid"][1] == team["priority"][1]
+    assert RC.hollow_pack_names(md)[1:3] == (forgotten, nagel)
+    assert RC.hollow_pack_names({}) == ("Flat-broke gamblers", "Hell's Chicken",
+                                        "Emotional Seduction", "Hatred and Despair", "Line 2")
 
 
 def test_the_builder_never_heals_faust_and_keeps_the_users_keyword():
@@ -1093,19 +1118,19 @@ def test_the_start_summary_describes_the_run():
     rows = _rows(RS.md_summary(md))
     assert rows["Difficulty"] == "Normal, then Hard from floor 5"
     assert rows["Graces"] == ("Star of the Beginning, Interstellar Travel "
-                              "(none picked, so the sheet's)")
+                              "(none picked, so the run's own)")
     picked = _rows(RS.md_summary(dict(md, grace={"Star Shower": 1, "Chance Comet": 3})))
     assert picked["Graces"] == "Star Shower, Chance Comet ++"
     assert rows["Squad"] == "Faust alone"
     assert rows["Fallback (miniboss)"] == "Yi Sang, Gregor"      # no Faust
     assert rows["Shop heals"] == "Gregor on floor 1, Faust on floors 4 and 5"
     assert rows["Team keyword"] == "Poise"
-    assert rows["Market"].startswith("Heal, then the floor plan")
-    assert rows["Pack search"] == "Off, 2 refreshes"          # the user's toggle
-    on = dict(md, behaviour=dict(md["behaviour"], pack_search=True))
-    assert _rows(RS.md_summary(on))["Pack search"] == "On, one pack per floor, 2 refreshes"
+    assert rows["Market"].startswith("Torn Bandolier uptied first on floor 1, then the heal")
+    assert rows["Pack search"] == "One pack per floor, 2 refreshes"
     assert rows["Packs"] == ("Flat-broke gamblers, Hell's Chicken, Emotional "
                              "Seduction, Hatred and Despair, Line 2")
+    own = dict(md, pack_search_cfg={"floors": {"1": {"enabled": True, "pack": "Line 2"}}})
+    assert _rows(RS.md_summary(own))["Packs"].startswith("Line 2, Hell's Chicken")
     assert rows["Switched on"] == "Claim bonus, Swap for max energy"   # win rate and the check hidden
     rows = _rows(RS.md_summary({"custom_run": True,
                                 "custom_strategy": RC.HOLLOW_LABEL}))
@@ -1295,3 +1320,25 @@ def test_skip_sinner_healing_applies_to_hollow(monkeypatch, caplog):
     with caplog.at_level("INFO"):
         assert H.shop_visit()
     assert clicks == [] and left == [] and "Skip sinner healing" in caplog.text
+
+
+
+def test_the_floor_one_shop_upties_torn_bandolier_first(monkeypatch, caplog):
+    from wbcore import shop as S
+    uptied = []
+    monkeypatch.setattr(S, "_enhance_catalog", lambda targets: uptied.append(list(targets)))
+    monkeypatch.setattr(p, "SKIP_EGO_ENHANCING", False)
+    H.begin_run()
+    with caplog.at_level("INFO"):
+        S._hollow_first_uptie()
+        S._hollow_first_uptie()                                   # once per run
+    assert uptied == [[("Torn Bandolier", 2)]]
+    assert "Torn Bandolier first (2 levels)" in caplog.text
+    H.begin_run()                                                 # a new run: again
+    S._hollow_first_uptie()
+    assert len(uptied) == 2
+    H.begin_run()
+    monkeypatch.setattr(p, "SKIP_EGO_ENHANCING", True)            # the user's toggle wins
+    S._hollow_first_uptie()
+    assert len(uptied) == 2
+    assert H.FIRST_UPTIE == (H.STARTING_GIFT, 2)

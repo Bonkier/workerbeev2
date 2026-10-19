@@ -56,7 +56,7 @@ def test_every_behaviour_description_is_fully_tall(shown):
     app, page = shown
     from gui_v2.widgets import SettingRow
     groups = page._behaviour_groups
-    assert set(groups) == {"RUN", "PACKS", "ON DEFEAT", "SHOP AND EGO", "WHEN FINISHED"}
+    assert set(groups) == {"RUN", "ON DEFEAT", "SHOP AND EGO", "WHEN FINISHED"}
     for group in groups.values():
         if not group._folder._expanded:
             group._folder.set(True)

@@ -11,7 +11,9 @@ MD_RUN_COUNT_HINT = (
 )
 
 MD_DIFFICULTY_HINT = (
-    "Normal and Hard are 5-floor runs; Extreme runs all 15 floors. "
+    "Normal and Hard are 5-floor runs. Extreme (15 floors) is work in "
+    "progress and cannot be picked yet. To start on Normal and flip to Hard "
+    "partway, switch Hard on for that floor under Packs."
 )
 
 MD_CUSTOM_RUN_HINT = (

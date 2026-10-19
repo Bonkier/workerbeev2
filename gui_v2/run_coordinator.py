@@ -132,6 +132,10 @@ class RunCoordinator(QObject):
         app = load_section("app_settings") or {}
         settings["mouse_speed"] = int(app.get("mouse_speed", 100) or 100)
         settings["mouse_memory"] = bool(app.get("mouse_memory", True))
+        settings["dxgi_capture"] = bool(app.get("dxgi_capture", True))
+        # The capture path is chosen before the worker's first capture.
+        from wbcore.utils import params as p
+        p.CAPTURE_DXGI = settings["dxgi_capture"]
         prof = app.get("macro_profile", "Safe")
         settings["macro_profile"] = (
             prof if prof in ("Safe", "Fast", "Chaotic") else "Safe")

@@ -10,6 +10,7 @@ _OK = {"window": {"left": 0, "top": 0, "width": 1920, "height": 1080},
                 "primary": True, "scale": 100},
        "hdr": False, "night_light": False, "color_filter": False,
        "capture": {"width": 1920, "height": 1080, "brightness": 60.0, "saturation": 40.0},
+       "capture_backend": "dxgi", "gdi_stale": False, "windows_build": 26200,
        "specs": {}}
 
 
@@ -46,6 +47,26 @@ def test_each_known_pitfall_is_named():
     narrow = E.issues(dict(_OK, capture=dict(_OK["capture"], width=1366)))
     assert narrow[0][0] == "error" and "1366 px wide" in narrow[0][1]
     assert any("could not be captured" in w for w in kinds(capture=None, capture_error="boom"))
+
+
+def test_the_capture_path_is_reported_and_windows_10_on_gdi_is_warned():
+    assert "Capture via DXGI" in E.summary(_OK)[4]
+    stale = dict(_OK, gdi_stale=True)
+    assert [lvl for lvl, w, _h in E.issues(stale) if "compositor" in w] == ["info"]
+    assert "compositor copy stale" in E.summary(stale)[4]
+    win10 = dict(_OK, capture_backend="gdi", gdi_stale=None, windows_build=19045,
+                 dxgi_error="no display holds (960, 540)")
+    rows = E.issues(win10)
+    assert rows[0][0] == "warn" and "Windows 10" in rows[0][1] and "fullscreen optimizations" in rows[0][2]
+    assert "failed here (no display holds" in rows[0][1] and "switch Capture" not in rows[0][2]
+    assert "(DXGI: no display holds" in E.summary(win10)[4]
+    off = dict(win10, dxgi_error="switched off in Settings")
+    assert "switched off in Settings" in E.issues(off)[0][1] and "switch Capture" in E.issues(off)[0][2]
+    windowed = dict(win10, window={"left": 100, "top": 60, "width": 1600, "height": 900},
+                    capture=dict(_OK["capture"], width=1600, height=900))
+    assert not any("Windows 10" in w for _l, w, _h in E.issues(windowed))
+    win11 = dict(win10, windows_build=22631)
+    assert not any("Windows 10" in w for _l, w, _h in E.issues(win11))
 
 
 def test_errors_come_first_and_unknowns_read_as_such():

@@ -610,7 +610,6 @@ class SettingsPage(QWidget):
         self._stk_loading = True
         self._stk_states = {
             "SAIKAI": {"order": [], "exclude": [], "keyword": "Poise",
-                       "only_hard": False, "full_normal": False,
                        "floor10": False, "s3_only": False},
             "Thrill": {"order": [], "exclude": [], "keyword": "Rupture"},
             "Hollow": {"order": [], "exclude": list(_HOLLOW_EXCLUDE_DEFAULT),
@@ -636,26 +635,6 @@ class SettingsPage(QWidget):
         section.body.addWidget(SettingRow(
             "Team keyword", "What keyword is this team binded to?",
             self._stk_keyword, parent=section))
-
-        self._stk_hard = Toggle(default=False, parent=section)
-        self._stk_hard.toggled.connect(self._on_stk_changed)
-        self._stk_hard.toggled.connect(self._on_stk_hard_toggled)
-        self._stk_hard_row = SettingRow(
-            "Full hard",
-            "SAIKAI only: run every floor on Hard (default flips to Hard at "
-            "Floor 4). Mutually exclusive with Full normal.",
-            self._stk_hard, parent=section)
-        section.body.addWidget(self._stk_hard_row)
-
-        self._stk_normal = Toggle(default=False, parent=section)
-        self._stk_normal.toggled.connect(self._on_stk_changed)
-        self._stk_normal.toggled.connect(self._on_stk_normal_toggled)
-        self._stk_normal_row = SettingRow(
-            "Full normal",
-            "SAIKAI only: stay on Normal every floor (never flips to Hard) "
-            "and skip pack search for this run. Mutually exclusive with "
-            "Full hard.", self._stk_normal, parent=section)
-        section.body.addWidget(self._stk_normal_row)
 
         self._stk_floor10 = Toggle(default=False, parent=section)
         self._stk_floor10.toggled.connect(self._on_stk_changed)
@@ -719,8 +698,6 @@ class SettingsPage(QWidget):
         st["exclude"] = self._stk_exclude.order()
         st["keyword"] = self._stk_keyword.currentText()
         if self._stk_run == "SAIKAI":
-            st["only_hard"] = self._stk_hard.isChecked()
-            st["full_normal"] = self._stk_normal.isChecked()
             st["floor10"] = self._stk_floor10.isChecked()
             st["s3_only"] = self._stk_s3_only.isChecked()
         elif self._stk_run == "Hollow":
@@ -752,8 +729,6 @@ class SettingsPage(QWidget):
             self._stk_exclude.set_order(st["exclude"])
             if st["keyword"] in _STK_STATUSES:
                 self._stk_keyword.setCurrentText(st["keyword"])
-            self._stk_hard_row.setVisible(saikai)
-            self._stk_normal_row.setVisible(saikai)
             self._stk_floor10_row.setVisible(saikai)
             self._stk_s3_only_row.setVisible(saikai)
             self._stk_heal_row.setVisible(hollow)
@@ -764,8 +739,6 @@ class SettingsPage(QWidget):
                 if heal in _HOLLOW_HEAL_NAMES:
                     self._stk_heal.setCurrentText(heal)
             if saikai:
-                self._stk_hard.setChecked(bool(st.get("only_hard")))
-                self._stk_normal.setChecked(bool(st.get("full_normal")))
                 self._stk_floor10.setChecked(bool(st.get("floor10")))
                 self._stk_s3_only.setChecked(bool(st.get("s3_only")))
         finally:
@@ -782,19 +755,6 @@ class SettingsPage(QWidget):
         self._stk_sync()
         self._save_state()
 
-    def _on_stk_hard_toggled(self, on):
-        # Full hard and Full normal are mutually exclusive.
-        if getattr(self, "_stk_loading", False):
-            return
-        if on and self._stk_normal.isChecked():
-            self._stk_normal.setChecked(False)
-
-    def _on_stk_normal_toggled(self, on):
-        if getattr(self, "_stk_loading", False):
-            return
-        if on and self._stk_hard.isChecked():
-            self._stk_hard.setChecked(False)
-
     def _on_locked_stk(self, _label: str):
         from .dialogs import show_notice
         show_notice(self, "Thrill runs are still being built, so they are "
@@ -810,8 +770,6 @@ class SettingsPage(QWidget):
             "saikai_order": list(s["order"]),
             "saikai_exclude": list(s["exclude"]),
             "saikai_status": s["keyword"],
-            "saikai_only_hard": bool(s["only_hard"]),
-            "saikai_full_normal": bool(s.get("full_normal")),
             "saikai_floor10": bool(s.get("floor10")),
             "saikai_s3_only": bool(s.get("s3_only")),
             "thrill_order": list(t["order"]),
@@ -839,10 +797,6 @@ class SettingsPage(QWidget):
                             else self._stk_states[run]["keyword"]),
             })
             if run == "SAIKAI":
-                self._stk_states["SAIKAI"]["only_hard"] = bool(
-                    st.get("only_hard"))
-                self._stk_states["SAIKAI"]["full_normal"] = bool(
-                    st.get("full_normal"))
                 self._stk_states["SAIKAI"]["floor10"] = bool(
                     st.get("floor10"))
                 self._stk_states["SAIKAI"]["s3_only"] = bool(
@@ -879,8 +833,6 @@ class SettingsPage(QWidget):
                 "order": m.get("saikai_order") or [],
                 "exclude": m.get("saikai_exclude") or [],
                 "keyword": m.get("saikai_status") or "Poise",
-                "only_hard": bool(m.get("saikai_only_hard")),
-                "full_normal": bool(m.get("saikai_full_normal")),
             },
             "Thrill": {
                 "order": m.get("thrill_order") or [],
@@ -923,6 +875,7 @@ class SettingsPage(QWidget):
             "rhythm": self._rhythm.isChecked(),
             "mouse_speed": self._mouse_speed.value(),
             "mouse_memory": self._mouse_memory.isChecked(),
+            "dxgi_capture": self._dxgi_capture.isChecked(),
             "audio_alerts": self._audio_alerts.isChecked(),
             "volume": self._volume.value(),
             "show_descriptions": self._show_descriptions.isChecked(),
@@ -960,6 +913,8 @@ class SettingsPage(QWidget):
                     self._mouse_speed.setValue(s["mouse_speed"])
                 if "mouse_memory" in s:
                     self._mouse_memory.setChecked(bool(s["mouse_memory"]))
+                if "dxgi_capture" in s:
+                    self._dxgi_capture.setChecked(bool(s["dxgi_capture"]))
                 if "audio_alerts" in s:
                     self._audio_alerts.setChecked(bool(s["audio_alerts"]))
                 if isinstance(s.get("volume"), int):
@@ -1214,6 +1169,16 @@ class SettingsPage(QWidget):
             "while waiting, like muscle memory. Speeds up runs and looks more "
             "human; the click always lands on the real button.",
             self._mouse_memory,
+            parent=section,
+        ))
+        self._dxgi_capture = Toggle(default=True, parent=section)
+        self._dxgi_capture.toggled.connect(self._save_state)
+        section.body.addWidget(SettingRow(
+            "Capture through DXGI",
+            "Read the screen the way the display shows it. Off, WorkerBee reads "
+            "the desktop compositor's copy, which Windows 10 stops refreshing "
+            "for a game that covers the whole screen.",
+            self._dxgi_capture,
             parent=section,
         ))
         return section

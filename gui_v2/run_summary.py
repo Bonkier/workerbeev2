@@ -5,7 +5,7 @@ Pure functions of the page state dicts: no widgets, no settings I/O, so the
 wording can be tested without a window. Each returns a list of sections,
 [(caption, [(label, value), ...]), ...]."""
 
-from .run_config import (HOLLOW_LABEL, HOLLOW_PACK_NAMES, SAIKAI_LABEL,
+from .run_config import (HOLLOW_LABEL, PRESET_GRACES, hollow_pack_names, SAIKAI_LABEL,
                          THRILL_LABEL, _GRACE_ORDER)
 
 # Behaviour toggles by state key. pack_search is left out: it is reported
@@ -49,13 +49,11 @@ def _count_states(packs, global_packs, state):
 
 
 _GRACE_SUFFIX = ("", "", " +", " ++")
-_HOLLOW_DEFAULT_GRACES = ("Star of the Beginning, Interstellar Travel "
-                          "(none picked, so the sheet's)")
 
 
-def _graces(md):
-    """The BUILD panel's graces with their tiers; Hollow falls back to the
-    sheet's pair when none is picked."""
+def _graces(md, fallback=None):
+    """The BUILD panel's graces with their tiers; a scripted run falls back
+    to its own preset when none is picked."""
     grace = md.get("grace") or {}
     picked = []
     for name in _GRACE_ORDER:
@@ -65,25 +63,59 @@ def _graces(md):
             state = 0
         if state:
             picked.append(name + _GRACE_SUFFIX[min(state, 3)])
-    return _join(picked, _HOLLOW_DEFAULT_GRACES, limit=10)
+    if picked:
+        return _join(picked, "None", limit=10)
+    if fallback:
+        return _join(list(fallback), "None") + " (none picked, so the run's own)"
+    return "None"
+
+
+def _flip_text(flip, default):
+    """The difficulty line from the Packs tab's Hard flip, or the run's own
+    when the state carries none."""
+    n = default if flip is None else flip
+    if not n or n >= 99:
+        return "Normal on every floor"
+    if n == 1:
+        return "Hard on every floor"
+    return "Normal, then Hard from floor %d" % n
 
 
 def _difficulty(md, saikai, thrill, hollow=False):
+    from .run_config import _page_flip
+    flip = _page_flip(md)
     if thrill:
-        return "Normal, forfeit after floor 3"
+        return ("Normal, forfeit after floor 3" if not flip
+                else _flip_text(flip, None) + ", forfeit after floor 3")
     if hollow:
-        return "Normal, then Hard from floor 5"
+        return _flip_text(flip, 5)
     if saikai:
-        if md.get("saikai_full_normal"):
-            text = "Normal on every floor"
-        elif md.get("saikai_only_hard"):
-            text = "Hard on every floor"
-        else:
-            text = "Normal, then Hard from floor 4"
+        text = _flip_text(flip, 4)
         if md.get("saikai_floor10"):
             text += ", leaving after floor 10"
         return text
-    return str(md.get("difficulty") or "Hard")
+    diff = str(md.get("difficulty") or "Hard")
+    if diff == "Normal" and flip:
+        return "Normal, then Hard from floor %d" % flip
+    return diff
+
+
+def _pack_search(md, hollow, saikai, thrill=False):
+    refreshes = int(md.get("pack_refreshes", 0) or 0)
+    tail = ", %d refresh%s" % (refreshes, "" if refreshes == 1 else "es")
+    if hollow:
+        return "One pack per floor" + tail
+    if saikai or thrill:
+        return "The run's own packs" + tail
+    floors = ((md.get("pack_search_cfg") or {}).get("floors") or {})
+    on = sorted(int(k) for k, ent in floors.items()
+                if isinstance(ent, dict) and ent.get("enabled") and ent.get("pack")
+                and str(k).isdigit())
+    if not on:
+        return "No floor configured" + tail
+    names = ["Floor %d" % f for f in on] if len(on) == 1 else [str(f) for f in on]
+    listed = names[0] if len(on) == 1 else "Floors " + ", ".join(names[:-1]) + " and " + names[-1]
+    return listed + tail
 
 
 def _market(md, saikai):
@@ -115,10 +147,10 @@ def md_summary(md: dict, app: dict | None = None) -> list:
         ("Runs", "Loop forever" if runs >= 9999 else str(runs)),
         ("Difficulty", _difficulty(md, saikai, thrill, hollow)),
         ("Retries on defeat", "Unlimited" if retries == 0 else str(retries)),
+        ("Graces", _graces(md, PRESET_GRACES.get(strategy))),
     ]
 
     if hollow:
-        run.append(("Graces", _graces(md)))
         team = [
             ("Team keyword", str(md.get("hollow_status") or "Poise")),
             ("Squad", "Faust alone"),
@@ -152,16 +184,14 @@ def md_summary(md: dict, app: dict | None = None) -> list:
     active = (md.get("skill_replace") or {}).get("active") or []
     refreshes = int(md.get("pack_refreshes", 0) or 0)
     shop = [
-        ("Market", "Heal, then the floor plan (Conceit, then Decay; Clear "
-                   "Mirror and Artistic Sense after, uptied once all four are "
-                   "crafted, floor 4 at the latest)" if hollow
+        ("Market", "Torn Bandolier uptied first on floor 1, then the heal and "
+                   "the floor plan (Conceit, then Decay; Clear Mirror and "
+                   "Artistic Sense after, uptied once all four are crafted, "
+                   "floor 4 at the latest)" if hollow
          else _market(md, saikai)),
         ("Skill replacement", _join(active, "Off")),
-        ("Pack search", "%s, %d refresh%s" % (
-            "Off" if not behaviour.get("pack_search", True)
-            else "On, one pack per floor" if hollow else "On",
-            refreshes, "" if refreshes == 1 else "es")),
-        ("Packs", _join(HOLLOW_PACK_NAMES) if hollow
+        ("Pack search", _pack_search(md, hollow, saikai, thrill)),
+        ("Packs", _join(hollow_pack_names(md)) if hollow
          else "%d prioritised, %d avoided" % (
             _count_states(md.get("packs"), md.get("global_packs"), "priority"),
             _count_states(md.get("packs"), md.get("global_packs"), "avoid"))),

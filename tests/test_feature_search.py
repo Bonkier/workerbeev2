@@ -393,15 +393,14 @@ def test_pasted_text_is_cut_short_rather_than_ranked_in_full():
     assert time.time() - started < 2.0
 
 
-def test_two_features_with_one_name_are_both_listed(window):
+def test_the_pack_search_card_is_the_one_feature_of_that_name(window):
     from gui_v2 import search_index
     _host, ui, _box, _search = window
     feats = {f.id: f for f in search_index.collect(ui)}
     panel = feats["mirror_dungeon:pack search"]
-    switch = feats["mirror_dungeon:pack search#setting"]
-    assert panel.kind == "card" and switch.kind == "setting"
-    assert panel.aliases and not switch.aliases
-    assert "mirror_dungeon:packs#group" in feats
+    assert panel.kind == "card" and panel.aliases
+    assert "mirror_dungeon:pack search#setting" not in feats     # the Behaviour toggle is gone
+    assert "mirror_dungeon:packs#group" not in feats
     # The same list whichever tab was looked at last.
     ui.page("mirror_dungeon")._tabbar._buttons["Packs"].click()
     _settle()

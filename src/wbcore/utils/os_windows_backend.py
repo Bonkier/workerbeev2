@@ -10,6 +10,7 @@ import numpy as np
 
 from . import params as p
 from . import telemetry as tele
+from . import dxgi_capture
 from .profiles import get_macro_profile, maybe_rhythm_jitter, randomize_with_profile
 from .movement.builder import build_trajectory
 from .movement.inertia import get_inherited_velocity, update_inertia
@@ -134,6 +135,17 @@ class BITMAPINFO(ctypes.Structure):
     ]
 
 def screenshot(imageFilename=None, region=None, allScreens=False):
+    """The screen as BGR: a region through DXGI duplication when it is on
+    and answers, else the compositor's copy through GDI (dxgi_capture says
+    why that matters on Windows 10)."""
+    if region and not allScreens and not imageFilename and getattr(p, "CAPTURE_DXGI", True):
+        frame = dxgi_capture.grab(region)
+        if frame is not None:
+            return frame
+    return screenshot_gdi(imageFilename, region, allScreens)
+
+
+def screenshot_gdi(imageFilename=None, region=None, allScreens=False):
     user32 = ctypes.windll.user32
     gdi32 = ctypes.windll.gdi32
     

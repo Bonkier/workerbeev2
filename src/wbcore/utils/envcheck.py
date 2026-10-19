@@ -254,6 +254,42 @@ def specs(wait: float = 0.0) -> dict:
 
 # --- the capture itself ---------------------------------------------------
 
+def _win_build():
+    try:
+        return int(sys.getwindowsversion().build)
+    except Exception:
+        return None
+
+
+def capture_paths(rect):
+    """("dxgi" or "gdi", stale) for the game rectangle in screen pixels:
+    which path captures answer through, and whether the compositor's copy
+    (GDI) differs from what the display shows (DXGI); stale is None when
+    only one path answers."""
+    if not _win():
+        return "gdi", None
+    try:
+        from . import dxgi_capture
+        from . import os_windows_backend as backend
+        import cv2
+    except Exception:
+        return "gdi", None
+    if getattr(p, "CAPTURE_DXGI", True):
+        dxgi_capture.reset()                 # a new run gets a fresh try
+        shown = dxgi_capture.grab(rect)
+    else:
+        shown = None
+    if shown is None:
+        return "gdi", None
+    try:
+        copy = backend.screenshot_gdi(region=rect)
+        a = cv2.resize(shown[:, :, :3], (160, 90), interpolation=cv2.INTER_AREA).astype(int)
+        b = cv2.resize(copy[:, :, :3], (160, 90), interpolation=cv2.INTER_AREA).astype(int)
+        return "dxgi", bool(abs(a - b).mean() > 12.0)
+    except Exception:
+        return "dxgi", None
+
+
 def capture_probe() -> dict:
     """Size and tone of a full capture of the game window: a black or
     undersized frame says more than any setting."""
@@ -283,8 +319,13 @@ def collect(probe: bool = True) -> dict:
               "monitors": monitors, "host": host,
               "hdr": _hdr_enabled(), "night_light": _night_light(),
               "color_filter": active, "color_filter_type": ftype,
-              "specs": specs()}
+              "windows_build": _win_build(), "specs": specs()}
     if probe:
+        report["capture_backend"], report["gdi_stale"] = capture_paths((x, y, w, h))
+        if report["capture_backend"] == "gdi" and _win():
+            from . import dxgi_capture
+            report["dxgi_error"] = (dxgi_capture.why_not() if getattr(p, "CAPTURE_DXGI", True)
+                                    else "switched off in Settings")
         try:
             report["capture"] = capture_probe()
         except Exception as exc:
@@ -350,6 +391,24 @@ def issues(report: dict) -> list:
     elif report.get("monitors"):
         out.append(("warn", "The game window is not on any display WorkerBee can see.",
                     "Move it onto a display and start the run again."))
+    build = report.get("windows_build")
+    if (report.get("capture_backend") == "gdi" and build and int(build) < 22000 and host
+            and w == int(host.get("width", 0)) and h == int(host.get("height", 0))):
+        err = report.get("dxgi_error")
+        why = ("DXGI duplication is switched off in Settings" if err == "switched off in Settings"
+               else "DXGI duplication failed here (%s)" % err if err
+               else "DXGI duplication is not answering")
+        out.append(("warn", "Windows 10 presents a game that covers the whole screen "
+                    "straight to the display, and the screen copy WorkerBee is reading "
+                    "stops updating; %s." % why,
+                    "Run the game in a window that does not cover the whole screen, or "
+                    "disable fullscreen optimizations for LimbusCompany.exe (Properties > "
+                    "Compatibility)." + (" Or switch Capture through DXGI back on."
+                                         if err == "switched off in Settings" else "")))
+    if report.get("gdi_stale"):
+        out.append(("info", "The desktop compositor's copy of the game is stale "
+                    "(Windows 10 fullscreen presentation).",
+                    "Captures go through DXGI instead; nothing to do."))
     if report.get("hdr"):
         several = len(report.get("monitors") or []) > 1
         out.append(("info" if several else "warn",
@@ -394,6 +453,11 @@ def summary(report: dict) -> list:
             cap.get("brightness", 0.0), cap.get("saturation", 0.0)))
     elif report.get("capture_error"):
         lines.append("Capture failed: %s" % report["capture_error"])
+    if report.get("capture_backend"):
+        lines.append("Capture via %s%s%s" % (
+            report["capture_backend"].upper(),
+            ", compositor copy stale" if report.get("gdi_stale") else "",
+            " (DXGI: %s)" % report["dxgi_error"] if report.get("dxgi_error") else ""))
     sp = report.get("specs") or {}
     if sp.get("ready"):
         lines.append("%s, Python %s" % (sp.get("os", "?"), sp.get("python", "?")))

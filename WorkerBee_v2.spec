@@ -73,6 +73,9 @@ hiddenimports = [
     "cv2",
     "mss",
     "mss.tools",
+    # DXGI duplication capture (dxcam over comtypes).
+    "dxcam",
+    "comtypes",
     "numpy",
     # Bridge for input.
     "bridge",

@@ -7,6 +7,7 @@ A feature added to a page is searchable without touching this file, and one
 that is removed stops being offered."""
 
 import re
+import time
 
 from PySide6.QtCore import QPoint, QRect, QTimer, QVariantAnimation, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
@@ -270,6 +271,11 @@ def reveal(ui, feature: Feature, flash: bool = True) -> bool:
 
     def settle():
         # The page is shown again when its slide ends, and may rebuild then.
+        # A slide that runs late keeps it parked past its nominal length, so
+        # look again shortly rather than measure a hidden page.
+        if not page.isVisible() and time.monotonic() < deadline:
+            QTimer.singleShot(60, ui, settle)
+            return
         target = _current(ui, feature) if whole else parked
         if not _valid(target):
             return
@@ -288,6 +294,7 @@ def reveal(ui, feature: Feature, flash: bool = True) -> bool:
             Spotlight(ui, shown)
 
     parked = target
+    deadline = time.monotonic() + 3.0
     # A page or tab switch slides, and the incoming page is parked until the
     # slide ends, so nothing can be scrolled or measured before then.
     QTimer.singleShot(Motion.NORMAL + 90 if waited else 0, ui, settle)

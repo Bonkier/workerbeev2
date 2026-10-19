@@ -4,6 +4,7 @@ charset-normalizer==3.4.1
 customtkinter==5.2.1
 idna==3.10
 mss==9.0.2
+dxcam==0.0.5
 numpy==2.1.1
 opencv-python==4.10.0.84
 packaging==24.1

@@ -42,6 +42,16 @@ def test_the_resume_table_lands_on_the_matching_step(monkeypatch):
     assert len(_start_from(monkeypatch, "Confirm")) == 2  # leave the gift menu, wait out loading
 
 
+def test_an_open_gift_menu_is_searched_from_where_it_is(monkeypatch):
+    searched = []
+    monkeypatch.setattr(B, "gift_search", lambda targets: searched.append(list(targets)) or 1)
+    monkeypatch.setattr(p, "RUN_SCRIPT", "saikai_ryoshu")
+    monkeypatch.setattr(p, "GIFT_SEARCH", [])
+    tail = _start_from(monkeypatch, "startGift")
+    assert len(tail) == 2                                     # leave the menu, wait out loading
+    assert searched == [["Spiderweb Entangled in Red"]]
+
+
 def test_resume_waits_for_the_start_button_to_go(monkeypatch):
     waits = []
     monkeypatch.setattr(B, "now_click", types.SimpleNamespace(
@@ -82,3 +92,25 @@ def test_the_default_still_reclicks_three_times(monkeypatch):
     with pytest.raises(RuntimeError, match="after 3 retries"):
         preset.button("Start", ver="enterInvert")
     assert checks == [True] * 4
+
+
+
+def test_a_failed_chain_leaves_a_report_of_the_screen(monkeypatch):
+    seen, dumps = [], []
+
+    def button(name, *a, **k):
+        return name == "Confirm.0" and not seen
+    monkeypatch.setattr(B, "now", types.SimpleNamespace(button=button))
+    monkeypatch.setattr(B, "now_click", types.SimpleNamespace(button=lambda *a, **k: False))
+    monkeypatch.setattr(B, "win_moveTo", lambda *a, **k: None)
+    monkeypatch.setattr(B, "_diag_once", lambda tag, **kw: dumps.append((tag, kw)))
+
+    def chain(_preset, actions):
+        seen.append(list(actions))
+        raise RuntimeError("Verification failed after 3 retries.")
+    monkeypatch.setattr(B, "chain_actions", chain)
+    assert B.dungeon_start() is True                      # the next scan finds nothing: entered
+    assert dumps and dumps[0][0] == "start_Confirm_0"
+    labels = [row[0] for row in dumps[0][1]["extra"]]
+    assert "enterBonus" in labels and "Confirm.0" in labels
+    assert "Verification failed" in dumps[0][1]["note"]

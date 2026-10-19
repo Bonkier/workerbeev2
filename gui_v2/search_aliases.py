@@ -506,17 +506,6 @@ ALIASES = {
         "affinity tag", "in game squad", "status", "affinity", "squad label",
         "status effect", "saved squad name", "status type", "affinity name",
     ),
-    "settings:full hard": (
-        "mdh all floors", "always hard mode", "hard every floor",
-        "no normal floors", "all hard", "saikai mdh", "always hard",
-        "hard from f1", "every floor hard", "always mdh", "every floor mdh",
-    ),
-    "settings:full normal": (
-        "always easy", "no hard floors", "easy every floor",
-        "never switch difficulty", "all normal", "never hard", "saikai mdn",
-        "stay normal", "always normal", "never flip", "stay on mdn",
-        "easier floors", "no pack search",
-    ),
     "settings:go to floor 10": (
         "infinite mirror", "longer run", "infinite dungeon", "ten floors",
         "extended run", "10f", "saikai 10f", "leave at 10", "keep going",
@@ -554,6 +543,11 @@ ALIASES = {
         "random waits", "natural breaks", "drift", "breaks", "micro pauses",
         "natural delays", "idle moments", "random stops", "bot hesitates",
         "cursor drifts",
+    ),
+    "settings:capture through dxgi": (
+        "screen capture", "capture method", "desktop duplication", "dxgi",
+        "stale screen", "old frame", "windows 10 capture", "fullscreen optimizations",
+        "black capture", "gdi", "bitblt", "screenshot method",
     ),
     "settings:mouse speed": (
         "sensitivity", "slow cursor", "cursor speed", "faster cursor",

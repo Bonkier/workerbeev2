@@ -1674,7 +1674,12 @@ class MirrorDungeonPage(QWidget):
         self._difficulty = Segmented(
             ["Normal", "Hard", "Extreme"], default="Hard", parent=section,
         )
+        self._difficulty.set_locked("Extreme", "Extreme is work in progress.")
         self._difficulty.selection_changed.connect(self._on_difficulty)
+        # The floor the run flips to Hard on (None: Normal throughout). The
+        # Difficulty control mirrors it: Hard is a flip on floor 1.
+        self._hard_from = 1
+        self._syncing_difficulty = False
         # Pin the segmented to its natural width (left-aligned).
         row = QHBoxLayout()
         row.addWidget(self._difficulty)
@@ -1690,16 +1695,87 @@ class MirrorDungeonPage(QWidget):
         return section
 
     def _on_difficulty(self, label: str):
-        # Normal uses FLOORS; Hard and Extreme use HARD_FLOORS.
+        if self._syncing_difficulty:
+            return
+        # Hard is a flip on floor 1; Normal starts over with no flip, the
+        # floor switches set one again.
+        if label == "Hard":
+            self._hard_from = 1
+        elif label == "Normal":
+            self._hard_from = None
+        self._apply_hard_switches()
+        self._refresh_pools()
+
+    # --- Hard from a floor ---------------------------------------
+    def _floor_is_hard(self, floor: int) -> bool:
+        return self._hard_from is not None and floor >= self._hard_from
+
+    def _seed_flip(self, label=None):
+        """A custom run picked: its switches start from the run's own flip
+        (Hollow and SAIKAI by their sheets, F3 Hard by name, Thrill none)
+        and stay the user's to change."""
+        if getattr(self, "_loading", False) or not self._custom_run.isChecked():
+            return
+        from .run_config import HOLLOW_LABEL, SAIKAI_LABEL, THRILL_LABEL
+        seeds = {HOLLOW_LABEL: 5, SAIKAI_LABEL: 4, "F3 Hard": 3, THRILL_LABEL: None}
+        label = label or self._custom_strategy.selected()
+        if label not in seeds:
+            return
+        self._hard_from = seeds[label]
+        self._apply_hard_switches()
+        self._refresh_pools()
+        self._save_state()
+
+    def _apply_hard_switches(self):
+        """Every floor from the flip on reads Hard; the floors after the
+        flip are locked (Hard cannot go back to Normal), the flip floor and
+        the ones before it are free. The Difficulty control follows."""
+        rows = getattr(self, "_hard_rows", None)
+        if not rows:
+            return
+        # The toggle slides its knob from its own toggled signal, so the
+        # signals stay on and the handler sits out this pass.
+        self._applying_hard = True
+        try:
+            for floor, tog in rows.items():
+                tog.setChecked(self._floor_is_hard(floor))
+        finally:
+            self._applying_hard = False
+        for floor, tog in rows.items():
+            free = self._hard_from is None or floor <= self._hard_from
+            tog.setEnabled(free)
+            tog.setToolTip("" if free else "Hard from floor %d; switch that floor "
+                           "off first." % self._hard_from)
+        want = "Hard" if self._hard_from == 1 else "Normal"
+        if self._difficulty.selected() != want:
+            self._syncing_difficulty = True
+            try:
+                self._difficulty.set_selected(want)
+            finally:
+                self._syncing_difficulty = False
+
+    def _on_hard_switch(self, floor: int, on: bool):
+        if getattr(self, "_applying_hard", False):
+            return
+        if on:
+            if self._hard_from is None or floor < self._hard_from:
+                self._hard_from = floor
+        elif floor == self._hard_from:
+            self._hard_from = None
+        self._apply_hard_switches()
+        self._refresh_pools()
+        self._save_state()
+
+    def _refresh_pools(self):
+        """Each floor lists the packs of its own difficulty."""
         if not hasattr(self, "_floor_packs"):
             return
-        if label == "Normal":
-            self._floor_packs.set_data(_floors_for_picker(FLOORS, 5), BANNED)
-        else:
-            # Normal/Hard are 5-floor; only Extreme goes to 15.
-            max_floor = 15 if label == "Extreme" else 5
-            self._floor_packs.set_data(
-                _floors_for_picker(HARD_FLOORS, max_floor), HARD_BANNED)
+        data, banned = {}, {}
+        for floor in range(1, 6):
+            hard = self._floor_is_hard(floor)
+            data[floor] = list((HARD_FLOORS if hard else FLOORS).get(floor, []))
+            banned[floor] = HARD_BANNED if hard else BANNED
+        self._floor_packs.set_data(data, banned_by_floor=banned)
 
     # --- Custom run -----------------------------------------------
     def _build_custom_run_section(self) -> QWidget:
@@ -1886,6 +1962,10 @@ class MirrorDungeonPage(QWidget):
         # custom_run saves via _on_custom_run.
         self._custom_strategy.selection_changed.connect(self._save_state)
         self._custom_strategy.selection_changed.connect(self._update_gift_lock)
+        self._custom_strategy.selection_changed.connect(
+            lambda label: self._seed_flip(label))
+        self._custom_run.toggled.connect(
+            lambda on: self._seed_flip() if on else None)
         for sb in (self._run_count, self._retry_count, self._pack_refreshes):
             sb.valueChanged.connect(self._save_state)
         for tog in self._behaviour.values():
@@ -1900,6 +1980,7 @@ class MirrorDungeonPage(QWidget):
         by run_config)."""
         return {
             "difficulty": self._difficulty.selected(),
+            "hard_from_floor": int(self._hard_from or 0),
             "custom_run": self._custom_run.isChecked(),
             "custom_strategy": self._custom_strategy.selected(),
             "gift_search": self._gift_search_selection(),
@@ -1949,9 +2030,19 @@ class MirrorDungeonPage(QWidget):
         self._loading = True
         try:
             diff = s.get("difficulty")
-            if diff in ("Normal", "Hard", "Extreme"):
+            if diff == "Extreme":
+                diff = "Hard"                    # Extreme is work in progress
+            if diff in ("Normal", "Hard"):
                 self._difficulty.set_selected(diff)
-                self._on_difficulty(diff)
+            try:
+                flip = int(s.get("hard_from_floor") or 0)
+            except (TypeError, ValueError):
+                flip = 0
+            if diff == "Hard" or not (1 <= flip <= 5):
+                flip = 1 if diff == "Hard" else 0      # an older save: Hard is floor 1
+            self._hard_from = flip if 1 <= flip <= 5 else None
+            self._apply_hard_switches()
+            self._refresh_pools()
             strat = s.get("custom_strategy")
             if strat:
                 self._custom_strategy.set_selected(strat)
@@ -2148,10 +2239,6 @@ class MirrorDungeonPage(QWidget):
              "surplus into modules so it is not wasted.", True),
             ("skip", "Skip dialogue",
              "Click through pre-battle cutscenes and dialogue.", True),
-            ("pack_search", "Pack search",
-             "Refresh the floor's pack offering to hunt for your priority "
-             "packs. Off: take a random available pack (or your configured "
-             "priority/avoid picks) without refreshing.", True),
             ("swap_max_energy", "Swap for max energy",
              "At the squad screen (after team select, before entering), swap "
              "each 0-energy sinner for a +5 max-energy one. Leaves the sinners "
@@ -2223,7 +2310,6 @@ class MirrorDungeonPage(QWidget):
         groups = (
             ("RUN", ("bonus", "bonus_one", "enkephalin", "skip", "winrate",
                      "swap_max_energy")),
-            ("PACKS", ("pack_search",)),
             ("ON DEFEAT", ("restart", "claim_on_defeat")),
             ("SHOP AND EGO", ("skip_restshop", "skip_ego_check",
                               "skip_ego_fusion", "skip_ego_enhancing",
@@ -2231,7 +2317,7 @@ class MirrorDungeonPage(QWidget):
                               "wishmaking")),
             ("WHEN FINISHED", ("altf4", "logout_on_finish")),
         )
-        columns = ((0, 1, 2), (3, 4))
+        columns = ((0, 1), (2, 3))
         cols = QHBoxLayout()
         cols.setSpacing(Sizing.SPACE_XXL)
         self._behaviour_groups = {}
@@ -2657,13 +2743,18 @@ class MirrorDungeonPage(QWidget):
             "Per floor: when the pack below is not on offer after the "
             "refreshes, open the in-game Pack Search and secure it instead "
             "of settling for a fallback pick. Type a pack name - it "
-            "autofills, Tab completes it.",
+            "autofills, Tab completes it. On the Hollow run a floor switched "
+            "on here replaces the run sheet's pack for that floor. Hard: the "
+            "run starts on Normal and flips to Hard on that floor; every "
+            "floor after it is Hard too, and the floors before list the "
+            "Normal packs.",
             section, objectName="inlineHint")
         hint.setWordWrap(True)
         section.body.addWidget(hint)
 
         self._ps_rows = {}
         self._ps_valid = {}
+        self._hard_rows = {}
         grid = QGridLayout()
         grid.setHorizontalSpacing(Sizing.SPACE_MD)
         grid.setVerticalSpacing(Sizing.SPACE_XS)
@@ -2685,11 +2776,19 @@ class MirrorDungeonPage(QWidget):
 
             tog = Toggle(default=False, parent=section)
             tog.toggled.connect(self._save_state)
-            grid.addWidget(tog, i, 2)
+            grid.addWidget(QLabel("Search", section, objectName="settingTitle"), i, 2)
+            grid.addWidget(tog, i, 3)
 
             self._ps_rows[fl] = (tog, edit)
+            # Hard from this floor: the run starts on Normal and flips here.
+            hard = Toggle(default=False, parent=section)
+            hard.toggled.connect(lambda on, f=fl: self._on_hard_switch(f, on))
+            grid.addWidget(QLabel("Hard", section, objectName="settingTitle"), i, 4)
+            grid.addWidget(hard, i, 5)
+            self._hard_rows[fl] = hard
         grid.setColumnStretch(1, 1)
         section.body.addLayout(grid)
+        self._apply_hard_switches()
         return section
 
     def _ps_commit_edit(self, floor: int):

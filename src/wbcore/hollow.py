@@ -11,7 +11,8 @@ and 5 bosses are focused
 fights: Le Trou is slotted without the overclock and aimed at an enemy skill
 slot on turn 1, then win rate from turn 2. SP resets with every floor, so
 a corroded reading holds for its floor only and the overclock loop starts
-over on the next. Shops heal first (a chosen sinner once on floor 1, since
+over on the next. The floor 1 shop upties Torn Bandolier before anything
+else. Shops heal first after that (a chosen sinner once on floor 1, since
 they never fight and the 45 SP keeps for the skill checks; Faust herself on
 floors 4 and 5) and then follow the Market/Fuse tab's plan, except that
 Clear Mirror, Calm Water and Artistic Sense are not uptied before the
@@ -36,6 +37,7 @@ HOLLOW_SCRIPT = "hollow"
 FAUST = "FAUST"
 STARTING_GIFT = "Torn Bandolier"
 STARTING_KEYWORD = "PIERCE"              # the starter screen keyword it is under
+FIRST_UPTIE = (STARTING_GIFT, 2)         # floor 1 shop, before the heal and the plan
 SEARCH_GIFTS = ("Grand Welcome", "Sharp Needle & Thread")
 # Upties the owner wants left alone until this floor's shop.
 ENHANCE_FROM_FLOOR = {"Clear Mirror, Calm Water": 3, "Artistic Sense": 3}
@@ -262,6 +264,7 @@ def _corroded_now() -> bool:
 
 
 def begin_run():
+    p.HOLLOW_FIRST_UPTIE_DONE = False
     p.HOLLOW_AIM_CHECKED = False
     p.HOLLOW_CORRODED = False
     p.HOLLOW_CORRODED_FLOOR = 0

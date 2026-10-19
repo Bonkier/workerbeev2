@@ -120,6 +120,11 @@ HOLLOW_SCRIPT = "hollow"
 # Graces: Star of the Beginning (0), Interstellar Travel (2).
 _HOLLOW_BUFF = [1, 0, 1, 0, 0, 0, 0, 0, 0, 0]
 HOLLOW_GRACE_SEED = {name: v for name, v in zip(_GRACE_ORDER, _HOLLOW_BUFF) if v}
+# Each scripted run's own graces, taken when the BUILD panel picks none.
+PRESET_GRACES = {
+    label: [name for name, v in zip(_GRACE_ORDER, buff) if v]
+    for label, buff in ((SAIKAI_LABEL, _SAIKAI_BUFF), (THRILL_LABEL, _THRILL_BUFF),
+                        (HOLLOW_LABEL, _HOLLOW_BUFF))}
 _HOLLOW_AFFINITY = "Poise"
 _HOLLOW_FAUST = 1
 # One pack per floor, pinned to it, and hunted through Pack Search; the
@@ -132,17 +137,44 @@ _HOLLOW_FLOOR_PACKS = {
     5: ("Line2", "Line 2"),
 }
 _HOLLOW_ALT_PACKS = {"EmotionalCraving": 3}
-HOLLOW_PACK_NAMES = tuple(name for _key, name in _HOLLOW_FLOOR_PACKS.values())
 # Gift Search picks the sheet calls important; the third slot is the user's.
 HOLLOW_SEARCH_GIFTS = ("Grand Welcome", "Sharp Needle & Thread")
-_HOLLOW_PINS = {key: floor for floor, (key, _name) in _HOLLOW_FLOOR_PACKS.items()}
-_HOLLOW_PINS.update(_HOLLOW_ALT_PACKS)
-_HOLLOW_PRIORITY = (
-    sorted(_HOLLOW_PINS, key=lambda key: (_HOLLOW_PINS[key],
-                                          key in _HOLLOW_ALT_PACKS)),
-    _HOLLOW_PINS,
-)
-_HOLLOW_AVOID = ([], dict(_HOLLOW_PRIORITY[1]), {})
+
+
+def hollow_floor_packs(md_state: dict) -> dict:
+    """{floor: (pack key, display name)} for the Hollow run: the sheet's
+    pack on every floor, except where the Mirror Dungeon page's Pack Search
+    has that floor switched on with a pack of the user's."""
+    from wbcore.pack_search_catalog import PACK_SEARCH_KEYS
+    packs = dict(_HOLLOW_FLOOR_PACKS)
+    floors = ((md_state or {}).get("pack_search_cfg") or {}).get("floors") or {}
+    for k, ent in floors.items():
+        try:
+            floor = int(k)
+        except (TypeError, ValueError):
+            continue
+        if floor not in packs or not isinstance(ent, dict) or not ent.get("enabled"):
+            continue
+        name = str(ent.get("pack") or "")
+        if name in PACK_SEARCH_KEYS:
+            packs[floor] = (PACK_SEARCH_KEYS[name], name)
+    return packs
+
+
+def hollow_pack_names(md_state: dict) -> tuple:
+    return tuple(name for _key, name in hollow_floor_packs(md_state).values())
+
+
+def _hollow_pack_lists(packs: dict):
+    """(priority, avoid seed) in generate_packs_* shape: every floor's pack
+    pinned to its floor, the sheet's floor 3 alternative behind the sheet's
+    own floor 3 pick."""
+    pins = {key: floor for floor, (key, _name) in packs.items()}
+    for key, floor in _HOLLOW_ALT_PACKS.items():
+        if packs.get(floor) == _HOLLOW_FLOOR_PACKS.get(floor):
+            pins[key] = floor
+    order = sorted(pins, key=lambda key: (pins[key], key in _HOLLOW_ALT_PACKS))
+    return (order, pins), ([], dict(pins), {})
 _ROSTER_KEYS = ("YISANG", "FAUST", "DONQUIXOTE", "RYOSHU", "MEURSAULT",
                 "HONGLU", "HEATHCLIFF", "ISHMAEL", "RODION", "SINCLAIR",
                 "OUTIS", "GREGOR")
@@ -158,9 +190,12 @@ def _build_hollow_run(md_state: dict):
         settings["buff"] = list(_HOLLOW_BUFF)
     settings["infinity"] = False
     settings["winrate"] = False             # the battle script decides
-    settings["hard_from_floor"] = 5         # the sheet converts after floor 4
-    settings["pack_search_floors"] = {     # the sheet's packs, when Pack search is on
-        floor: name for floor, (_key, name) in _HOLLOW_FLOOR_PACKS.items()}
+    flip = _page_flip(md_state)             # the sheet converts after floor 4
+    settings["hard_from_floor"] = 5 if flip is None else (flip or 99)
+    floor_packs = hollow_floor_packs(md_state)
+    settings["pack_search_floors"] = {     # hunted when Pack search is on
+        floor: name for floor, (_key, name) in floor_packs.items()}
+    priority, avoid = _hollow_pack_lists(floor_packs)
     settings["default_market_workflow"] = False   # the floor plan runs the shop
     settings["skip_ego_check"] = False      # the plan scans the owned shelf
     settings["run_script"] = HOLLOW_SCRIPT
@@ -188,9 +223,8 @@ def _build_hollow_run(md_state: dict):
         "swap_exclude": [_SINNER_INDEX[n]
                          for n in (md_state.get("hollow_exclude") or [])
                          if n in _SINNER_INDEX],
-        "priority": _HOLLOW_PRIORITY,
-        "avoid": _scripted_avoid_with_user(_HOLLOW_AVOID, _HOLLOW_PRIORITY,
-                                           md_state),
+        "priority": _scripted_priority_with_user(priority, md_state),
+        "avoid": _scripted_avoid_with_user(avoid, priority, md_state),
     }}
     count = int(md_state.get("run_count", 1) or 1)
     return count, teams, settings, True
@@ -215,18 +249,10 @@ def _build_saikai_run(md_state: dict):
     settings["winrate"] = False             # the battle script decides winrate
     # Legacy battle style: force S3 picks + evade elsewhere (HoS turn order off).
     settings["saikai_s3_only"] = bool(md_state.get("saikai_s3_only"))
-    # Full normal: stay Normal every floor and skip pack search this run.
-    # Full hard: Hard from F1. Default (neither): flips Normal -> Hard at F4.
-    # Otherwise pack_search stays whatever the user's Behaviour toggle set in
-    # build_settings (default on) - do not pin it, or the toggle is dead.
-    full_normal = bool(md_state.get("saikai_full_normal"))
-    if full_normal:
-        settings["hard_from_floor"] = 99    # never flips to Hard
-        settings["pack_search"] = False
-    else:
-        settings["hard_from_floor"] = (
-            1 if md_state.get("saikai_only_hard") else 4
-        )
+    # Normal to floor 3, Hard from floor 4 by the sheet; the Packs tab's
+    # Hard switch moves the flip, none at all stays Normal throughout.
+    flip = _page_flip(md_state)
+    settings["hard_from_floor"] = 4 if flip is None else (flip or 99)
     settings["run_script"] = SAIKAI_SCRIPT
 
     order_names = list(md_state.get("saikai_order") or [])
@@ -253,12 +279,12 @@ def _build_saikai_run(md_state: dict):
         "duplicates": False,
         "sinners": sinners,
         "swap_exclude": swap_exclude,
-        "priority": _SAIKAI_PRIORITY,        # mandatory per-floor packs
+        "priority": _scripted_priority_with_user(_SAIKAI_PRIORITY, md_state),
         "avoid": _scripted_avoid_with_user(_SAIKAI_AVOID, _SAIKAI_PRIORITY,
                                            md_state),
     }}
     count = int(md_state.get("run_count", 1) or 1)
-    hard = not full_normal                   # Full normal stays Normal all run
+    hard = settings["hard_from_floor"] != 99
     return count, teams, settings, hard
 
 
@@ -267,10 +293,12 @@ def _build_thrill_run(md_state: dict):
     Rupture, hard-coded graces/packs, forfeit after Floor 3. The squad swap
     and EGO-gift craft are backend logic gated by run_script == THRILL_SCRIPT."""
     settings = build_settings(md_state)
-    settings["buff"] = list(_THRILL_BUFF)
+    if not any(settings["buff"]):           # the BUILD panel's graces, else the preset's
+        settings["buff"] = list(_THRILL_BUFF)
     settings["infinity"] = False             # Normal mode, never Extreme
     settings["winrate"] = False
-    settings["hard_from_floor"] = 99         # never flips to Hard
+    flip = _page_flip(md_state)             # Normal throughout by the sheet
+    settings["hard_from_floor"] = 99 if not flip else flip
     settings["forfeit_floor"] = 3            # forfeit after Floor 3
     settings["pack_search"] = True           # scripted run hunts its packs
     settings["run_script"] = THRILL_SCRIPT
@@ -297,13 +325,40 @@ def _build_thrill_run(md_state: dict):
         "affinity_idx": 0,
         "duplicates": False,
         "sinners": thrill_order_idx or list(_DEFAULT_SINNERS),
-        "priority": _THRILL_PRIORITY,
+        "priority": _scripted_priority_with_user(_THRILL_PRIORITY, md_state),
         "avoid": _scripted_avoid_with_user(_THRILL_AVOID, _THRILL_PRIORITY,
                                            md_state),
     }}
     count = int(md_state.get("run_count", 1) or 1)
-    hard = False                             # Normal mode
+    hard = settings["hard_from_floor"] != 99
     return count, teams, settings, hard
+
+
+def _page_flip(md_state):
+    """The Packs tab's Hard flip: the floor (1..5), 0 for Normal throughout,
+    or None when the state carries none (an older save: the run's own)."""
+    try:
+        flip = int((md_state or {}).get("hard_from_floor"))
+    except (TypeError, ValueError):
+        return None
+    return flip if 0 <= flip <= 5 else None
+
+
+def _scripted_priority_with_user(scripted_priority, md_state):
+    """The user's Packs-tab priority picks ahead of the script's own: a
+    per-floor pick is pinned to its floors and comes first there, a Global
+    pick joins unpinned; the script's packs follow as before."""
+    user_pri, _avoid = _build_packs(md_state.get("packs", {}),
+                                    md_state.get("global_packs", {}))
+    packs = list(user_pri[0])
+    pins = {pk: list(fl) for pk, fl in user_pri[1].items()}
+    for pk in scripted_priority[0]:
+        if pk not in packs:
+            packs.append(pk)
+    for pk, fl in scripted_priority[1].items():
+        if pk not in pins:
+            pins[pk] = fl
+    return (packs, pins)
 
 
 def _scripted_avoid_with_user(scripted_avoid, scripted_priority, md_state):
@@ -450,7 +505,8 @@ def build_settings(md_state: dict) -> dict:
         "altf4": (bool(beh.get("altf4", False)), bool(beh.get("altf4", False))),
         "enkephalin": bool(beh.get("enkephalin", True)),
         "skip": bool(beh.get("skip", True)),
-        "pack_search": bool(beh.get("pack_search", True)),
+        # The Packs tab's per-floor switches decide where Pack Search runs.
+        "pack_search": True,
         "pack_search_floors": ps_floors,
         # General-tab numeric inputs (previously saved but never consumed).
         "retry_count": int(md_state.get("retry_count", 0) or 0),
@@ -513,6 +569,14 @@ def build_md_run(md_state: dict, sinner_sel: dict, sinner_excl: dict = None):
 
     settings = build_settings(md_state)
     hard = md_state.get("difficulty", "Hard") in ("Hard", "Extreme")
+    # A Hard switch on a floor (Packs tab): Normal until then, Hard from it.
+    try:
+        flip = int(md_state.get("hard_from_floor") or 0)
+    except (TypeError, ValueError):
+        flip = 0
+    if not hard and 1 <= flip <= 5:
+        hard = True
+        settings["hard_from_floor"] = flip
 
     # "F3 Hard": start Normal, flip to Hard on floor 3. Never Extreme.
     if md_state.get("custom_run") and md_state.get("custom_strategy") == "F3 Hard":

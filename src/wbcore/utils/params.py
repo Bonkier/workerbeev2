@@ -28,6 +28,10 @@ MOUSE_SPEED = 100
 # Click muscle-memory: learn common button spots and pre-move there while
 # waiting (faster + more human; the click still lands on the real button).
 MOUSE_MEMORY = True
+# Read the screen through DXGI duplication (what the display shows) rather
+# than the compositor's copy, which Windows 10 stops refreshing for a game
+# covering the screen. Off only for troubleshooting.
+CAPTURE_DXGI = True
 KEYWORDLESS = {}
 # Up to 3 EGO gift display names to auto-select at MD start (gift_catalog).
 GIFT_SEARCH = []

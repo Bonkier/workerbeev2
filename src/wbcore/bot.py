@@ -32,14 +32,53 @@ start_locations = {
     "Confirm": 21
 }
 
+# The grace screen's cost strip, "-cost > remaining", right of the Starlight
+# icon. REG["money!"] is the 80 px spot the start chain has always watched;
+# the strip's layout moves with the digit count, so the whole of it counts.
+_GRACE_COST_STRIP = (1450, 45, 270, 45)
+
+
+def _region_changed(before, region):
+    frame = screenshot(region=region)
+    if frame.shape[0] < before.shape[0] or frame.shape[1] < before.shape[1]:
+        return True                    # window resized mid-verify
+    return not LocateGray.check(before, image=frame, wait=False, conf=0.98,
+                                method=1, window=None)
+
+
+def _click_grace(x, y, what):
+    """Click a grace, or its level arrow, and wait for the cost strip to
+    change. Three clicks; after that a match report of the screen and the
+    RuntimeError the start chain retries on."""
+    spots = (REG["money!"], _GRACE_COST_STRIP)
+    for attempt in range(3):
+        if p.LIMBUS_NAME not in (win := gui.getActiveWindowTitle()):
+            pause(win)
+        before = [screenshot(region=r) for r in spots]
+        win_click(x, y)
+        if wait_while_condition(
+                lambda: not any(_region_changed(b0, r) for b0, r in zip(before, spots)),
+                interval=0.1, timer=3):
+            return True
+        logging.warning("grace %s at (%d, %d): the cost strip did not change "
+                        "(click %d/3).", what, x, y, attempt + 1)
+    _diag_once("grace_" + what.replace(" ", "_"),
+               extra=[("enterBonus", PTH["enterBonus"], REG["enterBonus"])],
+               region=_GRACE_COST_STRIP,
+               note="grace %s at (%d, %d): no change at %s or %s" % (
+                   what, x, y, REG["money!"], _GRACE_COST_STRIP))
+    raise RuntimeError("grace %s at (%d, %d): the cost strip did not change "
+                       "after 3 clicks" % (what, x, y))
+
+
 def select_grace():
     for i in range(len(p.BUFF)):
         if p.BUFF[i]:
             x = int(335 + 297*(i % 5))
             y = int(375 + 357*(i // 5))
-            ClickAction((x, y), ver="money!").execute(try_click)
+            _click_grace(x, y, "%d" % i)
             if p.BUFF[i] > 1:
-                ClickAction((x + 60*(1 - 2*(p.BUFF[i] < 3)), y + 155), ver="money!").execute(try_click)
+                _click_grace(x + 60*(1 - 2*(p.BUFF[i] < 3)), y + 155, "%d level" % i)
 
 # Gift thumbnails are detailed art that matches ~0.86 (vs ~0.95 for buttons)
 # when captured below FHD and upscaled; gift-icon lookups pass this lower floor
@@ -99,18 +138,34 @@ def _diag_once(tag, advise=None, **kw):
     return path
 
 
-def _wait_gift_menu(timer=5.0):
-    """The upstream gate before a keyword tab is touched: the Selected E.G.O
-    Gift header is up, any confirm still showing cleared on the way."""
-    end = time.time() + timer
-    while time.time() < end:
-        if now.button("startGift"):
+def _gift_menu_up():
+    """The EGO Gift Search menu is on screen: its title, or the Selected
+    E.G.O Gift header upstream keys on."""
+    return bool(now.button("startGift")
+                or ("giftsearch" in PTH and now.button("giftsearch", _FULL_SCREEN)))
+
+
+def _wait_gift_menu(timer=8.0):
+    """Wait for the EGO Gift Search menu, clearing what can sit in front of
+    it on the way (the starter GET dialogs and the Starlight question, as
+    upstream clears them). False once the run has moved on without the menu
+    (loading, or the pack screen) or after `timer` seconds."""
+    start = time.time()
+    pressed = 0.0
+    while time.time() - start < timer:
+        if _gift_menu_up():
             return True
-        if now.button("Confirm"):
-            gui.press("enter")
-        time.sleep(0.2)
-    logging.info("gift search: the Selected E.G.O Gift header did not show "
-                 "within %.0fs.", timer)
+        if now.button("loading") or now.button("PackChoice"):
+            return False
+        if time.time() - pressed >= 0.3:
+            if now_click.button("starlightConfirm"):
+                pressed = time.time()
+            elif now.button("Confirm") or now.button("packconfirm", _FULL_SCREEN):
+                gui.press("enter")
+                pressed = time.time()
+        time.sleep(0.1)
+    logging.info("gift search: the EGO Gift Search menu did not show within "
+                 "%.0fs.", timer)
     return False
 
 
@@ -244,13 +299,20 @@ def gift_search(targets):
     if not picks:
         return 0
     # Starting gifts are picked first; the EGO Gift Search menu then appears
-    # (the toggle is already ensured on). Confirm we're in it before touching
-    # anything - giftsearch.png is the menu marker.
-    if "giftsearch" in PTH and not loc.button("giftsearch", (0, 0, 1920, 1080), wait=8):
-        logging.info("gift search: EGO Gift Search menu not detected; skipping.")
+    # (the toggle is already ensured on), behind the GET dialogs until they
+    # are cleared. Nothing is touched before it is recognised.
+    if not _wait_gift_menu(timer=12.0):
+        logging.warning("gift search: EGO Gift Search menu not detected; skipping.")
+        _diag_once("giftmenu",
+                   advise="the EGO Gift Search menu was not recognised after the "
+                          "starter picks, so the searched gifts were skipped.",
+                   extra=[(n, PTH[n], r) for n, r in (
+                       ("giftsearch", _FULL_SCREEN), ("startGift", REG.get("startGift")),
+                       ("Confirm", REG.get("Confirm")), ("packconfirm", _FULL_SCREEN))
+                       if n in PTH],
+                   region=_FULL_SCREEN, note="EGO Gift Search menu not detected")
         return 0
     time.sleep(0.5)
-    _wait_gift_menu()
     # Group by keyword so same-keyword picks share one tab click; order kept.
     picks.sort(key=lambda x: x[1]["keyword"])
     selected = 0
@@ -361,6 +423,18 @@ def _starter_get_dialog(timer=3.0) -> bool:
         time.sleep(0.1)
 
 
+def _starting_gift_targets():
+    """The gifts the EGO Gift Search looks for on this run, up to three."""
+    targets = [str(n) for n in (getattr(p, "GIFT_SEARCH", None) or [])]
+    if p.RUN_SCRIPT == "saikai_ryoshu":
+        targets = [_SPIDERWEB_GIFT] + [t for t in targets if t != _SPIDERWEB_GIFT]
+    elif p.RUN_SCRIPT == "hollow":
+        from .hollow import SEARCH_GIFTS, STARTING_GIFT
+        targets = list(SEARCH_GIFTS) + [
+            t for t in targets if t not in SEARCH_GIFTS and t != STARTING_GIFT]
+    return targets[:3]
+
+
 def select_starting_gift():
     """Run-start gift selection: archetype picks, then (if any are chosen) the
     EGO Gift Search for the user's gifts. SAIKAI always searches Spiderweb,
@@ -373,14 +447,7 @@ def select_starting_gift():
     else:
         _select_archetype_gifts()
 
-    targets = [str(n) for n in (getattr(p, "GIFT_SEARCH", None) or [])]
-    if p.RUN_SCRIPT == "saikai_ryoshu":
-        targets = [_SPIDERWEB_GIFT] + [t for t in targets if t != _SPIDERWEB_GIFT]
-    elif p.RUN_SCRIPT == "hollow":
-        from .hollow import SEARCH_GIFTS, STARTING_GIFT
-        targets = list(SEARCH_GIFTS) + [
-            t for t in targets if t not in SEARCH_GIFTS and t != STARTING_GIFT]
-    targets = targets[:3]
+    targets = _starting_gift_targets()
     if not targets:
         return
 
@@ -456,12 +523,25 @@ def dungeon_start() -> bool:
             if now_click.button("resume"):
                 wait_while_condition(lambda: now.button("Start"), timer=5)
             matched_key = None
-            for key in start_locations.keys():
-                if now.button(key):
-                    matched_key = key
-                    i = start_locations[key]
-                    break
-            else: break
+            if _gift_menu_up():
+                # The menu is up without the chain having come through its
+                # search step (a dialog hid it when it was looked for): search
+                # from here, then the chain's tail. Scanning the other markers
+                # with the menu open only finds look-alikes.
+                matched_key, i = "startGift", len(ACTIONS) - 2
+                failed += 1
+                logging.info("dungeon_start: the EGO Gift Search menu is open; "
+                             "searching from it (%d/5).", failed)
+                if not gift_search(_starting_gift_targets()) and _gift_menu_up():
+                    win_click(145, 68, tsize=(20, 20))   # top-left back arrow
+                    time.sleep(0.6)
+            else:
+                for key in start_locations.keys():
+                    if now.button(key):
+                        matched_key = key
+                        i = start_locations[key]
+                        break
+                else: break
             try:
                 chain_actions(try_click, ACTIONS[i:])
             except RuntimeError as exc:
@@ -472,6 +552,12 @@ def dungeon_start() -> bool:
                     "dungeon_start: chain failed (retry %d/5) entry=%r "
                     "starting at action index %d: %s",
                     failed, matched_key, i, last_failed_exc)
+                _diag_once("start_" + str(matched_key).replace(".", "_"),
+                           extra=[(k, PTH[k.split(".")[0]], REG.get(k))
+                                  for k in start_locations if k.split(".")[0] in PTH],
+                           region=_FULL_SCREEN,
+                           note="start chain failed at %r (action %d): %s" % (
+                               matched_key, i, last_failed_exc))
                 win_moveTo(1509, 978)
         except gui.PauseException as e:
             pause(e.window)
