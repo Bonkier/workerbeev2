@@ -11,6 +11,7 @@ which look nothing like the clean art beside them."""
 
 import os
 import re
+import unicodedata
 
 _INDEX = None
 _DIR = os.path.join(
@@ -149,8 +150,9 @@ _PACK_DIR = os.path.join(
 
 
 def pack_icon(key: str) -> str:
-    """The in-game theme-pack card for a Mirror Dungeon pack key, or ""."""
-    p = os.path.join(_PACK_DIR, str(key) + ".png")
+    """The in-game theme-pack card for a Mirror Dungeon pack key (200 px
+    wide), or ""."""
+    p = os.path.join(_PACK_DIR, str(key) + ".jpg")
     return p if os.path.isfile(p) else ""
 
 
@@ -165,3 +167,50 @@ def keyword_icon(keyword: str) -> str:
     twice - once in the image, once as the tab's own label."""
     p = os.path.join(_KW_DIR, norm(keyword) + ".png")
     return p if os.path.isfile(p) else ""
+
+_GRACE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "ImageAssets", "graceart")
+_REWARD_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "ImageAssets", "rewardart")
+
+
+def grace_icon(name: str) -> str:
+    """Wiki icon of a starting grace (the Grace of the Sisyphean Star cards),
+    by the name the config stores, or ""."""
+    p = os.path.join(_GRACE_DIR, norm(name) + ".png")
+    return p if os.path.isfile(p) else ""
+
+
+def reward_icon(name: str) -> str:
+    """Wiki icon of an encounter reward card type ("Cost + Gift", "Cost",
+    "Gift", "Resource", "Starlight"), or ""."""
+    p = os.path.join(_REWARD_DIR, norm(name) + ".png")
+    return p if os.path.isfile(p) else ""
+
+
+_PRESET_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "ImageAssets", "presets")
+
+
+def preset_portrait(stem: str) -> str:
+    """Wiki icon of an identity or E.G.O a Basic view preset asks for, by
+    the stem gui_v2.presets names, or ""."""
+    p = os.path.join(_PRESET_DIR, str(stem) + ".png")
+    return p if os.path.isfile(p) else ""
+
+
+_SINNER_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "ImageAssets", "sinners")
+
+
+def sinner_icon(name: str) -> str:
+    """A sinner's in-game emblem by display name, diacritics and all
+    (Ryōshū is ryoshu.png), or "" when there is none."""
+    plain = unicodedata.normalize("NFKD", str(name or "")).encode(
+        "ascii", "ignore").decode("ascii")
+    path = os.path.join(_SINNER_DIR, norm(plain) + ".png")
+    return path if os.path.exists(path) else ""

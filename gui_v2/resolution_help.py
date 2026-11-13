@@ -19,7 +19,6 @@ from .dialogs import FramelessDialog, show_advisory
 from .theme import Sizing
 from .widgets import GhostButton, PrimaryButton
 
-PREFIX = "Game window ("
 RECOMMENDED = ((1920, 1080), (1280, 720))
 
 _SIZE = re.compile(r"Game window \((\d+) x (\d+)\)")

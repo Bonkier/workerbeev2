@@ -37,7 +37,7 @@ def test_the_shelf_is_named_off_the_shop_and_handed_to_the_run_record(monkeypatc
     monkeypatch.setattr(S, "_market_scan", lambda image, reg, names: {"Blanket": (1000, 400)})
     monkeypatch.setattr(S.LocateRGB, "try_locate",
                         lambda *a, **k: (_ for _ in ()).throw(S.gui.ImageNotFoundException()))
-    monkeypatch.setattr(S.LocateRGB, "check", lambda *a, **k: True)      # the uptie badge
+    monkeypatch.setattr(S, "_badge_level", lambda crop, comp=1.0: 2)     # the ++ badge
     emitted = []
     monkeypatch.setattr(S.tele, "gifts", lambda items: emitted.append(items))
     S._GIFT_SCAN.update(thread=None, items=None)
@@ -46,6 +46,6 @@ def test_the_shelf_is_named_off_the_shop_and_handed_to_the_run_record(monkeypatc
                               args=(frames, S.REG["fuse_shelf"], 1.0, {"holder"}, ["Blanket"]))
     S._GIFT_SCAN["thread"] = worker
     worker.start()
-    assert S.finish_gift_scan(timeout=10) == [("Blanket", True)]
-    assert emitted == [[("Blanket", True)]]
+    assert S.finish_gift_scan(timeout=10) == [("Blanket", 2)]
+    assert emitted == [[("Blanket", 2)]]
     assert S.finish_gift_scan() == []                                     # handed over once

@@ -30,7 +30,8 @@ _ATTR = "_wb_feedback"
 
 # Buttons that already animate their whole face are left alone: a second
 # overlay on top of them reads as a double response.
-_SKIP_CLASSES = ("Toggle",)
+_SKIP_CLASSES = ("Toggle", "_StarterTile", "_TagGiftChip", "_TagAddButton",
+                 "_TagCheckRow", "_GiftPickRow", "_PickChip")
 # Buttons whose bottom edge is already spoken for (the gift tiles carry their
 # role bar there) get the flash and press shading, but no hover rule.
 _NO_RULE_CLASSES = ("_GiftTile", "_MarketGiftTile", "_KeywordTab")

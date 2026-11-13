@@ -1,7 +1,42 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Global QSS stylesheet builder."""
 
+import os
+import tempfile
+
 from .theme import Colors, Sizing, Fonts
+
+_ARROW_DIR = os.path.join(tempfile.gettempdir(), "WorkerBee", "qss")
+
+
+def _arrow(direction: str, color: str, pixel: int = 2) -> str:
+    """Path of a pixel-art triangle for the spin box steppers, drawn once
+    per colour: a stylesheet border triangle paints as a filled block."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QImage, QPainter
+    name = "%s_%s_%d.png" % (direction, color.lstrip("#").lower(), pixel)
+    path = os.path.join(_ARROW_DIR, name)
+    if not os.path.isfile(path):
+        rows = ("..#..", ".###.", "#####")
+        if direction == "down":
+            rows = rows[::-1]
+        img = QImage(5 * pixel, 3 * pixel, QImage.Format.Format_ARGB32)
+        img.fill(Qt.GlobalColor.transparent)
+        p = QPainter(img)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(color))
+        for y, row in enumerate(rows):
+            for x, cell in enumerate(row):
+                if cell == "#":
+                    p.drawRect(x * pixel, y * pixel, pixel, pixel)
+        p.end()
+        try:
+            os.makedirs(_ARROW_DIR, exist_ok=True)
+            if not img.save(path):
+                return ""
+        except OSError:
+            return ""
+    return path.replace("\\", "/")
 
 
 def _rgb(hex_color: str):
@@ -101,7 +136,6 @@ def _voxel_qss() -> str:
     sunk = "#0a0d10" if tinted else _shift(c.BG_BASE, 0.75)
     hover = "#1f242a" if tinted else c.BG_HOVER
     dim = "#8a939e" if tinted else c.TEXT_TERTIARY
-    head = "#a9a9b4" if tinted else c.TEXT_SECONDARY
     card_tint = _rgba(CARD_TINT)
     band_tint = _rgba(BAND_TINT)
     return f"""
@@ -304,8 +338,22 @@ def _voxel_qss() -> str:
     QWidget#sectionHeader QWidget#sectionLabel {{
         background: transparent;
     }}
-    QLabel#subSectionLabel, QLabel#inlineMeta {{
+    QLabel#subSectionLabel, QLabel#inlineMeta, QLabel#sectionText,
+    QLabel#unitNote {{
         color: {dim};
+    }}
+    QLabel#presetMark {{
+        color: {c.ACCENT};
+        font-weight: 700;
+    }}
+    /* The run sheet's sinner plates sit sunk into the panel, square-edged. */
+    QFrame#sinnerPlate {{
+        background-color: {sunk};
+        border: 1px solid {line};
+        border-radius: 0px;
+    }}
+    QLabel#unitReq {{
+        border-radius: 0px;
     }}
 
     /* No settingRow min-height here: the row derives its own floor from the
@@ -316,6 +364,10 @@ def _voxel_qss() -> str:
         font-size: {f.SIZE_BASE}pt;
     }}
 
+
+    QLabel#keyCap {{
+        border-radius: 0;
+    }}
 
     /* Slim square scrollbars. */
     QScrollBar:vertical {{
@@ -367,6 +419,10 @@ def _base_qss() -> str:
     c = Colors
     s = Sizing
     f = Fonts
+    arrows = {name: _arrow(direction, color) for name, direction, color in (
+        ("up", "up", c.TEXT_PRIMARY), ("down", "down", c.TEXT_PRIMARY),
+        ("up_dim", "up", c.TEXT_TERTIARY), ("down_dim", "down", c.TEXT_TERTIARY),
+        ("up_hot", "up", c.ACCENT), ("down_hot", "down", c.ACCENT))}
     return f"""
     * {{
         font-family: {f.FAMILY};
@@ -451,11 +507,6 @@ def _base_qss() -> str:
         font-size: {f.SIZE_SM}pt;
     }}
 
-    QLabel#splashSubtle {{
-        color: {c.TEXT_TERTIARY};
-        font-size: {f.SIZE_XS}pt;
-    }}
-
     QLabel#splashSubtitle {{
         color: {c.TEXT_SECONDARY};
         font-size: {f.SIZE_SM}pt;
@@ -492,12 +543,6 @@ def _base_qss() -> str:
     QFrame#titleBar {{
         background-color: transparent;
         border: none;
-    }}
-
-    QLabel#titleBarText {{
-        color: {c.TEXT_SECONDARY};
-        font-size: {f.SIZE_SM}pt;
-        font-weight: 500;
     }}
 
     QPushButton#titleBarBtn, QPushButton#titleBarBtnClose {{
@@ -681,6 +726,64 @@ def _base_qss() -> str:
         font-size: {f.SIZE_SM}pt;
     }}
 
+    /* A preset card's name. */
+    QLabel#presetTitle {{
+        color: {c.TEXT_PRIMARY};
+        font-size: {f.SIZE_LG}pt;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+    }}
+
+    /* The run sheet: the lede, the ledger of facts, the owner's words, and
+       the roster with each unit's requirement on a mono plate. */
+    QLabel#ledeText {{
+        color: {c.TEXT_PRIMARY};
+        font-size: {f.SIZE_MD}pt;
+    }}
+    QFrame#sinnerPlate {{
+        background-color: {c.BG_BASE};
+        border: 1px solid {c.BORDER_SUBTLE};
+        border-radius: {s.RADIUS_SM}px;
+    }}
+    QLabel#specLabel {{
+        color: {c.TEXT_TERTIARY};
+        font-size: {f.SIZE_XS}pt;
+        font-weight: 700;
+        letter-spacing: 1.2px;
+    }}
+    QLabel#specValue, QLabel#sinnerName {{
+        color: {c.TEXT_PRIMARY};
+        font-size: {f.SIZE_SM}pt;
+        font-weight: 600;
+    }}
+    QLabel#plateNum {{
+        color: {c.ACCENT};
+        font-family: {f.FAMILY_MONO};
+        font-size: {f.SIZE_XS}pt;
+        font-weight: 700;
+    }}
+    QLabel#sectionText {{
+        color: {c.TEXT_SECONDARY};
+        font-size: {f.SIZE_SM}pt;
+    }}
+    QLabel#unitName {{
+        color: {c.TEXT_PRIMARY};
+        font-size: {f.SIZE_SM}pt;
+        font-weight: 600;
+    }}
+    QLabel#unitReq {{
+        color: {c.ACCENT};
+        font-family: {f.FAMILY_MONO};
+        font-size: {f.SIZE_XS}pt;
+        border: 1px solid {c.ACCENT_MUTED};
+        border-radius: 3px;
+        padding: 1px 6px;
+    }}
+    QLabel#unitNote {{
+        color: {c.TEXT_SECONDARY};
+        font-size: {f.SIZE_XS}pt;
+    }}
+
     /* Centred empty-state heading (e.g. Scheduler with no tasks). */
     QLabel#emptyTitle {{
         color: {c.TEXT_SECONDARY};
@@ -691,6 +794,13 @@ def _base_qss() -> str:
     QLabel#inlineMeta {{
         color: {c.TEXT_SECONDARY};
         font-size: {f.SIZE_SM}pt;
+    }}
+
+    /* The preset whose run is selected says so beside its name. */
+    QLabel#presetMark {{
+        color: {c.ACCENT};
+        font-size: {f.SIZE_SM}pt;
+        font-weight: 700;
     }}
 
     /* Rank 1 in a stats block. */
@@ -732,6 +842,18 @@ def _base_qss() -> str:
     QLabel#heroHint {{
         color: {c.TEXT_TERTIARY};
         font-size: {f.SIZE_SM}pt;
+    }}
+    /* A key as printed on its cap, beside the start button. */
+    QLabel#keyCap {{
+        font-family: {f.FAMILY_MONO};
+        font-size: {f.SIZE_XS}pt;
+        font-weight: 700;
+        color: {c.TEXT_SECONDARY};
+        background-color: {c.BG_OVERLAY};
+        border: 1px solid {c.BORDER_STRONG};
+        border-bottom-width: 2px;
+        border-radius: 3px;
+        padding: 1px 6px;
     }}
 
     /* Stat lines - "label .... value" rows, flat */
@@ -923,10 +1045,6 @@ def _base_qss() -> str:
         font-size: {f.SIZE_MD}pt;
         font-weight: 600;
     }}
-    QLabel#settingSubtitle {{
-        color: {c.TEXT_TERTIARY};
-        font-size: {f.SIZE_SM}pt;
-    }}
 
     /* Toggle is a custom-painted QAbstractButton (see widgets.Toggle);
        no QSS needed for its visuals. */
@@ -953,80 +1071,33 @@ def _base_qss() -> str:
         border-color: {c.TEXT_TERTIARY};
     }}
 
-    /* Tri-state pack chip: neutral / prioritise (green) / avoid (red) */
-    QPushButton#triChip {{
-        background-color: {c.BG_OVERLAY};
-        color: {c.TEXT_SECONDARY};
-        border: 1px solid {c.BORDER_SUBTLE};
-        border-radius: {s.RADIUS_PILL}px;
-        padding: 4px 12px;
-        font-size: {f.SIZE_SM}pt;
-        font-weight: 500;
-        min-height: 26px;
-    }}
-    QPushButton#triChip:hover {{
-        border-color: {c.BORDER_STRONG};
-        color: {c.TEXT_PRIMARY};
-    }}
-    QPushButton#triChip[state="priority"] {{
-        background-color: rgba(62, 213, 152, 0.16);
-        color: {c.SUCCESS};
-        border-color: {c.SUCCESS};
-    }}
-    QPushButton#triChip[state="avoid"] {{
-        background-color: rgba(245, 94, 94, 0.14);
-        color: {c.ERROR};
-        border-color: {c.ERROR};
-    }}
-
-    /* Priority list (reward-card order) */
-    QFrame#priorityRow {{
+    /* Grace enhancement levels: + and ++ on each grace card and in the
+       Enhance all pair. Checked is the accent block. */
+    QPushButton#graceLevel {{
         background-color: {c.BG_RAISED};
+        color: {c.TEXT_SECONDARY};
         border: 1px solid {c.BORDER_SUBTLE};
-        border-radius: {s.RADIUS_SM}px;
-    }}
-    QFrame#priorityRow:hover {{
-        border-color: {c.BORDER_STRONG};
-    }}
-    QLabel#priorityRank {{
-        color: {c.TEXT_SECONDARY};
-        font-size: {f.SIZE_MD}pt;
+        border-radius: 0px;
+        padding: 0px 10px;
+        font-size: {f.SIZE_SM}pt;
         font-weight: 700;
+        min-height: 24px;
+        max-height: 24px;
     }}
-    QLabel#priorityName {{
-        color: {c.TEXT_PRIMARY};
-        font-size: {f.SIZE_MD}pt;
-        font-weight: 500;
-    }}
-    QFrame#priorityRow[active="false"] {{
-        background-color: transparent;
-    }}
-    QLabel#priorityRankDim {{
-        color: {c.TEXT_DISABLED};
-        font-size: {f.SIZE_MD}pt;
-        font-weight: 700;
-    }}
-    QLabel#priorityNameDim {{
-        color: {c.TEXT_TERTIARY};
-        font-size: {f.SIZE_MD}pt;
-        font-weight: 500;
-    }}
-    QPushButton#priorityArrow {{
-        background-color: transparent;
-        color: {c.TEXT_SECONDARY};
-        border: none;
-        border-radius: {s.RADIUS_SM}px;
-        font-size: {f.SIZE_MD}pt;
-        min-width: 30px;
-        max-width: 30px;
-        min-height: 28px;
-    }}
-    QPushButton#priorityArrow:hover {{
+    QPushButton#graceLevel:hover {{
         background-color: {c.BG_HOVER};
         color: {c.TEXT_PRIMARY};
+        border-color: {c.BORDER_STRONG};
     }}
-    QPushButton#priorityArrow:disabled {{
+    QPushButton#graceLevel:checked {{
+        background-color: {c.ACCENT};
+        color: #16130a;
+        border-color: {c.ACCENT};
+    }}
+    QPushButton#graceLevel:disabled {{
+        background-color: transparent;
         color: {c.TEXT_DISABLED};
+        border-color: {c.BORDER_SUBTLE};
     }}
 
     /* Drag-reorderable ordered list (card priority, sinner order) */
@@ -1062,49 +1133,6 @@ def _base_qss() -> str:
     QListWidget#orderedList::indicator:checked {{
         background-color: #d8d8dc;
         border-color: #d8d8dc;
-    }}
-
-    /* Include checkbox in the sinner list */
-    QPushButton#includeCheck {{
-        background-color: transparent;
-        color: #1a1500;
-        border: 1px solid {c.BORDER_STRONG};
-        border-radius: {s.RADIUS_SM}px;
-        font-size: {f.SIZE_SM}pt;
-        font-weight: 700;
-        min-width: 22px;
-        max-width: 22px;
-        min-height: 22px;
-        max-height: 22px;
-    }}
-    QPushButton#includeCheck:hover {{
-        border-color: {c.TEXT_TERTIARY};
-    }}
-    QPushButton#includeCheck:checked {{
-        background-color: #d8d8dc;
-        border-color: #d8d8dc;
-    }}
-
-    /* Cycle chip (grace tiers) - off = neutral, on = accent */
-    QPushButton#cycleChip {{
-        background-color: {c.BG_OVERLAY};
-        color: {c.TEXT_SECONDARY};
-        border: 1px solid {c.BORDER_SUBTLE};
-        border-radius: {s.RADIUS_PILL}px;
-        padding: 4px 14px;
-        font-size: {f.SIZE_SM}pt;
-        font-weight: 500;
-        min-height: 26px;
-    }}
-    QPushButton#cycleChip:hover {{
-        border-color: {c.BORDER_STRONG};
-        color: {c.TEXT_PRIMARY};
-    }}
-    QPushButton#cycleChip[on="true"] {{
-        background-color: {c.BG_HOVER};
-        color: {c.TEXT_PRIMARY};
-        border-color: {c.TEXT_TERTIARY};
-        font-weight: 600;
     }}
 
     /* Team rotation rows */
@@ -1161,9 +1189,9 @@ def _base_qss() -> str:
        blend into the styled pill. Giving them any geometry puts Qt6 on the
        fully-custom CC_SpinBox path, where the arrow is drawn ONLY from the
        ::up-arrow/::down-arrow rules below - there is no native fallback, so
-       without those rules the step affordance is never painted at all. Qt
-       renders them as filled blocks rather than true triangles, the same as
-       QComboBox#combo::down-arrow. The explicit `subcontrol-position` is
+       without those rules the step affordance is never painted at all. A
+       CSS border triangle comes out as a filled block there, so the arrows
+       are pixel-art PNGs from _arrow. The explicit `subcontrol-position` is
        needed because without it some builds clip the buttons against the
        styled border-radius and they disappear entirely. */
     QSpinBox#runCount::up-button, QTimeEdit#runCount::up-button {{
@@ -1193,32 +1221,28 @@ def _base_qss() -> str:
         background-color: {c.BG_HOVER};
     }}
     QSpinBox#runCount::up-arrow, QTimeEdit#runCount::up-arrow {{
-        width: 0; height: 0;
-        border-left: 4px solid transparent;
-        border-right: 4px solid transparent;
-        border-bottom: 5px solid {c.TEXT_PRIMARY};
+        image: url("{arrows["up"]}");
+        width: 10px; height: 6px;
     }}
     QSpinBox#runCount::down-arrow, QTimeEdit#runCount::down-arrow {{
-        width: 0; height: 0;
-        border-left: 4px solid transparent;
-        border-right: 4px solid transparent;
-        border-top: 5px solid {c.TEXT_PRIMARY};
+        image: url("{arrows["down"]}");
+        width: 10px; height: 6px;
     }}
     /* At the range limit Qt marks the sub-control :off; without this the
        indicator stays at full brightness and reads as steppable. */
     QSpinBox#runCount::up-arrow:off, QSpinBox#runCount::up-arrow:disabled,
     QTimeEdit#runCount::up-arrow:off, QTimeEdit#runCount::up-arrow:disabled {{
-        border-bottom-color: {c.TEXT_TERTIARY};
+        image: url("{arrows["up_dim"]}");
     }}
     QSpinBox#runCount::down-arrow:off, QSpinBox#runCount::down-arrow:disabled,
     QTimeEdit#runCount::down-arrow:off, QTimeEdit#runCount::down-arrow:disabled {{
-        border-top-color: {c.TEXT_TERTIARY};
+        image: url("{arrows["down_dim"]}");
     }}
     QSpinBox#runCount::up-arrow:hover, QTimeEdit#runCount::up-arrow:hover {{
-        border-bottom-color: {c.ACCENT};
+        image: url("{arrows["up_hot"]}");
     }}
     QSpinBox#runCount::down-arrow:hover, QTimeEdit#runCount::down-arrow:hover {{
-        border-top-color: {c.ACCENT};
+        image: url("{arrows["down_hot"]}");
     }}
 
     /* Scroll area inside pages should match the page bg */
@@ -1266,6 +1290,10 @@ def _base_qss() -> str:
         color: {c.TEXT_SECONDARY};
         font-size: {f.SIZE_MD}pt;
         line-height: 140%;
+    }}
+    QFrame#helpBullet {{
+        background-color: {c.ACCENT};
+        border: none;
     }}
 
     /* Log viewer */

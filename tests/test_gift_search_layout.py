@@ -151,11 +151,14 @@ def test_a_gift_missing_after_the_template_click_gets_the_upstream_tab_click(mon
         finds.append(max_scrolls)
         return len(finds) >= 3                                # only after the tab was re-selected
     monkeypatch.setattr(B, "_find_and_click_gift", find)
+    monkeypatch.setattr(B.p, "RUN_HELD", {"Grand Welcome"}, raising=False)
     with caplog.at_level("INFO"):
         assert B.gift_search(["Spiderweb Entangled in Red"]) == 1
     assert tabs == [("keywordless", False), ("keywordless", True)]
     assert finds == [0, 6, 6]
     assert "selecting the tab the upstream way" in caplog.text
+    # What the search took is remembered for the run's shops.
+    assert B.p.RUN_HELD == {"Grand Welcome", "Spiderweb Entangled in Red"}
 
 
 def test_the_menu_wait_takes_either_marker_clears_dialogs_and_stops_when_the_run_moved_on(monkeypatch):
@@ -186,19 +189,22 @@ def test_a_menu_that_never_shows_skips_the_search_with_a_report(monkeypatch, cap
     dumps = []
     monkeypatch.setattr(B, "_wait_gift_menu", lambda timer=8.0: False)
     monkeypatch.setattr(B, "_diag_once", lambda tag, advise=None, **kw: dumps.append((tag, kw)))
+    monkeypatch.setattr(B.p, "RUN_HELD", set(), raising=False)
     with caplog.at_level("WARNING"):
         assert B.gift_search(["Spiderweb Entangled in Red"]) == 0
+    assert B.p.RUN_HELD == set()                              # nothing taken, nothing held
     assert dumps and dumps[0][0] == "giftmenu"
     labels = [row[0] for row in dumps[0][1]["extra"]]
     assert "giftsearch" in labels and "startGift" in labels and "packconfirm" in labels
     assert "menu not detected" in caplog.text
 
 
-def test_the_search_targets_follow_the_run(monkeypatch):
+def test_the_search_targets_are_the_picks_whatever_the_run(monkeypatch):
     from wbcore.utils import params as p
-    monkeypatch.setattr(p, "RUN_SCRIPT", "saikai_ryoshu")
-    monkeypatch.setattr(p, "GIFT_SEARCH", ["Blanket", "Spiderweb Entangled in Red", "Soda Pop", "Cartilage"])
-    assert B._starting_gift_targets() == ["Spiderweb Entangled in Red", "Blanket", "Soda Pop"]
-    monkeypatch.setattr(p, "RUN_SCRIPT", "")
-    monkeypatch.setattr(p, "GIFT_SEARCH", [])
-    assert B._starting_gift_targets() == []
+    picks = ["Blanket", "Spiderweb Entangled in Red", "Soda Pop", "Cartilage"]
+    for script in ("saikai_ryoshu", "hollow", ""):
+        monkeypatch.setattr(p, "RUN_SCRIPT", script)
+        monkeypatch.setattr(p, "GIFT_SEARCH", list(picks))
+        assert B._starting_gift_targets() == picks[:3]      # no run forces a gift in
+        monkeypatch.setattr(p, "GIFT_SEARCH", [])
+        assert B._starting_gift_targets() == []             # nor searches with none picked

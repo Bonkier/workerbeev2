@@ -66,3 +66,27 @@ def test_a_smaller_window_is_matched_at_its_scale(monkeypatch):
     hit = S._market_scan(S.amplify(shelf), REG, [NAME])
     assert NAME in hit
     assert abs(hit[NAME][0] - centre[0]) <= 4 and abs(hit[NAME][1] - centre[1]) <= 4
+
+
+def test_the_badge_level_reads_a_plus_and_a_double_plus():
+    pp = cv2.imread(S.PTH["++"])
+    one = cv2.imread(S.PTH["plus"])
+    band = np.full((56, 74, 3), 30, np.uint8)
+    assert S._badge_level(band) == 0
+    twice = band.copy()
+    twice[2:2 + pp.shape[0], 2:2 + pp.shape[1]] = pp
+    assert S._badge_level(twice) == 2
+    once = band.copy()
+    once[2:2 + one.shape[0], 2:2 + one.shape[1]] = one
+    assert S._badge_level(once) == 1
+    comp = 1366 / 1920
+    small = cv2.resize(once, None, fx=comp, fy=comp, interpolation=cv2.INTER_AREA)
+    assert S._badge_level(small, comp) == 1
+    assert S._badge_level(band[:0], 1.0) == 0                 # an empty crop
+
+
+def test_the_badge_band_sits_above_and_right_of_the_gift():
+    shelf = np.zeros((REG[3], REG[2], 3), np.uint8)
+    crop = S._badge_crop(shelf, 1305, 439, REG, 1.0)
+    assert crop.shape == (56, 74, 3)
+    assert S._badge_crop(shelf, REG[0] + 5, REG[1] + 5, REG, 1.0).shape[0] == 0

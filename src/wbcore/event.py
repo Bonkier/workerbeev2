@@ -139,7 +139,6 @@ def is_choice_made():
 
 def event():
     if not now.button("event"): return False
-    print("event check")
     p.RUN_EVENTS_HANDLED = int(getattr(p, "RUN_EVENTS_HANDLED", 0) or 0) + 1
     logging.info("event: entered (run event-count now %d)",
                  p.RUN_EVENTS_HANDLED)

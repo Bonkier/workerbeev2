@@ -55,14 +55,6 @@ def load_catalog(refresh: bool = False) -> dict:
     return cat
 
 
-def gift_names() -> list:
-    """All gift display names, ordered by keyword, then tier, then name."""
-    cat = load_catalog()
-    return sorted(
-        cat, key=lambda n: (cat[n]["keyword"], cat[n]["tier"], n.lower())
-    )
-
-
 def gift_info(name: str):
     """{"path", "keyword", "tier"} for one gift, or None if unknown."""
     return load_catalog().get(name)

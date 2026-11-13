@@ -28,8 +28,8 @@ _STATUS_INDEX = {name: i for i, name in enumerate(_STATUS_ORDER)}
 
 # UI sinner display name -> bot SINNERS index. Canonical in-game order:
 # YISANG..SINCLAIR, OUTIS, GREGOR (Outis = 10, Gregor = 11). The Settings
-# sinner grid and the Thrill exclusion grid both follow this order. Map by
-# name, never by position, so a UI reorder cannot drift the click target.
+# sinner grids follow this order. Map by name, never by position, so a UI
+# reorder cannot drift the click target.
 _SINNER_INDEX = {
     "Yi Sang": 0, "Faust": 1, "Don Quixote": 2, "Ryōshū": 3,
     "Meursault": 4, "Hong Lu": 5, "Heathcliff": 6, "Ishmael": 7,
@@ -84,34 +84,6 @@ _SAIKAI_PRIORITY = (
 _SAIKAI_AVOID = ([], {"FlatbrokeGamblers": 1, "HellsChicken": 2}, {})
 
 
-# --- Thrill scripted preset (work in progress) -----------------------------
-# Normal-mode Rupture run: swaps in max-energy IDs at squad select, pins
-# hard-coded graces + Floor 1-3 packs, crafts the Thrill T4 EGO gift, and
-# forfeits after Floor 3. The swap, craft and forfeit are bespoke backend
-# logic gated by settings["run_script"] == THRILL_SCRIPT.
-THRILL_LABEL = "Thrill"
-THRILL_SCRIPT = "thrill"
-# Graces: Star of the Beginning (0), Star Shower (3), Perfected Possibility (9).
-_THRILL_BUFF = [1, 0, 0, 1, 0, 0, 0, 0, 0, 1]
-_THRILL_AFFINITY = "Rupture"
-# Floor 1-3 mandatory packs (Normal pools), unpinned so the bot prioritises
-# them in list order on every eligible floor.
-_THRILL_PRIORITY = (
-    ["TheForgotten", "NestWorkshopandTechnology", "FlatbrokeGamblers"],
-    {},
-)
-# Packs never taken: they tank the Rupture-stacking strategy (or, like
-# AutomatedFactory, add no synergy and waste a priority slot).
-_THRILL_AVOID = (
-    ["EmotionalSubservience", "HatredandDespair",
-     "EmotionalSeduction", "FaithErosion",
-     "EmotionalFlood", "NagelundHammer",
-     "AutomatedFactory"],
-    {},
-    {},
-)
-
-
 # --- HOLLOW scripted preset ---------------------------------------------
 # Faust alone with the Hollow E.G.O. The fights, the shop and the squad
 # are scripted in wbcore/hollow.py, gated by settings["run_script"].
@@ -123,8 +95,7 @@ HOLLOW_GRACE_SEED = {name: v for name, v in zip(_GRACE_ORDER, _HOLLOW_BUFF) if v
 # Each scripted run's own graces, taken when the BUILD panel picks none.
 PRESET_GRACES = {
     label: [name for name, v in zip(_GRACE_ORDER, buff) if v]
-    for label, buff in ((SAIKAI_LABEL, _SAIKAI_BUFF), (THRILL_LABEL, _THRILL_BUFF),
-                        (HOLLOW_LABEL, _HOLLOW_BUFF))}
+    for label, buff in ((SAIKAI_LABEL, _SAIKAI_BUFF), (HOLLOW_LABEL, _HOLLOW_BUFF))}
 _HOLLOW_AFFINITY = "Poise"
 _HOLLOW_FAUST = 1
 # One pack per floor, pinned to it, and hunted through Pack Search; the
@@ -137,8 +108,11 @@ _HOLLOW_FLOOR_PACKS = {
     5: ("Line2", "Line 2"),
 }
 _HOLLOW_ALT_PACKS = {"EmotionalCraving": 3}
-# Gift Search picks the sheet calls important; the third slot is the user's.
+# The gifts each scripted run's sheet searches for. Picking the run or
+# applying its preset puts them in the picker, where they are the user's.
 HOLLOW_SEARCH_GIFTS = ("Grand Welcome", "Sharp Needle & Thread")
+RUN_SEARCH_GIFTS = {SAIKAI_LABEL: ("Spiderweb Entangled in Red",),
+                    HOLLOW_LABEL: HOLLOW_SEARCH_GIFTS}
 
 
 def hollow_floor_packs(md_state: dict) -> dict:
@@ -198,6 +172,8 @@ def _build_hollow_run(md_state: dict):
     priority, avoid = _hollow_pack_lists(floor_packs)
     settings["default_market_workflow"] = False   # the floor plan runs the shop
     settings["skip_ego_check"] = False      # the plan scans the owned shelf
+    for own in settings["market_floors"].values():
+        own.pop("skip_ego_check", None)
     settings["run_script"] = HOLLOW_SCRIPT
 
     heal = md_state.get("hollow_heal")
@@ -241,15 +217,11 @@ def _build_saikai_run(md_state: dict):
     # falling back to the scripted default only when every grace is 0.
     if not any(settings["buff"]):
         settings["buff"] = list(_SAIKAI_BUFF)
-    # "Go to floor 10": run the Infinite Mirror Dungeon and leave after floor 10;
-    # otherwise the normal 5-floor MD (the game ends it at floor 5).
-    floor10 = bool(md_state.get("saikai_floor10"))
-    settings["infinity"] = bool(floor10)
-    settings["saikai_stop_floor"] = 10 if floor10 else 0
+    settings["infinity"] = False            # the normal 5-floor MD
     settings["winrate"] = False             # the battle script decides winrate
     # Legacy battle style: force S3 picks + evade elsewhere (HoS turn order off).
     settings["saikai_s3_only"] = bool(md_state.get("saikai_s3_only"))
-    # Normal to floor 3, Hard from floor 4 by the sheet; the Packs tab's
+    # Normal to floor 3, Hard from floor 4 by the sheet; the Floor Packs/Market tab's
     # Hard switch moves the flip, none at all stays Normal throughout.
     flip = _page_flip(md_state)
     settings["hard_from_floor"] = 4 if flip is None else (flip or 99)
@@ -288,54 +260,8 @@ def _build_saikai_run(md_state: dict):
     return count, teams, settings, hard
 
 
-def _build_thrill_run(md_state: dict):
-    """Fixed (count, teams, settings, hard) for the Thrill run: Normal-mode
-    Rupture, hard-coded graces/packs, forfeit after Floor 3. The squad swap
-    and EGO-gift craft are backend logic gated by run_script == THRILL_SCRIPT."""
-    settings = build_settings(md_state)
-    if not any(settings["buff"]):           # the BUILD panel's graces, else the preset's
-        settings["buff"] = list(_THRILL_BUFF)
-    settings["infinity"] = False             # Normal mode, never Extreme
-    settings["winrate"] = False
-    flip = _page_flip(md_state)             # Normal throughout by the sheet
-    settings["hard_from_floor"] = 99 if not flip else flip
-    settings["forfeit_floor"] = 3            # forfeit after Floor 3
-    settings["pack_search"] = True           # scripted run hunts its packs
-    settings["run_script"] = THRILL_SCRIPT
-    # SINNERS indices the swap leaves alone. Capped at 12 (total sinner count).
-    settings["thrill_exclude"] = [
-        _SINNER_INDEX[n] for n in (md_state.get("thrill_exclude") or [])
-        if n in _SINNER_INDEX
-    ][:12]
-
-    # Ranked preference: first 6 fill the squad slots, the rest are fallback
-    # priority if the team-edit dialog rejects any of the top 6.
-    thrill_order_names = md_state.get("thrill_order") or []
-    thrill_order_idx = [_SINNER_INDEX[n] for n in thrill_order_names
-                        if n in _SINNER_INDEX][:12]
-
-    # Status the saved Thrill team is filed under in-game (drives team select).
-    # User-overridable; falls back to the Rupture default.
-    thrill_status = md_state.get("thrill_status")
-    if thrill_status not in _STATUS_INDEX:
-        thrill_status = _THRILL_AFFINITY
-
-    teams = {0: {
-        "affinity": [_STATUS_INDEX[thrill_status]],
-        "affinity_idx": 0,
-        "duplicates": False,
-        "sinners": thrill_order_idx or list(_DEFAULT_SINNERS),
-        "priority": _scripted_priority_with_user(_THRILL_PRIORITY, md_state),
-        "avoid": _scripted_avoid_with_user(_THRILL_AVOID, _THRILL_PRIORITY,
-                                           md_state),
-    }}
-    count = int(md_state.get("run_count", 1) or 1)
-    hard = settings["hard_from_floor"] != 99
-    return count, teams, settings, hard
-
-
 def _page_flip(md_state):
-    """The Packs tab's Hard flip: the floor (1..5), 0 for Normal throughout,
+    """The Floor Packs/Market tab's Hard flip: the floor (1..5), 0 for Normal throughout,
     or None when the state carries none (an older save: the run's own)."""
     try:
         flip = int((md_state or {}).get("hard_from_floor"))
@@ -363,7 +289,7 @@ def _scripted_priority_with_user(scripted_priority, md_state):
 
 def _scripted_avoid_with_user(scripted_avoid, scripted_priority, md_state):
     """Scripted avoid + the user's Packs-tab exclusions, so 'avoid' picks
-    keep working on SAIKAI/THRILL runs. The script's own priority packs stay
+    keep working on scripted runs. The script's own priority packs stay
     un-bannable (mandatory picks win over exclusions); user priorities are
     ignored (scripted runs pin their own)."""
     _pri, user_avoid = _build_packs(md_state.get("packs", {}),
@@ -441,10 +367,81 @@ def _swap_exclude_for(team_status: str, sinner_excl: dict) -> list:
     return [_SINNER_INDEX[n] for n in names if n in _SINNER_INDEX]
 
 
+_HOLLOW_PLAN_MODES = ("keep_fuse", "fuse", "enhance2")
+
+
+def hollow_market_seed() -> tuple:
+    """The Hollow sheet's shop plan as market tags: run-wide, what every
+    floor keeps, the fuse targets and the double upties; per floor (keyed
+    as the saved file writes them), what that floor keeps on top, from
+    selling too once the floor 4 sell applies. The preset writes them into
+    Hollow's slot and a first pick of Hollow seeds it the same way; the run
+    follows the slot, so every tag is the user's to change."""
+    from wbcore import hollow as H
+    floors = {fl: list(names) for fl, names in H.MARKET_PROTECTED.items()}
+    common = set.intersection(*(set(v) for v in floors.values()))
+    keep = [n for n in floors[min(floors)] if n in common]
+    tags = {mode: [] for mode in _MARKET_MODES}
+    tags.update({"keep_fuse": keep, "keep_sell": list(keep),
+                 "fuse": list(dict.fromkeys(H.MARKET_MUST + H.MARKET_OTHERS)),
+                 "enhance2": [H.STARTING_GIFT] + list(H.MARKET_ENHANCE_TWICE)})
+    per_floor = {}
+    for fl in range(1, 6):
+        extra = [n for n in floors[min(max(fl, min(floors)), max(floors))]
+                 if n not in common]
+        if not extra:
+            continue
+        own = {"keep_fuse": extra}
+        if fl >= H.SELL_FROM_FLOOR:
+            own["keep_sell"] = list(extra)
+        per_floor[str(fl)] = {"tags": own}
+    return tags, per_floor
+
+
+def hollow_seeded(slot) -> bool:
+    """Whether Hollow's slot holds a fuse, keep or uptie tag of its own."""
+    return isinstance(slot, dict) and any(slot.get(m) for m in _HOLLOW_PLAN_MODES)
+
+
+def hollow_slot_tags(slot) -> dict:
+    """Hollow's run-wide tags as the run reads them: the saved slot, or the
+    sheet's plan laid under a slot that holds no fuse, keep or uptie tag (a
+    slot from before the plan was editable, or one cleared)."""
+    if hollow_seeded(slot):
+        return slot
+    out, _floors = hollow_market_seed()
+    for mode, names in (slot.items() if isinstance(slot, dict) else ()):
+        if mode in out and names:
+            out[mode] = list(dict.fromkeys(
+                list(out[mode]) + [n for n in names if isinstance(n, str)]))
+    return out
+
+
+def hollow_floor_tags(slot, floors) -> dict:
+    """Hollow's per-floor entries as the run reads them (floors as strings):
+    the saved ones, with the sheet's floor keeps laid under them while the
+    slot is unseeded."""
+    floors = {str(k): dict(v) for k, v in (floors or {}).items()
+              if isinstance(v, dict)}
+    if hollow_seeded(slot):
+        return floors
+    _tags, seed = hollow_market_seed()
+    for fl, ent in seed.items():
+        own = floors.setdefault(fl, {})
+        tags = {mode: list(names) for mode, names in ent["tags"].items()}
+        for mode, names in (own.get("tags") or {}).items():
+            if names:
+                tags[mode] = list(dict.fromkeys(
+                    [n for n in names if isinstance(n, str)] + tags.get(mode, [])))
+        own["tags"] = tags
+    return floors
+
+
 def _market_gifts_for(md_state: dict) -> dict:
-    """The Market/Fuse tag dict for this run: the SAIKAI slot for SAIKAI runs
-    (preset-seeded when never saved), Hollow's own slot (empty when never
-    saved) for Hollow runs, the normal slot otherwise."""
+    """The market tag dict for this run: the SAIKAI slot for SAIKAI runs
+    (preset-seeded when never saved), Hollow's own slot (the sheet's plan
+    under it while it holds no plan tag) for Hollow runs, the normal slot
+    otherwise."""
     if md_state.get("custom_run"):
         if md_state.get("custom_strategy") == SAIKAI_LABEL:
             slot = md_state.get("market_gifts_saikai")
@@ -453,9 +450,96 @@ def _market_gifts_for(md_state: dict) -> dict:
                 return {k: list(v) for k, v in SAIKAI_MARKET_TAGS.items()}
             return slot
         if md_state.get("custom_strategy") == HOLLOW_LABEL:
-            slot = md_state.get("market_gifts_hollow")
-            return slot if isinstance(slot, dict) else {}
+            return hollow_slot_tags(md_state.get("market_gifts_hollow"))
     return md_state.get("market_gifts")
+
+
+_MARKET_MODES = ("keep_fuse", "keep_sell", "sell", "buy", "fuse",
+                 "enhance1", "enhance2")
+_MARKET_EXCLUSIVE = (("keep_sell", "sell"), ("enhance1", "enhance2"))
+SHOP_STEP_KEYS = ("skip_restshop", "skip_ego_check", "skip_ego_fusion",
+                  "skip_ego_enhancing", "skip_ego_buying", "skip_sinner_healing")
+
+
+def _market_slot_name(md_state: dict) -> str:
+    if md_state.get("custom_run"):
+        if md_state.get("custom_strategy") == SAIKAI_LABEL:
+            return "saikai"
+        if md_state.get("custom_strategy") == HOLLOW_LABEL:
+            return "hollow"
+    return "normal"
+
+
+def merge_market_tags(base: dict, floor: dict) -> dict:
+    """A floor's tags over the run-wide ones: the floor's names come first
+    in every list, and a gift the floor tags in one of an exclusive pair
+    (keep or sell, one or two upties) loses its run-wide tag there."""
+    base, floor = base or {}, floor or {}
+    out = {}
+    for mode in _MARKET_MODES:
+        names = [n for n in (floor.get(mode) or []) if n]
+        drop = set(names)
+        for pair in _MARKET_EXCLUSIVE:
+            if mode in pair:
+                for other in pair:
+                    drop |= {n for n in (floor.get(other) or []) if n}
+        names += [n for n in (base.get(mode) or []) if n and n not in drop]
+        out[mode] = list(dict.fromkeys(names))
+    return out
+
+
+def skip_floor_set(value) -> set:
+    """The floors a saved skip list names, as ints 1 to 5; junk dropped."""
+    out = set()
+    for f in value if isinstance(value, (list, tuple, set)) else []:
+        if isinstance(f, bool):
+            continue
+        try:
+            fi = int(f)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= fi <= 5:
+            out.add(fi)
+    return out
+
+
+def floors_phrase(floors) -> str:
+    """"floor 3", "floors 1, 3 and 5" or "no floor"."""
+    names = [str(f) for f in sorted(floors)]
+    if not names:
+        return "no floor"
+    if len(names) == 1:
+        return "floor %s" % names[0]
+    return "floors %s and %s" % (", ".join(names[:-1]), names[-1])
+
+
+def _market_floors_for(md_state: dict, base: dict) -> dict:
+    """Floor Packs/Market: what this run's slot sets per floor, resolved for
+    shop(): {floor: {"market_gifts": merged tags, "skip_...": bool}}, only
+    the floors that set anything."""
+    slot = _market_slot_name(md_state)
+    floors = (md_state.get("market_floors") or {}).get(slot)
+    if slot == "hollow":
+        floors = hollow_floor_tags(md_state.get("market_gifts_hollow"), floors)
+    out = {}
+    for key, ent in (floors.items() if isinstance(floors, dict) else ()):
+        try:
+            fl = int(key)
+        except (TypeError, ValueError):
+            continue
+        if not 1 <= fl <= 5 or not isinstance(ent, dict):
+            continue
+        own = {}
+        tags = ent.get("tags")
+        if isinstance(tags, dict) and any(tags.get(m) for m in _MARKET_MODES):
+            own["market_gifts"] = merge_market_tags(base, tags)
+        steps = ent.get("steps")
+        for k, v in (steps.items() if isinstance(steps, dict) else ()):
+            if k in SHOP_STEP_KEYS and isinstance(v, bool):
+                own[k] = v
+        if own:
+            out[fl] = own
+    return out
 
 
 def build_settings(md_state: dict) -> dict:
@@ -475,7 +559,8 @@ def build_settings(md_state: dict) -> dict:
 
     # Skill Replacement (per-sinner shop swap), stored by the MD page as
     #   {"active": [...], "order": {name: [swap_key, ...]},
-    #    "repeats": {name: {swap_key: cap_per_run}}}
+    #    "repeats": {name: {swap_key: cap_per_run}},
+    #    "skip_floors": [floor, ...] whose shops take no offer}
     # Passed through unchanged; bot.execute_me deep-copies repeats into
     # SKILL_REPLACE_REMAINING so the in-run counter decrements from the cap.
     skill_replace_raw = md_state.get("skill_replace") or {}
@@ -483,10 +568,11 @@ def build_settings(md_state: dict) -> dict:
         "active":  list(skill_replace_raw.get("active") or []),
         "order":   dict(skill_replace_raw.get("order")  or {}),
         "repeats": dict(skill_replace_raw.get("repeats") or {}),
+        "skip_floors": sorted(skip_floor_set(skill_replace_raw.get("skip_floors"))),
     }
 
     mkt_ctrl = md_state.get("market_controls") or {}
-    # Pack Search fallback (Packs tab): {floor: pack display name} for the
+    # Pack Search fallback (Floor Packs/Market tab): {floor: pack display name} for the
     # floors whose toggle is on and a pack is configured.
     ps_floors = {}
     ps_raw = (md_state.get("pack_search_cfg") or {}).get("floors") or {}
@@ -497,6 +583,7 @@ def build_settings(md_state: dict) -> dict:
             continue
         if isinstance(ent, dict) and ent.get("enabled") and ent.get("pack"):
             ps_floors[fl] = str(ent["pack"])
+    market_gifts = dict(_market_gifts_for(md_state) or {})
 
     return {
         "bonus": bool(beh.get("bonus", True)),
@@ -505,7 +592,7 @@ def build_settings(md_state: dict) -> dict:
         "altf4": (bool(beh.get("altf4", False)), bool(beh.get("altf4", False))),
         "enkephalin": bool(beh.get("enkephalin", True)),
         "skip": bool(beh.get("skip", True)),
-        # The Packs tab's per-floor switches decide where Pack Search runs.
+        # The Floor Packs/Market tab's per-floor switches decide where Pack Search runs.
         "pack_search": True,
         "pack_search_floors": ps_floors,
         # General-tab numeric inputs (previously saved but never consumed).
@@ -519,8 +606,8 @@ def build_settings(md_state: dict) -> dict:
         "winrate": bool(beh.get("winrate", False)),
         "infinity": difficulty == "Extreme",
         "keywordless": keywordless,
-        # Floor at which Hard becomes active (1 = whole run). Overridden by
-        # build_md_run for custom runs like "F3 Hard".
+        # Floor at which Hard becomes active (1 = whole run). build_md_run
+        # sets it from a floor's Hard switch.
         "hard_from_floor": 1,
         # Shop / EGO / heal skip flags -> p.SKIP_* in bot.py, gated in shop.py.
         # All default off so the Behaviour panel stays opt-in.
@@ -535,11 +622,17 @@ def build_settings(md_state: dict) -> dict:
         "skill_replace":       skill_replace,
         # Up to 3 EGO gifts to auto-select at run start (gift_catalog names).
         "gift_search":         list(md_state.get("gift_search") or [])[:3],
-        # Market/Fuse per-gift tags (keep_fuse/keep_sell/sell/buy, catalog names).
+        # The starter gift picked under BUILD (a catalog name from any
+        # keyword's list); empty takes the team keyword's usual row.
+        "starter_gift":        str(md_state.get("starter_gift") or ""),
+        # Market per-gift tags (keep_fuse/keep_sell/sell/buy, catalog names).
         # SAIKAI runs use their own editable tag slot, seeded from the preset
         # when the slot has never been saved.
-        "market_gifts":        dict(_market_gifts_for(md_state) or {}),
-        # Market workflow controls (Market/Fuse tab). OFF buys only tagged gifts.
+        "market_gifts":        market_gifts,
+        # Floor Packs/Market: a floor's own tags and shop steps, laid over
+        # the run-wide values by shop() at that floor's visit.
+        "market_floors":       _market_floors_for(md_state, market_gifts),
+        # Market workflow controls (MARKET BUYING). OFF buys only tagged gifts.
         "default_market_workflow":   bool(mkt_ctrl.get("default_market_workflow", True)),
         "market_refresh_count":      int(mkt_ctrl.get("refresh_count", 0) or 0),
         "market_refresh_until_cost": bool(mkt_ctrl.get("refresh_until_cost", False)),
@@ -555,21 +648,13 @@ def build_md_run(md_state: dict, sinner_sel: dict, sinner_excl: dict = None):
             md_state.get("custom_strategy") == SAIKAI_LABEL):
         return _build_saikai_run(md_state)
 
-    # Thrill: scripted Normal-mode Rupture run. The squad max-energy swap is
-    # built and runs at team select; the market Thrill-craft and the
-    # forfeit-after-Floor-3 logic are still being layered in, so after the swap
-    # the run currently proceeds as a standard Rupture run.
-    if (md_state.get("custom_run") and
-            md_state.get("custom_strategy") == "Thrill"):
-        return _build_thrill_run(md_state)
-
     if (md_state.get("custom_run") and
             md_state.get("custom_strategy") == HOLLOW_LABEL):
         return _build_hollow_run(md_state)
 
     settings = build_settings(md_state)
     hard = md_state.get("difficulty", "Hard") in ("Hard", "Extreme")
-    # A Hard switch on a floor (Packs tab): Normal until then, Hard from it.
+    # A Hard switch on a floor (Floor Packs/Market tab): Normal until then, Hard from it.
     try:
         flip = int(md_state.get("hard_from_floor") or 0)
     except (TypeError, ValueError):
@@ -577,12 +662,6 @@ def build_md_run(md_state: dict, sinner_sel: dict, sinner_excl: dict = None):
     if not hard and 1 <= flip <= 5:
         hard = True
         settings["hard_from_floor"] = flip
-
-    # "F3 Hard": start Normal, flip to Hard on floor 3. Never Extreme.
-    if md_state.get("custom_run") and md_state.get("custom_strategy") == "F3 Hard":
-        hard = True
-        settings["hard_from_floor"] = 3
-        settings["infinity"] = False
 
     priority, avoid = _build_packs(md_state.get("packs", {}),
                                    md_state.get("global_packs", {}))

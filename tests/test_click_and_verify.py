@@ -7,13 +7,12 @@ simulate the screen changing post-click.
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 import numpy as np
 import pytest
 
 from src.wbcore.callsite import CallSite
-from src.wbcore.detection import Match
 from src.wbcore.input import Mouse
 from src.wbcore.regionspec import Region, ScreenRect, WindowGeometry
 from src.wbcore.verifier import Verifier

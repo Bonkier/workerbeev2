@@ -5,7 +5,6 @@ from __future__ import annotations
 import platform
 from typing import Any, Optional
 
-from .callsite import CallSiteBundle, build_call_sites
 from .pipeline import build_pipeline
 from .regionspec import WindowGeometry
 from .vision import Finder, TemplateLoader
@@ -87,7 +86,6 @@ def live_ops(
     from .detection import ColorMode
     from .input import Mouse
     from .ops import Ops
-    from .pipeline import BackendAdapter
     from .verifier import Verifier
     from .vision import Finder, TemplateLoader
 
@@ -121,21 +119,4 @@ def live_ops(
     return finder, mouse, verifier, ops
 
 
-def live_call_sites(
-    *,
-    prefilled_templates: Optional[dict[str, Any]] = None,
-    default_conf: float = 0.9,
-) -> tuple[Finder, Mouse, Verifier, CallSiteBundle]:
-    """Live pipeline plus the alias bundle (loc / click / now / try_click / now_click)."""
-    finder, mouse, verifier = live_pipeline(
-        prefilled_templates=prefilled_templates,
-        default_conf=default_conf,
-    )
-    bundle = build_call_sites(
-        finder, mouse, verifier,
-        default_conf=default_conf,
-    )
-    return finder, mouse, verifier, bundle
-
-
-__all__ = ["live_pipeline", "live_call_sites", "live_ops"]
+__all__ = ["live_pipeline", "live_ops"]

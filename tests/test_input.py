@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-import pytest
 
 from src.wbcore.input import InputBackend, Mouse
 from src.wbcore.regionspec import WindowGeometry

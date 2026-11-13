@@ -33,7 +33,6 @@ def update_pointer_scale(accumulated_raw, start_pos, current_pos):
         return
 
     _POINTER_STATE["scale"] = observed_scale
-    print(f"Adjusting pointer scale to: {_POINTER_STATE['scale']}")
 
 
 def execute_trajectory(dev, raw_path, times, emit_func=None):

@@ -30,10 +30,6 @@ def set_enabled(hud=None, vision=None, path=None):
             _enabled["path"] = bool(path)
 
 
-def wants_hud() -> bool:
-    return _enabled["hud"]
-
-
 def wants_vision() -> bool:
     return _enabled["vision"]
 
@@ -113,17 +109,13 @@ def floor(level, pack):
     _emit({"kind": "floor", "floor": int(level), "pack": str(pack or "")})
 
 
-def restart(duration):
-    """Run restarted partway (e.g. THRILL F1 forfeit). No run_result follows;
-    GUI buffers this and prepends 'Restart - MM:SS' to the next completed run."""
-    _emit({"kind": "restart", "duration": float(duration)})
-
-
 def gifts(items):
     """End-of-run gift inventory from the floor-5 fuse shelf:
-    [(name, uptied_bool), ...]. Buffered by the GUI into the next run_result."""
+    [(name, level), ...] with the level 0, 1 (+) or 2 (++). Buffered by
+    the GUI into the next run_result."""
     _emit({"kind": "gifts",
-           "items": [{"name": str(n), "uptied": bool(u)} for n, u in items]})
+           "items": [{"name": str(n), "level": int(u), "uptied": bool(u)}
+                     for n, u in items]})
 
 
 def reset():

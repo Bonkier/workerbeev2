@@ -98,30 +98,33 @@ def load_market_catalog(refresh: bool = False) -> dict:
     return cat
 
 
-def market_gift_names() -> list:
-    """All gift display names, ordered by keyword, then tier, then name."""
-    cat = load_market_catalog()
-    return sorted(
-        cat, key=lambda n: (cat[n]["keyword"], cat[n]["tier"], n.lower())
-    )
-
-
 def market_gift_info(name: str):
     """{keyword, tier, path, sell_path, buy_path} for one gift, or None."""
     return load_market_catalog().get(name)
 
 
-# SAIKAI Market/Fuse starter tags (display names). Seeds the editable
-# per-run market config the first time SAIKAI is selected in the UI; the
-# user is free to change it from there. Only the two T4s are fuse targets.
+# SAIKAI market starter tags (display names), as the guide sheet lays the
+# shops out. Seeds the editable per-run market config the first time SAIKAI
+# is selected in the UI; the user is free to change it from there.
 SAIKAI_MARKET_KEEP = [
     "Spiderweb Entangled in Red", "Clear Mirror, Calm Water", "Sundered Memory",
-    "Endorphin Kit", "Nebulizer", "Stone Tomb", "Emerald Elytra",
+    "Artistic Sense", "Stone Tomb", "Emerald Elytra", "Nebulizer",
+    "Endorphin Kit", "Contaminated Needle & Thread",
 ]
-SAIKAI_MARKET_BUY = SAIKAI_MARKET_KEEP[1:]     # buy priority order
-SAIKAI_MARKET_FUSE = SAIKAI_MARKET_KEEP[1:3]   # Clear Mirror, Sundered Memory
+# Buy priority: Clear Mirror off any shelf, the Poise gifts as the sheet
+# ranks them, then the floor 2 and floor 4 gifts.
+SAIKAI_MARKET_BUY = [
+    "Clear Mirror, Calm Water", "Emerald Elytra", "Nebulizer", "Endorphin Kit",
+    "Contaminated Needle & Thread", "Sundered Memory",
+]
+# A short target holds the later ones, so the sheet's optional Artistic
+# Sense only comes up once the other two are crafted.
+SAIKAI_MARKET_FUSE = [
+    "Clear Mirror, Calm Water", "Sundered Memory", "Artistic Sense",
+]
 SAIKAI_MARKET_ENH2 = [
-    "Clear Mirror, Calm Water", "Nebulizer", "Stone Tomb", "Emerald Elytra",
+    "Clear Mirror, Calm Water", "Stone Tomb", "Emerald Elytra", "Nebulizer",
+    "Contaminated Needle & Thread", "Artistic Sense",
 ]
 SAIKAI_MARKET_TAGS = {
     "keep_fuse": list(SAIKAI_MARKET_KEEP),

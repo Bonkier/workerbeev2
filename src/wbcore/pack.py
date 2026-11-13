@@ -669,22 +669,18 @@ def _pack_search_window(level, candidates, tag):
         return None
     time.sleep(0.8)
 
-    # 2. Refresh the offerings (the red logo above the packs).
-    if "packrefresh" in PTH:
-        tap_center("packrefresh", tsize=(24, 24), wait=3)
-        time.sleep(1.0)
-
-    # 2b. Verify we are in the right difficulty UI now (NORMAL banner
-    #     on F1-3, HARD banner on F4-5). Best-effort; logged but not
-    #     fatal because the banner template can be flaky.
+    # 2. The window's tab names the difficulty it lists (NORMAL or HARD).
+    #    Best-effort: a miss is logged, not fatal.
     banner = "hardpackUI" if state.HARD else "normalpackUI"
     if banner in PTH and not ops.find(banner, region=(0, 0, 1920, 1080),
                                        timeout=2):
         logging.warning(
-            "%s: %s banner not detected after refresh; pack UI "
-            "or difficulty may be wrong.",
+            "%s: %s tab not detected; the search window may be "
+            "listing the other difficulty.",
             tag, banner,
         )
+    # Let the grid finish drawing before the first look at it.
+    time.sleep(1.0)
 
     # 3. Hunt for a wanted pack in the visible grid; scroll down by one
     #    tick and retry up to ten times before giving up.
@@ -849,12 +845,12 @@ def pack() -> bool:
 
     logging.info("%d packs", card_count)
 
-    # User-configured Pack Search fallback (Packs tab). SAIKAI honours it
+    # User-configured Pack Search fallback (Floor Packs/Market tab). SAIKAI honours it
     # like ordinary runs - the script's priorities still steer the pick and
     # the refresh hunt, but the search window opens only when the user
-    # configured this floor. THRILL keeps managing its own packs.
+    # configured this floor.
     _cands = _configured_search_candidates(state.LVL)
-    custom_search = (state.RUN_SCRIPT != "thrill" and bool(_cands))
+    custom_search = bool(_cands)
     strict = custom_search
     # The configured pack itself: while hunting it (refreshes + the search
     # window) it is the ONLY acceptable pick on this floor.

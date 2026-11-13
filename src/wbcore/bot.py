@@ -7,7 +7,7 @@ from .event import event
 from .pack import pack
 from .move import move
 from .grab import grab_card, grab_EGO, confirm, get_adversity
-from .shop import shop, finish_gift_scan
+from .shop import shop, finish_gift_scan, snapshot_runwide
 from .lux import grind_lux, check_enkephalin
 from .teams import TEAMS, HARD
 from .utils import params as p
@@ -316,6 +316,7 @@ def gift_search(targets):
     # Group by keyword so same-keyword picks share one tab click; order kept.
     picks.sort(key=lambda x: x[1]["keyword"])
     selected = 0
+    taken = []
     current_kw = None
     for name, info in picks:
         kw = info["keyword"]
@@ -339,6 +340,7 @@ def gift_search(targets):
                      and (_gift_scroll(12) or _find_and_click_gift(info["path"])))
         if found:
             selected += 1
+            taken.append(name)
             logging.info("gift search: selected '%s' (%s).", name, kw)
         else:
             logging.warning("gift search: '%s' not found in the '%s' grid.", name, kw)
@@ -350,6 +352,7 @@ def gift_search(targets):
     if selected:
         tap_center("searchselect", tsize=(46, 18), wait=3)
         _leave_gift_menu()
+        p.RUN_HELD = set(getattr(p, "RUN_HELD", None) or ()) | set(taken)
     else:
         # Nothing selected: back out of the overlay so the run isn't stuck on it.
         logging.warning("gift search: nothing selected; backing out of the overlay.")
@@ -362,29 +365,56 @@ def gift_search(targets):
 _ARCHETYPE_ROWS_Y = (395, 549, 703)
 
 
+def _starter_pick():
+    """The gift picked under BUILD > Starting gifts: (the team table entry
+    of its keyword, its name), or (None, None) when nothing is picked."""
+    name = str(getattr(p, "STARTER_GIFT", "") or "")
+    if not name:
+        return None, None
+    if getattr(p, "RUN_SCRIPT", "") == "hollow":
+        from .hollow import STARTING_GIFT
+        if name == STARTING_GIFT:
+            return None, None           # the run's own gift, found its own way
+    from . import starter_gifts
+    team = TEAMS.get(starter_gifts.keyword_of(name).upper())
+    if team is None:
+        logging.warning("Starter gift: %s is not on the archetype screen; "
+                        "the team keyword's usual pick is taken.", name)
+        return None, None
+    return team, name
+
+
 def _select_archetype_gifts(team=None, row=None):
-    """Starter-gift selection on the archetype screen. `team` is the team
-    table entry whose keyword is clicked (the run's own by default); `row`,
-    an index or a callable run once that keyword's gifts show, overrides the
-    team's usual row. Star Shower adds a second gift, Perfected Possibility
-    a third."""
+    """Starter-gift selection on the archetype screen. A pick made under
+    BUILD > Starting gifts has its own keyword clicked, whatever the team,
+    and is taken from the row its art is on. Without one, `team` (the run's
+    own by default) has its keyword clicked and `row`, an index or a
+    callable run once that keyword's gifts show, or else the team's usual
+    row, is taken. Star Shower adds a second gift, Perfected Possibility a
+    third."""
+    picked, pick = _starter_pick()
+    if picked is not None:
+        team, row = picked, None
     team = team or p.GIFTS[0]
     ClickAction(team["checks"][2], ver="gifts!").execute(try_click)
-    if callable(row):
+    if pick:
+        from . import starter_gifts
+        row = starter_gifts.find_row(pick)
+        if row is None:
+            logging.warning("Starter gift: %s not seen among the %s gifts; "
+                            "taking row %d, the usual pick.", pick,
+                            team["checks"][0], team["checks"][5] + 1)
+    elif callable(row):
         row = row()
     if row is None:
         row = team["checks"][5]
-    rows = [row]
-    if p.BUFF[3]:
-        rows += [i for i in (0, 1) if i not in rows][:1]
-    if p.BUFF[9]:
-        rows += [i for i in (2, 0, 1) if i not in rows][:1]
+    from .starter_gifts import rows_taken
+    rows = rows_taken(row, p.BUFF[3], p.BUFF[9])
     for i in sorted(set(rows)):
         ClickAction((1239, _ARCHETYPE_ROWS_Y[i]), ver="selected!").execute(try_click)
     ClickAction((1624, 882)).execute(try_click)
 
 
-_SPIDERWEB_GIFT = "Spiderweb Entangled in Red"
 _FULL_SCREEN = (0, 0, 1920, 1080)
 
 
@@ -424,23 +454,21 @@ def _starter_get_dialog(timer=3.0) -> bool:
 
 
 def _starting_gift_targets():
-    """The gifts the EGO Gift Search looks for on this run, up to three."""
+    """The gifts the EGO Gift Search looks for on this run, up to three:
+    the picks as the picker holds them, whatever the run. A scripted run's
+    own gifts are put there when the run is picked, and are the user's."""
     targets = [str(n) for n in (getattr(p, "GIFT_SEARCH", None) or [])]
-    if p.RUN_SCRIPT == "saikai_ryoshu":
-        targets = [_SPIDERWEB_GIFT] + [t for t in targets if t != _SPIDERWEB_GIFT]
-    elif p.RUN_SCRIPT == "hollow":
-        from .hollow import SEARCH_GIFTS, STARTING_GIFT
-        targets = list(SEARCH_GIFTS) + [
-            t for t in targets if t not in SEARCH_GIFTS and t != STARTING_GIFT]
+    if p.RUN_SCRIPT == "hollow":
+        from .hollow import STARTING_GIFT
+        targets = [t for t in targets if t != STARTING_GIFT]   # the starter screen's
     return targets[:3]
 
 
 def select_starting_gift():
     """Run-start gift selection: archetype picks, then (if any are chosen) the
-    EGO Gift Search for the user's gifts. SAIKAI always searches Spiderweb,
-    first and mandatory; Thrill and standard runs search the user's picks.
-    HOLLOW takes Torn Bandolier from the Pierce starter list and searches
-    Grand Welcome and Sharp Needle & Thread, leaving one slot to the user."""
+    EGO Gift Search for the picked gifts, whatever the run. HOLLOW takes
+    Torn Bandolier from the Pierce starter list unless another gift is
+    picked."""
     if p.RUN_SCRIPT == "hollow":
         from .hollow import starting_gift_row, starting_team
         _select_archetype_gifts(starting_team(), starting_gift_row)
@@ -483,7 +511,7 @@ def dungeon_start() -> bool:
         lambda: wait_while_condition(lambda: now.button("connecting"), interval=0.2, timer=20),
         lambda: wait_while_condition(lambda: not now.button("ConfirmTeam"), interval=0.2, timer=10),
         select_team,
-        squad_swap,   # swap 0-energy IDs for +5 before confirming (THRILL / opt-in)
+        squad_swap,   # swap 0-energy IDs for +5 before confirming (opt-in)
         lambda: try_click.button("ConfirmTeam"),
         lambda: time.sleep(0.5),
         # ConfirmInvert in a retry loop; a one-shot click missed if the dialog
@@ -502,9 +530,7 @@ def dungeon_start() -> bool:
         Action("Confirm.0", ver="refuse"),
 
         lambda: time.sleep(0.2),
-        lambda: (ensure_gift_search_on()
-                 if (p.RUN_SCRIPT in ("saikai_ryoshu", "hollow")
-                     or getattr(p, "GIFT_SEARCH", None))
+        lambda: (ensure_gift_search_on() if _starting_gift_targets()
                  else now_click.button("giftSearch")),
         select_starting_gift,
 
@@ -562,14 +588,12 @@ def dungeon_start() -> bool:
         except gui.PauseException as e:
             pause(e.window)
         if failed > 5:
-            print("Initialization error")
             logging.error(
                 "Initialization error: 5 retries exhausted; last entry "
                 "key=%r, last error=%s. Macro cannot start a run from the "
                 "current screen.",
                 last_failed_key or "?", last_failed_exc or "?")
             return False
-    print("Entering MD!")
     logging.info("dungeon_start: entered Mirror Dungeon")
     return True
 
@@ -680,10 +704,8 @@ def dungeon_end():
             if p.APP: QMetaObject.invokeMethod(p.APP, "stop_execution", Qt.ConnectionType.QueuedConnection)
             raise StopExecution
         if failed > 5:
-            print("Termination error")
             logging.error("Termination error")
             break
-    print("MD Finished!")
     _log_run_summary()
 
 
@@ -726,108 +748,6 @@ fail_locations = {
     "loading": 5,
 }
 
-# THRILL forfeit-to-claim flow (F3 forfeit). Screen sequence:
-#   1. defeat -> dismiss
-#   2. ClaimInvert (black Claim button)
-#   3. Claim (white Claim button; both must be clicked to keep partial rewards)
-#   4. ConfirmInvert -> loading -> Drive
-# Default FAIL has Claim followed by GiveUp (discards rewards); Thrill removes
-# GiveUp and chains both Claims to keep them.
-#
-# Action(click=(x,y)) bypasses template-find for reliability on fade-in screens.
-# Sleeps between actions stop the verifier from re-clicking ClaimInvert before
-# the Claim template has rendered (which left the run un-claimed).
-THRILL_FAIL = [
-    Action("defeat", click=(1693, 841)),
-    lambda: win_moveTo(1710, 982),
-    lambda: time.sleep(0.8),
-    Action("ClaimInvert", click=(1315, 818)),
-    # 1.0s lets the rewards card slide in before looking for white Claim.
-    lambda: time.sleep(1.0),
-    # White Claim via template-find (not blind coord click): the button can
-    # drift, and a hardcoded click made the verifier wait forever for a
-    # ConfirmInvert that never appeared.
-    Action("Claim", ver="ConfirmInvert"),
-    lambda: time.sleep(0.6),
-    # NO Action("GiveUp") here - keeps the partial rewards.
-    Action("ConfirmInvert", ver="loading"),
-    loading_halt,
-    lambda: try_loc.button("Drive")
-]
-
-# Resume indices start at the preceding sleep to preserve the settle.
-THRILL_FAIL_LOCATIONS = {
-    "defeat": 0,
-    "ClaimInvert": 2,
-    "Claim": 4,
-    "ConfirmInvert": 7,
-    "loading": 8,
-}
-
-# THRILL F1 RESTART: walked when thrill_market_f1 sets p.THRILL_F1_RESTART.
-# Same shape as FAIL but uses GiveUp instead of Claim (discards rewards).
-F1_RESTART_FAIL = [
-    Action("defeat", click=(1693, 841)),
-    lambda: win_moveTo(1710, 982),
-    Action("GiveUp"),
-    Action("ConfirmInvert", ver="loading"),
-    loading_halt,
-    lambda: try_loc.button("Drive")
-]
-
-F1_RESTART_FAIL_LOCATIONS = {
-    "defeat": 0,
-    "GiveUp": 2,
-    "ConfirmInvert": 3,
-    "loading": 4,
-}
-
-
-def _thrill_f1_forfeit_no_claim():
-    """Forfeit a Thrill F1 run (market couldn't craft Thrill). ESC -> forfeit
-    -> ConfirmInvert -> walk the GiveUp path so partial rewards are DISCARDED.
-    tele.restart() records this as 'Restart - MM:SS' on the next completed run."""
-    logging.info("THRILL: F1 forfeit (no claim) - starting.")
-    time.sleep(0.6)
-    # ESC opens the in-game pause menu (more reliable than the battle-UI cog,
-    # which uses a different template on the map screen).
-    gui.press("esc")
-    time.sleep(0.9)
-    # try_click on the confirm sequence so a missed match retries (strict
-    # raised before the click landed and left the run un-forfeited).
-    try:
-        chain_actions(try_click, [
-            Action("forfeit"),
-            Action("ConfirmInvert", ver="connecting"),
-        ])
-        connection()
-    except Exception as exc:
-        logging.warning("THRILL: F1 forfeit - confirm sequence failed: %s",
-                        exc)
-    time.sleep(1.2)
-    # Walk the no-claim defeat path with a higher failed ceiling because the
-    # map-screen forfeit transition is animation-heavy.
-    failed = 0
-    while True:
-        try:
-            for key in F1_RESTART_FAIL_LOCATIONS.keys():
-                if now.button(key):
-                    i = F1_RESTART_FAIL_LOCATIONS[key]
-                    break
-            else: break
-            try:
-                chain_actions(try_click, F1_RESTART_FAIL[i:])
-            except RuntimeError:
-                failed += 1
-                win_moveTo(1710, 982)
-        except gui.PauseException as e:
-            pause(e.window)
-        if failed > 8:
-            logging.error("THRILL: F1 forfeit - termination error.")
-            break
-    logging.info("THRILL: F1 forfeit complete - restart ready.")
-
-
 def _forfeit_stuck_run():
     """Give up a run whose battle cannot be won. fight() backs out after three
     lost attempts, but that only returns to the map, where the same node is
@@ -861,17 +781,8 @@ def _forfeit_stuck_run():
 
 def dungeon_fail():
     failed = 0
-    # THRILL uses the GiveUp-less FAIL so partial rewards are claimed; same for
-    # the "Claim rewards on defeat" Behaviour toggle.
-    is_thrill = (getattr(p, "RUN_SCRIPT", "") == "thrill")
-    saikai_leave = bool(getattr(p, "SAIKAI_LEAVE_CLAIM", False))
-    p.SAIKAI_LEAVE_CLAIM = False              # consume; fresh for the next run
-    if is_thrill or saikai_leave:
-        fail_seq = THRILL_FAIL
-        locations = THRILL_FAIL_LOCATIONS
-        logging.info("%s: GiveUp-less FAIL flow to keep partial rewards.",
-                     "THRILL" if is_thrill else "SAIKAI floor-leave")
-    elif getattr(p, "CLAIM_ON_DEFEAT", False):
+    # The "Claim rewards on defeat" Behaviour toggle keeps the partial rewards.
+    if getattr(p, "CLAIM_ON_DEFEAT", False):
         # Drop Action("GiveUp") so partial Claim rewards are kept.
         fail_seq = [step for step in FAIL
                     if not (isinstance(step, Action) and step.key == "GiveUp")]
@@ -898,10 +809,8 @@ def dungeon_fail():
         except gui.PauseException as e:
             pause(e.window)
         if failed > 5:
-            print("Termination error")
             logging.error("Termination error")
             break
-    print("MD Failed!")
 
 
 def main_loop():
@@ -913,14 +822,6 @@ def main_loop():
     p.MOVE_ANIMATION = False
     p.LVL = 1
     while True:
-        # THRILL F1 restart: forfeit and return None so execute_me records
-        # this as a Restart telemetry entry instead of a defeat.
-        if getattr(p, "THRILL_F1_RESTART", False):
-            p.THRILL_F1_RESTART = False
-            logging.info('Run Restarted (Thrill F1 forfeit, no claim)')
-            _thrill_f1_forfeit_no_claim()
-            return None
-
         if getattr(p, "STUCK_FORFEIT", False):
             p.STUCK_FORFEIT = False
             _forfeit_stuck_run()
@@ -959,21 +860,12 @@ def main_loop():
             return True
 
         if now.button("defeat"):
-            # THRILL F3 forfeit lands on the defeat screen by design; treat it
-            # as a COMPLETED run (not retried). F1/F2 defeats still retry.
-            is_thrill_f3_forfeit = (
-                getattr(p, "RUN_SCRIPT", "") == "thrill"
-                and p.LVL == 3
-            )
-            if is_thrill_f3_forfeit:
-                logging.info('Run Completed (Thrill F3 forfeit)')
-            else:
-                p.RUN_BATTLES_LOST = int(
-                    getattr(p, "RUN_BATTLES_LOST", 0) or 0) + 1
-                logging.info('Run Failed (run battles lost: %d)',
-                             p.RUN_BATTLES_LOST)
+            p.RUN_BATTLES_LOST = int(
+                getattr(p, "RUN_BATTLES_LOST", 0) or 0) + 1
+            logging.info('Run Failed (run battles lost: %d)',
+                         p.RUN_BATTLES_LOST)
             dungeon_fail()
-            return is_thrill_f3_forfeit
+            return False
 
         try:
             phase = "pack";      ck  = pack()
@@ -1094,7 +986,6 @@ def set_team(team, teams, keywordless):
     p.PICK = generate_packs_pr(p.PRIORITY_INPUT)
     p.IGNORE = generate_packs_av(p.AVOID_INPUT)
     p.PICK_ALL = generate_packs_all(p.PRIORITY_INPUT)
-    print(p.PICK, p.IGNORE, p.PICK_ALL)
 
     logging.info(f'Team: {p.TEAM[0]}')
     
@@ -1139,14 +1030,10 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
     # spiders deploy into later battles as earlier ones die, and every one of
     # them has to go.
     p.SAIKAI_DEPLOYED = min(len((teams.get(0) or {}).get("sinners") or []) or 7, 12)
-    p.SAIKAI_STOP_FLOOR = int(settings.get('saikai_stop_floor', 0) or 0)
     p.HOLLOW_HEAL = str(settings.get('hollow_heal', '') or '')
     p.HOLLOW_FALLBACK = [str(n) for n in (settings.get('hollow_fallback') or [])]
-    p.SAIKAI_LEAVE_CLAIM = False
-    p.THRILL_EXCLUDE = list(settings.get('thrill_exclude', []) or [])
+    p.STARTER_GIFT = str(settings.get('starter_gift') or '')
     p.SWAP_MAX_ENERGY = bool(settings.get('swap_max_energy', False))
-    p.THRILL_DONE = False
-    p.THRILL_F1_RESTART = False
     p.STUCK_FORFEIT = False
 
     p.BONUS = settings['bonus']
@@ -1211,6 +1098,7 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
         n: dict(caps)
         for n, caps in (sr_cfg.get('repeats') or {}).items()
     }
+    p.SKILL_REPLACE_SKIP_FLOORS = {int(f) for f in (sr_cfg.get('skip_floors') or [])}
     p.SKILL_REPLACE_USED_THIS_SHOP = 0
     p.SKILL_REPLACE_SINNERS_THIS_SHOP = set()
 
@@ -1229,14 +1117,10 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
     p.MOUSE_SPEED = int(settings.get('mouse_speed', 100) or 100)
     p.MACRO_PROFILE = str(settings.get('macro_profile', 'SAFE') or 'SAFE').upper()
     p.MACRO_RHYTHM = bool(settings.get('rhythm', True))
-    p.MOUSE_MEMORY = bool(settings.get('mouse_memory', True))
-    try:
-        from .input.click_memory import MEMORY
-        MEMORY.configure(enabled=p.MOUSE_MEMORY)
-    except Exception:
-        pass
     p.GIFT_SEARCH = [str(n) for n in (settings.get('gift_search') or [])][:3]
     p.MARKET_GIFTS = dict(settings.get('market_gifts') or {})
+    p.MARKET_FLOORS = {int(k): dict(v) for k, v in
+                       (settings.get('market_floors') or {}).items()}
     # SAIKAI: the market is no longer forced. run_config supplies the user's
     # editable SAIKAI tag slot (preset-seeded) as market_gifts; here we only
     # route it through the custom market flow with fuel buying on so the T4
@@ -1260,6 +1144,7 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
         # scan nothing could be crafted.
         p.DEFAULT_MARKET_WORKFLOW = False
         p.SKIP_EGO_CHECK = False
+    snapshot_runwide()
     p.APP = app
     p.WARNING = warning
 
@@ -1278,7 +1163,6 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
         team_keys = [key for key in teams.keys() if key < 7]
 
         if lux_keys:
-            print("Entering Lux!")
             tele.phase("Luxcavation")
             grind_lux(count_exp, count_thd, teams)
             if team_keys and p.APP: QMetaObject.invokeMethod(p.APP, "lux_hide", Qt.ConnectionType.QueuedConnection)
@@ -1286,7 +1170,6 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
                 close_limbus()
             
         if team_keys:
-            print("Entering MD!")
             rotator = cycle(team_keys)
             keywordless = settings['keywordless']
 
@@ -1319,23 +1202,12 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
                     p.RUN_GIFTS_SCANNED = False
                     p.CUSTOM_ENHANCE_DONE = {}
                     p.CUSTOM_FUSE_DONE = set()
+                    p.RUN_HELD = set()
                     try:
                         set_team(team, teams, keywordless)
                         if p.RUN_SCRIPT == "hollow":
                             from .hollow import begin_run
                             begin_run()
-                        # THRILL: scope the team's auto-buy list to ONLY
-                        # thrill so the F1 shop does not snag the rest of
-                        # the Rupture pool (bundle/lamp/breast/etc.) via
-                        # buy_known's per-team iteration. The tier-based
-                        # fallback in buy() still picks T2/T3 fuel for
-                        # fusion - this only removes the team-buy snag, it
-                        # does not touch the fuel path. Shallow-copy the
-                        # team dict first so the shared TEAMS dict in
-                        # teams.py is never mutated across runs.
-                        if p.RUN_SCRIPT == "thrill" and p.GIFTS:
-                            p.GIFTS[0] = dict(p.GIFTS[0])
-                            p.GIFTS[0]["buy"] = ["thrill"]
                         # Convert/bank enkephalin at the lobby BEFORE the run starts.
                         if p.NETZACH: check_enkephalin()
                     except gui.PauseException as e:
@@ -1346,12 +1218,6 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
                         continue
                     run_t0 = time.time()
                     completed = main_loop()
-                    # main_loop returns None for THRILL F1 restart; emit a
-                    # Restart telemetry entry rather than counting a defeat.
-                    if completed is None:
-                        tele.restart(time.time() - run_t0)
-                        completed = False
-                        continue
                     finish_gift_scan()      # the last shop's shelf, named off the shop
                     tele.run_result(completed, duration=time.time() - run_t0,
                                     team=(p.TEAM[0] if p.TEAM else ""),

@@ -3,8 +3,6 @@
 they run with zero IO."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Optional
 
 import numpy as np
 import pytest
@@ -14,7 +12,6 @@ from src.wbcore.callsite import (
     CallSiteBundle,
     build_call_sites,
 )
-from src.wbcore.detection import Match
 from src.wbcore.input import Mouse
 from src.wbcore.regionspec import Region, WindowGeometry
 from src.wbcore.verifier import Verifier

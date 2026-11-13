@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Regressions from one user report: an unwinnable boss re-entered for hours,
 an avoided pack picked anyway, a window-size popup that stole focus, SAIKAI's
-gift leaking into Thrill runs, and exported configs carrying the Discord
+gift leaking into the next run, and exported configs carrying the Discord
 token. Each case uses the values from that report."""
 
 import inspect
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from gui_v2 import run_config, settings as S
@@ -147,8 +148,8 @@ def test_the_advisory_is_shown_without_taking_focus():
     dlg = D.show_advisory(None, "Game window (1920 x 1200) is not 16:9")
     try:
         assert not dlg.isModal()
-        assert dlg.testAttribute(RC.Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        assert dlg.windowFlags() & RC.Qt.WindowType.WindowDoesNotAcceptFocus
+        assert dlg.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        assert dlg.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
     finally:
         dlg.close()
 
@@ -159,33 +160,6 @@ def test_window_size_advice_is_raised_once_per_size():
     assert "_advised_window_size != (client_width, client_height)" in src
     assert B._advised_window_size is None or isinstance(
         B._advised_window_size, tuple)
-
-
-# --- the SAIKAI gift lock ----------------------------------------------
-
-def test_turning_saikai_off_unequips_its_gift():
-    from gui_v2.mirror_dungeon_page import _GiftGallery
-    g = _GiftGallery()
-    gift = "Spiderweb Entangled in Red"
-    assert gift in g._tiles
-    g.set_locked([gift])                 # SAIKAI
-    assert gift in g.selected()
-    g.set_locked([])                     # switch to Thrill
-    assert gift not in g.selected()
-
-
-def test_it_is_unequipped_even_if_it_was_picked_before_saikai():
-    from gui_v2.mirror_dungeon_page import _GiftGallery
-    g = _GiftGallery()
-    gift = "Spiderweb Entangled in Red"
-    other = next(n for n in g._tiles if n != gift)
-    g.set_selected([gift, other])
-    g.set_locked([gift])
-    g.set_locked([])
-    assert gift not in g.selected()
-    assert other in g.selected()         # other picks are left alone
-    g.set_selected([gift])               # and it can be picked by hand again
-    assert gift in g.selected()
 
 
 # --- exports and credentials -------------------------------------------
@@ -204,9 +178,9 @@ def _fake_store(monkeypatch, configs, live):
 
 def test_export_never_writes_the_discord_section(monkeypatch, tmp_path):
     _fake_store(monkeypatch,
-                {"THRILL": {"mirror": {"run_count": 3}, "discord": _SECRET}}, {})
-    out = tmp_path / "THRILL.json"
-    assert S.export_config_to("THRILL", str(out))
+                {"FARM": {"mirror": {"run_count": 3}, "discord": _SECRET}}, {})
+    out = tmp_path / "FARM.json"
+    assert S.export_config_to("FARM", str(out))
     text = out.read_text(encoding="utf-8")
     assert "token_enc" not in text and "dpapi" not in text
     assert "channel_id" not in text

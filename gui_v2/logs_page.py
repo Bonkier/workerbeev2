@@ -3,20 +3,20 @@
 
 Rich pipe-separated format (module, level, location, message) with a
 time-ago annotation, smart-scroll tail, and auto-refresh while visible.
-Lines are color-coded per level.
+Lines are color-coded per level. Only the file's tail is read, and the
+view is filled in one pass, so showing the page costs no visible pause.
 """
 
+import html
 import logging
 import os
 import re
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import (
-    QColor, QFont, QTextCharFormat, QTextCursor, QTextOption,
-)
+from PySide6.QtGui import QFont, QTextOption
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout, QWidget,
+    QHBoxLayout, QPlainTextEdit, QVBoxLayout, QWidget,
 )
 
 from .theme import Colors, Fonts, Sizing
@@ -41,34 +41,6 @@ _TIMESTAMP_COLOR = Colors.TEXT_TERTIARY
 _MODULE_COLOR    = Colors.INFO          # subtle blue tint for the source
 _LOC_COLOR       = Colors.TEXT_TERTIARY
 
-# Logger names -> friendly module labels.
-_MODULE_ALIASES = {
-    "src.wbcore.bot":      "Bot",
-    "src.wbcore.battle":   "Battle",
-    "src.wbcore.shop":     "Shop",
-    "src.wbcore.move":     "Move",
-    "src.wbcore.grab":     "Grab",
-    "src.wbcore.event":    "Event",
-    "src.wbcore.lux":      "Lux",
-    "src.wbcore.pack":     "Pack",
-    "src.wbcore.teams":    "Teams",
-    "src.wbcore.stats":    "Stats",
-    "src.wbcore.cache":    "Cache",
-    "src.wbcore.utils.utils":        "Utils",
-    "src.wbcore.utils.telemetry":    "Telemetry",
-    "src.wbcore.utils.profiles":     "Profile",
-    "src.wbcore.utils.params":       "Params",
-    "src.wbcore.utils.paths":        "Paths",
-    "src.wbcore.utils.log_config":   "Log",
-    "wbcore.bot":     "Bot",
-    "wbcore.battle":  "Battle",
-    "wbcore.shop":    "Shop",
-    "wbcore.move":    "Move",
-    "wbcore.grab":    "Grab",
-    "wbcore.event":   "Event",
-    "wbcore.lux":     "Lux",
-    "wbcore.pack":    "Pack",
-}
 
 # Pipe format: ts | name | LEVEL | funcName:lineno | message
 # Legacy:      ts - LEVEL - message   (kept for pre-update lines)
@@ -85,24 +57,41 @@ _LEGACY_RE = re.compile(
 )
 
 
+# How much of the file's end is read; 4000 lines fit in it many times over.
+_TAIL_BYTES = 1 << 20
+
+
+def _read_tail(path: str) -> list[str]:
+    """The last lines of the file, read from its tail only."""
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        f.seek(max(0, size - _TAIL_BYTES))
+        data = f.read()
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if size > _TAIL_BYTES and lines:
+        del lines[0]                    # cut by the seek
+    return lines
+
+
+def _span(text: str, color: str, bold: bool = False) -> str:
+    style = "color:%s;" % color + ("font-weight:bold;" if bold else "")
+    return '<span style="%s">%s</span>' % (style, html.escape(text, quote=False))
+
+
 def _candidate_log_paths() -> list[str]:
     from wbcore.utils.datadir import wb_data_dir
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return [
         os.path.join(wb_data_dir(), "game.log"),   # current location (survives updates)
-        os.path.join(base, "game.log"),            # legacy / dev fallbacks
-        os.path.join(base, "src", "game.log"),
-        os.path.join(base, "logs", "game.log"),
+        os.path.join(base, "game.log"),            # legacy / dev fallback
     ]
 
 
 def _module_label(name: str) -> str:
-    """Short, human-friendly label for a logger name."""
+    """The last dotted segment of a logger name."""
     if not name:
         return ""
-    if name in _MODULE_ALIASES:
-        return _MODULE_ALIASES[name]
-    # Fall back to the last dotted segment.
     tail = name.rsplit(".", 1)[-1]
     return tail or name
 
@@ -228,19 +217,13 @@ class LogsPage(QWidget):
         self._filter = Segmented(list(_LEVELS), default="DEBUG", parent=self)
         self._filter.selection_changed.connect(self._on_level)
         filt.addWidget(self._filter)
-        from .copy import LOGS_VERBOSE_HINT
-        self._dev_hint = ElidedLabel(
-            LOGS_VERBOSE_HINT, self, objectName="inlineHint")
-        # Visible at launch since DEBUG is the default level.
-        self._dev_hint.setVisible(True)
-        # Both labels elide, so they need real stretch: with stretch 0 an
-        # Ignored-policy label collapses to nothing.
-        filt.addWidget(self._dev_hint, 2)
         self._path_lbl = ElidedLabel(
             "", self, mode=Qt.TextElideMode.ElideLeft,
             objectName="inlineHint")
         self._path_lbl.setAlignment(Qt.AlignmentFlag.AlignRight
                                     | Qt.AlignmentFlag.AlignVCenter)
+        # The label elides, so it needs real stretch: with stretch 0 an
+        # Ignored-policy label collapses to nothing.
         filt.addWidget(self._path_lbl, 1)
         outer.addLayout(filt)
 
@@ -254,6 +237,9 @@ class LogsPage(QWidget):
         self._view.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self._view.setWordWrapMode(
             QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        # The lines land as rich-text blocks; keep their column padding.
+        self._view.document().setDefaultStyleSheet(
+            "div { white-space: pre-wrap; }")
         outer.addWidget(self._view, stretch=1)
 
         self._reload()
@@ -262,8 +248,6 @@ class LogsPage(QWidget):
 
     def _on_level(self, level: str):
         self._level = level
-        # Show the verbose hint only when DEBUG is selected.
-        self._dev_hint.setVisible(level == "DEBUG")
         self._apply_log_level()
         # Force a rebuild even if file content is unchanged: the filter
         # changed, so the displayed subset must too.
@@ -314,8 +298,7 @@ class LogsPage(QWidget):
             return
         self._path_lbl.setText(path)
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
+            lines = _read_tail(path)
         except OSError as exc:
             self._view.setPlainText(f"Could not read log: {exc}")
             self._last_text = None
@@ -356,56 +339,36 @@ class LogsPage(QWidget):
         sb.setValue(sb.maximum() if at_bottom else min(prev, sb.maximum()))
 
     def _render(self, parsed: list[_ParsedLine]):
-        """Paint the visible tail with per-field color formats."""
-        self._view.clear()
-        cursor = self._view.textCursor()
+        """Paint the visible tail in one pass: a block per line, each
+        field its own coloured span."""
         now = datetime.now()
-
-        ts_fmt    = self._fmt(_TIMESTAMP_COLOR)
-        mod_fmt   = self._fmt(_MODULE_COLOR, bold=False)
-        loc_fmt   = self._fmt(_LOC_COLOR)
-        crit_fmt  = self._fmt(Colors.ERROR, bold=True)
-
+        blocks = []
         for p in parsed:
+            parts = []
             if p.ts is not None:
-                cursor.insertText(p.ts.strftime("%d/%m/%Y %H:%M:%S"), ts_fmt)
-                cursor.insertText(
-                    f"  ({_time_ago(p.ts, now)})", self._fmt(Colors.TEXT_DISABLED)
-                )
-                cursor.insertText("  ", ts_fmt)
-
-            level_color = _LEVEL_COLOR.get(p.level, Colors.TEXT_SECONDARY)
-            lvl_fmt = self._fmt(level_color, bold=True)
-            cursor.insertText(f"{p.level:<8}", lvl_fmt)
-
+                parts.append(_span(p.ts.strftime("%d/%m/%Y %H:%M:%S"),
+                                   _TIMESTAMP_COLOR))
+                parts.append(_span("  (%s)" % _time_ago(p.ts, now),
+                                   Colors.TEXT_DISABLED))
+                parts.append("  ")
+            color = _LEVEL_COLOR.get(p.level, Colors.TEXT_SECONDARY)
+            parts.append(_span("%-8s" % p.level, color, bold=True))
             if p.module:
-                cursor.insertText("  ", ts_fmt)
-                cursor.insertText(p.module, mod_fmt)
+                parts.append("  " + _span(p.module, _MODULE_COLOR))
             if p.loc:
-                cursor.insertText("  ", ts_fmt)
-                cursor.insertText(p.loc, loc_fmt)
-
-            cursor.insertText("  ", ts_fmt)
-            msg_fmt = crit_fmt if p.level == "CRITICAL" else self._fmt(level_color)
-            cursor.insertText(p.message, msg_fmt)
-            cursor.insertText("\n", ts_fmt)
-
-    @staticmethod
-    def _fmt(color_hex: str, bold: bool = False) -> QTextCharFormat:
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor(color_hex))
-        if bold:
-            font = QFont()
-            font.setBold(True)
-            fmt.setFontWeight(QFont.Weight.Bold)
-        return fmt
+                parts.append("  " + _span(p.loc, _LOC_COLOR))
+            parts.append("  " + _span(p.message, color,
+                                      bold=p.level == "CRITICAL"))
+            blocks.append("<div>%s</div>" % "".join(parts))
+        self._view.clear()
+        self._view.document().setHtml("".join(blocks))
 
     # --- visibility-aware refresh ---------------------------------------
 
     def showEvent(self, event):
         super().showEvent(event)
         self._apply_log_level()   # re-arm DEBUG verbosity if it's selected
-        self._reload()
+        QTimer.singleShot(0, self._reload)   # once the page is on screen
         self._timer.start()
 
     def hideEvent(self, event):

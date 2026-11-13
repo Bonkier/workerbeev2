@@ -17,6 +17,8 @@ def page(monkeypatch):
     monkeypatch.setattr(st, "save_settings", lambda *a, **k: None)
     monkeypatch.setattr(M, "save_section", lambda *a, **k: None)
     pg = M.MirrorDungeonPage()
+    pg._view.set_selected("Advanced")       # the saved view may be Basic
+    pg._show_view("Advanced")
     pg._loading = True
     # Start from a known state whatever the saved config holds.
     for name in list(pg._skill_active):
@@ -109,7 +111,96 @@ def test_the_names_sit_beside_the_block_level_with_its_rows(page):
     page.hide()
 
 
-def test_the_hint_no_longer_runs_its_sentences_together():
-    from gui_v2.copy import MD_SKILL_REPLACEMENT_HINT_RICH as hint
-    assert "market.Input" not in hint and "skilland" not in hint
-    assert ".  " not in hint and "  " not in hint
+def test_the_swap_floors_default_to_every_floor_and_follow_each_other(page):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+    import gui_v2.mirror_dungeon_page as M
+    assert page._swap_floors == {1, 2, 3, 4, 5}
+    assert page.state()["skill_replace"]["skip_floors"] == []
+    assert len(page._swap_strips) == 2 and len(page._swap_rows) == 5
+    assert all(isinstance(s, M._FloorPicks) and s.floors() == {1, 2, 3, 4, 5}
+               for s in page._swap_strips)
+    assert page._swap_labels[0].text() == "Skills will be swapped on every shop."
+    page._swap_rows[2].setChecked(False)                  # a floor page's switch
+    assert page._swap_floors == {1, 3, 4, 5}
+    assert page.state()["skill_replace"]["skip_floors"] == [2]
+    assert all(s.floors() == {1, 3, 4, 5} for s in page._swap_strips)
+    assert page._swap_labels[1].text() == "Skills will be swapped on floors 1, 3, 4 and 5."
+    picks = page._swap_strips[0]                          # a cell on the General card
+    x = 3 * (picks._CELL_W + picks._GAP) + picks._CELL_W / 2
+    c = QPointF(x, picks._CELL_H / 2)
+    assert picks._cell_at(int(x)) == 4
+    QApplication.sendEvent(picks, QMouseEvent(
+        QEvent.Type.MouseButtonRelease, c, c, c, Qt.MouseButton.LeftButton,
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert not page._swap_rows[4].isChecked()
+    assert page.state()["skill_replace"]["skip_floors"] == [2, 4]
+    page._swap_strips[1].floor_toggled.emit(5, False)
+    assert page._swap_labels[0].text() == "Skills will be swapped on floors 1 and 3."
+    for f in (1, 3):
+        page._swap_strips[1].floor_toggled.emit(f, False)
+    assert page._swap_labels[0].text() == "No floor picked: skills will not be swapped."
+    page._swap_rows[3].setChecked(True)
+    assert page._swap_labels[0].text() == "Skills will be swapped on floor 3."
+    assert page._swap_strips[0]._tip(3).startswith("Skills will be swapped on floor 3")
+    assert page._swap_strips[0]._tip(1) == "Click to swap skills on floor 1 too."
+
+
+def test_the_swap_floors_come_back_from_a_save_and_default_when_missing(page, monkeypatch):
+    import gui_v2.mirror_dungeon_page as M
+    s = page.state()
+    s["skill_replace"]["skip_floors"] = [1, "5", "x", 9, True]
+    monkeypatch.setattr(M, "load_section", lambda *a, **k: dict(s))
+    page._restore_state()
+    assert page._swap_floors == {2, 3, 4}
+    assert not page._swap_rows[1].isChecked() and page._swap_rows[2].isChecked()
+    assert all(st.floors() == {2, 3, 4} for st in page._swap_strips)
+    del s["skill_replace"]["skip_floors"]
+    page._restore_state()
+    assert page._swap_floors == {1, 2, 3, 4, 5}
+    del s["skill_replace"]
+    page._swap_rows[2].setChecked(False)
+    page._restore_state()
+    assert page._swap_floors == {1, 2, 3, 4, 5}
+
+
+def test_the_run_builder_and_the_summary_carry_the_floors_left_dark():
+    from gui_v2 import run_config as RC
+    from gui_v2 import run_summary as RS
+    md = {"difficulty": "Normal", "teams": [{"name": "Burn", "affinities": ["Burn"]}],
+          "skill_replace": {"active": ["Faust"], "order": {}, "repeats": {},
+                            "skip_floors": ["2", 4, "x", 0, 6]}}
+    _c, _t, settings, _h = RC.build_md_run(md, {}, {})
+    assert settings["skill_replace"]["skip_floors"] == [2, 4]
+    rows = {l: v for _c, items in RS.md_summary(md) for l, v in items}
+    assert rows["Skill replacement"] == "Faust on floors 1, 3 and 5"
+    md["skill_replace"]["skip_floors"] = [1, 2, 3, 4, 5]
+    rows = {l: v for _c, items in RS.md_summary(md) for l, v in items}
+    assert rows["Skill replacement"] == "Faust on no floor"
+    md["skill_replace"].pop("skip_floors")
+    assert RC.build_md_run(md, {}, {})[2]["skill_replace"]["skip_floors"] == []
+    rows = {l: v for _c, items in RS.md_summary(md) for l, v in items}
+    assert rows["Skill replacement"] == "Faust"
+    assert RC.floors_phrase({3}) == "floor 3" and RC.floors_phrase(()) == "no floor"
+    assert RC.floors_phrase([5, 1]) == "floors 1 and 5"
+
+
+def test_the_shop_skips_the_skill_offers_on_a_floor_left_dark(monkeypatch):
+    from wbcore import shop as S
+    from wbcore.utils import params as p
+    monkeypatch.setattr(p, "SKILL_REPLACE_ACTIVE", {"Faust"}, raising=False)
+    monkeypatch.setattr(p, "SKILL_REPLACE_SKIP_FLOORS", {2, 3}, raising=False)
+    monkeypatch.setattr(p, "SKILL_REPLACE_USED_THIS_SHOP", 0, raising=False)
+    monkeypatch.setattr(p, "SUPER", "shop", raising=False)
+    scanned = []
+    monkeypatch.setattr(S, "_scan_active_sinner_offer",
+                        lambda: scanned.append(1) or (None, None, None))
+    monkeypatch.setitem(S.PTH, S._SKILL_REPLACE_MENU, S.PTH.get(S._SKILL_REPLACE_MENU, "x"))
+    monkeypatch.setattr(p, "LVL", 3, raising=False)
+    assert S.do_skill_replace() == 0 and scanned == []
+    monkeypatch.setattr(p, "LVL", 4, raising=False)
+    assert S.do_skill_replace() == 0 and scanned == [1]
+    monkeypatch.setattr(p, "SKILL_REPLACE_SKIP_FLOORS", set(), raising=False)
+    monkeypatch.setattr(p, "LVL", 2, raising=False)
+    assert S.do_skill_replace() == 0 and scanned == [1, 1]

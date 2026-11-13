@@ -17,7 +17,7 @@ import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fetch_gift_art import UA, WIKI, _get   # noqa: E402
+from fetch_gift_art import WIKI, _get   # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "ImageAssets", "keywordart")

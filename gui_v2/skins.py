@@ -8,7 +8,7 @@ switch restyles every page at once. Colour choice stays with themes.py - the
 skin decides shape and typography, the theme decides hue."""
 
 from .settings import load_settings, save_settings
-from .theme import Colors, Fonts, Sizing
+from .theme import Fonts, Sizing
 
 VOXEL = "voxel"
 LEGACY = "legacy"

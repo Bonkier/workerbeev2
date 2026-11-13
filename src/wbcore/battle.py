@@ -62,7 +62,6 @@ def ego_click(best_ego):
     else:
         for i in ego:
             res = LocateRGB.locate(PTH[i], image=image_all, region=(0, 200, 1920, 50), method=1, conf=0.8)
-            print(i, res)
             if res:
                 c0, c1 = gui.center(res)
                 win_click(c0, int(c1 + 200))
@@ -186,7 +185,7 @@ def find_skill3(background, known_rgb, threshold=40, min_pixels=10, max_pixels=1
 def select_team():
     time.sleep(1)
 
-    # Team-select status = the run's primary affinity. SAIKAI/THRILL expose this
+    # Team-select status = the run's primary affinity. SAIKAI exposes this
     # as a user override (defaults stay Poise/Rupture via p.TEAM[0]).
     affinity = p.TEAM[0].lower()
     idx = p.NAME_ORDER
@@ -206,7 +205,6 @@ def select_team():
 
     for i in range(7):
         coords = [gui.center(box) for box in LocateGray.locate_all(PTH[f"{affinity}_team"], region=REG["teams"], threshold=15, conf=0.85)]
-        print(coords)
         coords.sort(key=lambda coord: coord[1])
 
         if len(coords) > idx:
@@ -223,16 +221,16 @@ def select_team():
     time.sleep(1)
 
 
-# --- THRILL: squad max-energy swap -----------------------------------------
+# --- Squad max-energy swap ---------------------------------------------------
 # Squad screen is a 6x2 grid in canonical sinner order; slot index == SINNERS
 # index (Yi Sang=0 .. Gregor=11). Badge top-left (logical 1920x1080) per slot:
-_THRILL_SQUAD_X = [503, 701, 900, 1098, 1297, 1495]   # column -> x
-_THRILL_SQUAD_Y = [271, 569]                          # row (top/bottom) -> y
-_THRILL_GOLD_LO = np.array([15, 90, 130], np.uint8)
-_THRILL_GOLD_HI = np.array([38, 255, 255], np.uint8)
+_SQUAD_X = [503, 701, 900, 1098, 1297, 1495]   # column -> x
+_SQUAD_Y = [271, 569]                          # row (top/bottom) -> y
+_GOLD_LO = np.array([15, 90, 130], np.uint8)
+_GOLD_HI = np.array([38, 255, 255], np.uint8)
 
 
-def _thrill_gold_peaks(tpl_key, region, thr):
+def _gold_peaks(tpl_key, region, thr):
     """Gold-mask `region` and template-match `tpl_key`. Returns peaks
     [(cx, cy, conf), ...] best first; keys on gold so card art behind the badge is ignored."""
     x0, y0, w, h = region
@@ -245,7 +243,7 @@ def _thrill_gold_peaks(tpl_key, region, thr):
     if img.shape[1] != w or img.shape[0] != h:        # normalise to logical px
         img = cv2.resize(img, (w, h))
     mask = cv2.inRange(cv2.cvtColor(img, cv2.COLOR_BGR2HSV),
-                       _THRILL_GOLD_LO, _THRILL_GOLD_HI)
+                       _GOLD_LO, _GOLD_HI)
     tpl = cv2.imread(PTH[tpl_key], cv2.IMREAD_GRAYSCALE)
     if tpl is None or mask.shape[0] < tpl.shape[0] or mask.shape[1] < tpl.shape[1]:
         return []
@@ -271,17 +269,15 @@ _SWAP_CARD_DY = 90
 
 def squad_swap():
     """At the squad screen, swap every non-excluded 0-energy ID for a +5 one.
-    Runs for the THRILL preset, or for any run when the user enabled the
-    'Swap for max energy' Behaviour toggle (p.SWAP_MAX_ENERGY)."""
-    is_thrill = (p.RUN_SCRIPT == "thrill")
-    if not is_thrill and not getattr(p, "SWAP_MAX_ENERGY", False):
+    Runs when the user enabled the 'Swap for max energy' Behaviour toggle
+    (p.SWAP_MAX_ENERGY)."""
+    if not getattr(p, "SWAP_MAX_ENERGY", False):
         return
     if "zeroenergy" not in PTH or "maxenergy" not in PTH:
         logging.warning("Squad swap: energy templates missing from PTH - skipping.")
         return
     time.sleep(0.4)
-    excluded = set((getattr(p, "THRILL_EXCLUDE", []) if is_thrill
-                    else getattr(p, "SWAP_EXCLUDE", [])) or [])
+    excluded = set(getattr(p, "SWAP_EXCLUDE", []) or [])
     logging.info("Squad swap start (excluding sinner slots %s)",
                  sorted(excluded))
     swapped = 0
@@ -291,8 +287,8 @@ def squad_swap():
     for slot in range(12):
         if slot in excluded:
             continue
-        bx, by = _THRILL_SQUAD_X[slot % 6], _THRILL_SQUAD_Y[slot // 6]
-        zero = _thrill_gold_peaks("zeroenergy", (bx - 12, by - 12, 64, 84), 0.60)
+        bx, by = _SQUAD_X[slot % 6], _SQUAD_Y[slot // 6]
+        zero = _gold_peaks("zeroenergy", (bx - 12, by - 12, 64, 84), 0.60)
         if not zero:
             continue   # this slot's equipped ID already has energy
         zx, zy, zc = zero[0]
@@ -307,7 +303,7 @@ def squad_swap():
         five = []
         deadline = time.time() + open_timeout
         while time.time() < deadline:
-            five = _thrill_gold_peaks("maxenergy", (250, 150, 1450, 760), 0.65)
+            five = _gold_peaks("maxenergy", (250, 150, 1450, 760), 0.65)
             if five:
                 break
             time.sleep(poll_interval)
@@ -324,7 +320,7 @@ def squad_swap():
         gui.press("esc")
         deadline = time.time() + close_timeout
         while time.time() < deadline:
-            if not _thrill_gold_peaks("maxenergy",
+            if not _gold_peaks("maxenergy",
                                       (250, 150, 1450, 760), 0.65):
                 break
             time.sleep(poll_interval)
@@ -505,9 +501,6 @@ def chain(gear_start, gear_end, background, execute=True, force_low_x=None,
     gui.mouseUp()
 
 
-# Bottom portrait row containing Ryoshu's clickable portrait.
-_SAIKAI_PORTRAITS = (235, 940, 985, 140)
-
 # Band holding Ryoshu's clickable skill slots (bottom slot row ONLY). Must NOT
 # reach into the skill-chain icon row above, where her selected-skill icon also
 # shows her face - including it makes the evade loop click a phantom slot.
@@ -521,25 +514,6 @@ _SAIKAI_PORTRAIT_CONF = 0.85
 
 # Evade swirl confidence: real ~0.998, every other slot <=0.69.
 _SAIKAI_EVADE_ICON_CONF = 0.85
-
-# DEBUG: stop on turn N without pressing Enter (0 = disabled).
-_SAIKAI_DEBUG_STOP_TURN = 0
-_SAIKAI_DEBUG_CAPTURE = False
-# DEBUG: stop on an all-evade turn outside battle 1 (when a bottom S3 would be missed).
-_SAIKAI_DEBUG_STOP_ALLEVADE = False
-
-# Evade-icon match blob collapse distance; slots sit ~125px apart.
-_SAIKAI_SLOT_GAP = 90
-
-
-def _cluster_slots(boxes, gap=_SAIKAI_SLOT_GAP):
-    """Collapse template matches on the same slot into one box."""
-    out = []
-    for b in sorted(boxes, key=lambda bb: gui.center(bb)[0]):
-        if out and gui.center(b)[0] - gui.center(out[-1])[0] <= gap:
-            continue
-        out.append(b)
-    return out
 
 
 def _find2(template, region, conf):
@@ -604,254 +578,10 @@ def evade_all_ryoshu_slots(slots=None, settle=0.35):
     return len(slots)
 
 
-def count_ryoshu_slots(ryoshu_cx, conf=0.8):
-    """Count Ryoshu's skill slots after she has been set to evade."""
-    if "evade" not in PTH:
-        logging.warning("SAIKAI: evade.png missing - slot count skipped "
-                        "(add ImageAssets/UI/saikai/evade.png and relaunch).")
-        return 0
-    boxes = LocateGray.locate_all(PTH["evade"], region=_SAIKAI_EVADE_BAND, conf=conf)
-    boxes = _cluster_slots(boxes)
-    mine = [b for b in boxes if gui.center(b)[0] >= ryoshu_cx - 40]
-    logging.info("SAIKAI: Ryoshu slot count = %d (evade icons at %s).",
-                 len(mine), [gui.center(b) for b in mine])
-    return len(mine)
-
-
-def saikai_ryoshu_evade():
-    """SAIKAI: find Ryoshu and click her image to evade."""
-    if "ryoshu" not in PTH:
-        logging.warning("SAIKAI: ryoshu.png missing - evade skipped.")
-        return
-    full = (0, 0, 1920, 1080)
-    try:
-        cg = LocateGray.get_conf(PTH["ryoshu"], region=full)
-        cr = LocateRGB.get_conf(PTH["ryoshu"], region=full)
-        logging.info("SAIKAI Ryoshu best match conf: gray=%.3f rgb=%.3f", cg, cr)
-    except Exception as exc:
-        logging.debug("SAIKAI Ryoshu conf probe failed: %s", exc)
-    box = None
-    for matcher in (LocateRGB, LocateGray):
-        box = matcher.locate(PTH["ryoshu"], region=full, conf=0.7)
-        if box:
-            break
-    if box is None:
-        logging.warning("SAIKAI: Ryoshu not detected (conf 0.7) - evade skipped.")
-        return
-    win_click(*gui.center(box), tsize=(20, 20))
-    time.sleep(0.4)
-    logging.info("SAIKAI: clicked Ryoshu to evade at %s.", box)
-
-
-# === THRILL chain-battle script ============================================
-# F1-F3 non-focused battles: evade every bottom-row card, then chain every column
-# down to its BOTTOM skill. F3 boss is focused so it never enters this branch.
-_THRILL_CARD_DX    = 130
-_THRILL_CARD_DY    = 133
-_THRILL_CARD_PITCH = 122   # wider than chain()'s 115px gem-row pitch
-
-
-def _thrill_card_centers(gear_start, gear_end):
-    """Bottom-row card centres for every chain column on the current turn."""
-    skill_num = _skill_count(gear_start, gear_end)
-    return [(int(gear_start[0] + _THRILL_CARD_DX + col * _THRILL_CARD_PITCH),
-             int(gear_start[1] + _THRILL_CARD_DY))
-            for col in range(skill_num)]
-
-
-def thrill_evade_all(gear_start, gear_end):
-    """Click each bottom-row card slot ONCE to set every sinner to evade."""
-    cards = _thrill_card_centers(gear_start, gear_end)
-    for i, (x, y) in enumerate(cards, 1):
-        win_click(x, y, tsize=(16, 16), delay=0)
-        logging.info("THRILL: evaded slot %d/%d at (%d, %d).",
-                     i, len(cards), x, y)
-    return len(cards)
-
-
-def thrill_chain_turn(gear_start, gear_end, background):
-    """One Thrill non-focused turn: evade every bottom-row card, then chain
-    every column to its BOTTOM skill. execute=True triggers the turn."""
-    # Park cursor off the chain bar so the first evade click isn't masked by a tooltip.
-    win_moveTo(960, 160)
-    time.sleep(0.2)
-    skill_num = _skill_count(gear_start, gear_end)
-    evaded = thrill_evade_all(gear_start, gear_end)
-    time.sleep(0.3)
-    force_offsets = {col: _SAIKAI_S3_BOTTOM_OFF for col in range(skill_num)}
-    chain(gear_start, gear_end, background, execute=True,
-          force_offsets=force_offsets)
-    logging.info("THRILL: evaded %d slot(s), chained %d col(s) to bottom "
-                 "(full sweep to gear2).", evaded, skill_num)
-    time.sleep(1)
-
-
-# === THRILL focused-battle script ==========================================
-# Focused encounter battles (non-chain UI; fight() lands here via
-# ImageNotFoundException). Evade every sinner card, drag each gem onto a random
-# enemy point, then press Enter. NO winrate toggle, NO 'p' shortcut.
-_THRILL_FOCUSED_GEM_DY = 118   # gem row sits ~118px above card row
-# Fallback enemy region for gem drags when no abno icons are detected.
-_THRILL_FOCUSED_ENEMY_X = (500, 1400)
-_THRILL_FOCUSED_ENEMY_Y = (450, 620)
-# Enemy-slot detection via abno-icon templates inside each slot hexagon.
-_THRILL_ABNO_TEMPLATES = ("abnohead", "abnobody", "abnobody2",
-                          "abnolimb", "abnolimb2", "abnotail", "abnoother")
-# 0.90 trims most non-abno false positives at the cost of missing some real ones
-# (0.83-0.89); the fallback random-region drag covers the misses.
-_THRILL_ABNO_CONF      = 0.90
-# Abno icon -> slot body offset (icon is a badge above the hex).
-_THRILL_ABNO_TO_SLOT_DY = 95
-# Dismiss the red attack-target arrows by clicking a skill then an empty spot.
-_THRILL_FOCUSED_DISMISS_XY = (700, 600)
-_THRILL_FOCUSED_DISMISS_JITTER = 25
-# Wait for camera pans to settle before scanning enemy icons.
-_THRILL_FOCUSED_SETTLE_REGION   = (400, 100, 1120, 600)
-_THRILL_FOCUSED_SETTLE_INTERVAL = 0.30
-_THRILL_FOCUSED_SETTLE_THRESH   = 3.5
-_THRILL_FOCUSED_SETTLE_MAX      = 2.5
-_THRILL_FOCUSED_SETTLE_MIN      = 0.6
-
-
-def _thrill_wait_for_still():
-    """Block until the enemy band stops changing, capped at SETTLE_MAX."""
-    start = time.time()
-    last = None
-    # Burn the minimum settle first so a frame-1 "still already" reading can't
-    # race a camera pan that hasn't begun yet.
-    time.sleep(_THRILL_FOCUSED_SETTLE_MIN)
-    while time.time() - start < _THRILL_FOCUSED_SETTLE_MAX:
-        cur = np.asarray(screenshot(region=_THRILL_FOCUSED_SETTLE_REGION),
-                         dtype=np.int16)
-        if last is not None:
-            diff = float(np.mean(np.abs(cur - last)))
-            if diff < _THRILL_FOCUSED_SETTLE_THRESH:
-                elapsed = time.time() - start
-                logging.info("THRILL focused: screen settled after %.2fs "
-                             "(diff=%.2f).", elapsed, diff)
-                return elapsed
-        last = cur
-        time.sleep(_THRILL_FOCUSED_SETTLE_INTERVAL)
-    elapsed = time.time() - start
-    logging.info("THRILL focused: still-wait timed out after %.2fs.",
-                 elapsed)
-    return elapsed
-
-
-def _thrill_focused_enemy_slot_centers():
-    """Enemy slot centres via abno-icon template match; deduped, sorted by x."""
-    hits = []
-    for name in _THRILL_ABNO_TEMPLATES:
-        if name not in PTH:
-            continue
-        try:
-            boxes = LocateRGB.locate_all(PTH[name], conf=_THRILL_ABNO_CONF)
-        except Exception as exc:
-            logging.debug("THRILL focused: %s match failed: %s", name, exc)
-            continue
-        for b in boxes:
-            cx, cy = gui.center(b)
-            hits.append((int(cx), int(cy)))
-    if not hits:
-        return []
-    hits.sort()
-    deduped = []
-    for cx, cy in hits:
-        if any(abs(cx - fx) < 30 and abs(cy - fy) < 30 for fx, fy in deduped):
-            continue
-        deduped.append((cx, cy))
-    # Shift each centre down onto the hex drop zone, off the icon badge.
-    return [(cx, cy + _THRILL_ABNO_TO_SLOT_DY) for cx, cy in deduped]
-
-
-# Chain-bar slot geometry: y=986, pitch=122 across focused/non-focused.
-_THRILL_FOCUSED_SLOT_ROW_Y = 986
-_THRILL_FOCUSED_SLOT_PITCH = 122
-
-
-# Hard-coded 7-slot row. On turn 1 (6 active slots) the 7th click is a no-op.
-_THRILL_FOCUSED_HARDCODED_SLOTS = [
-    (548, _THRILL_FOCUSED_SLOT_ROW_Y),
-    (670, _THRILL_FOCUSED_SLOT_ROW_Y),
-    (792, _THRILL_FOCUSED_SLOT_ROW_Y),
-    (914, _THRILL_FOCUSED_SLOT_ROW_Y),
-    (1036, _THRILL_FOCUSED_SLOT_ROW_Y),
-    (1158, _THRILL_FOCUSED_SLOT_ROW_Y),
-    (1280, _THRILL_FOCUSED_SLOT_ROW_Y),
-]
-
-
-def _thrill_focused_slot_centers():
-    """Hard-coded chain-bar slot positions (no detection)."""
-    return list(_THRILL_FOCUSED_HARDCODED_SLOTS)
-
-
-def thrill_focused_turn():
-    """One Thrill focused-battle turn: evade every card, drag each gem onto a
-    random enemy point. Caller presses Enter afterwards."""
-    cards = _thrill_focused_slot_centers()
-    if not cards:
-        logging.warning("THRILL focused: no sinner cards detected.")
-        return 0
-    # Park cursor off the chain bar so the first click isn't masked by a tooltip.
-    win_moveTo(960, 160)
-    time.sleep(0.2)
-    # Phase 1: evade every bottom-row card.
-    for i, (x, y) in enumerate(cards, 1):
-        win_click(x, y, tsize=(16, 16), delay=0)
-        logging.info("THRILL focused: evaded slot %d/%d at (%d, %d).",
-                     i, len(cards), x, y)
-    time.sleep(0.3)
-    # Phase 1.5: dismiss red attack-target arrows that occlude the enemy abno icons.
-    first_gem_x = cards[0][0]
-    first_gem_y = cards[0][1] - _THRILL_FOCUSED_GEM_DY
-    win_click(first_gem_x, first_gem_y, tsize=(16, 16), delay=0)
-    time.sleep(0.2)
-    j = _THRILL_FOCUSED_DISMISS_JITTER
-    dismiss_x = _THRILL_FOCUSED_DISMISS_XY[0] + random.randint(-j, j)
-    dismiss_y = _THRILL_FOCUSED_DISMISS_XY[1] + random.randint(-j, j)
-    win_click(dismiss_x, dismiss_y, tsize=(16, 16), delay=0)
-    logging.info("THRILL focused: dismissed arrows via skill (%d,%d) "
-                 "+ empty (%d,%d).",
-                 first_gem_x, first_gem_y, dismiss_x, dismiss_y)
-    # Flat 0.8s settle clears the dismissal animation in practice.
-    time.sleep(0.8)
-    # Phase 2: drag each gem onto a detected enemy slot, falling back to random.
-    enemy_slots = _thrill_focused_enemy_slot_centers()
-    if enemy_slots:
-        logging.info("THRILL focused: detected %d enemy slot(s) "
-                     "(targeting randomly): %s.",
-                     len(enemy_slots), enemy_slots)
-    else:
-        logging.warning("THRILL focused: no enemy abno slots detected, "
-                        "falling back to random enemy region.")
-    for i, (card_x, card_y) in enumerate(cards, 1):
-        gem_x = card_x
-        gem_y = card_y - _THRILL_FOCUSED_GEM_DY
-        if enemy_slots:
-            # Random independent draw per sinner; stacking is allowed by design.
-            tx, ty = random.choice(enemy_slots)
-            # No jitter; even +/-6px caused intermittent misses.
-            end_x, end_y = tx, ty
-        else:
-            end_x = random.randint(*_THRILL_FOCUSED_ENEMY_X)
-            end_y = random.randint(*_THRILL_FOCUSED_ENEMY_Y)
-        # Two-click assignment (click selects skill, click drops it).
-        win_click(gem_x, gem_y, tsize=(16, 16), delay=0)
-        time.sleep(0.1)
-        win_click(end_x, end_y, tsize=(16, 16), delay=0)
-        logging.info("THRILL focused: assigned slot %d/%d "
-                     "skill (%d,%d) -> enemy (%d,%d).",
-                     i, len(cards), gem_x, gem_y, end_x, end_y)
-        time.sleep(0.1)
-    return len(cards)
-
-
 def fight(lux=False):
     is_tobattle = now.button("TOBATTLE")
     is_battle   = now_rgb.button("winrate") or now.button("pause")
     if not is_tobattle and not is_battle: return False
-    print("battle check")
     if is_tobattle:
         if lux:
             win_moveTo(880, 880)
@@ -867,7 +597,6 @@ def fight(lux=False):
         if lux and now.button("TOBATTLE"):
             select(p.SELECTED[:6])
 
-    print("Entered Battle")
     last_error = 0
     attempts = 0
     saikai_turn = 0   # turn number within THIS battle
@@ -911,15 +640,6 @@ def fight(lux=False):
                     # have been masked by a cursor on a skill (missing the top S3).
                     background = screenshot(region=(round(gear_start[0] + 100), 775,
                                                     round(gear_end[0] - gear_start[0] - 200), 10))
-                    if _SAIKAI_DEBUG_CAPTURE and slots:
-                        try:
-                            cv2.imwrite("debug_clean.png", screenshot((0, 0, 1920, 1080)))
-                            logging.info("SAIKAI DEBUG: clean frame saved. gear_start=%s gear_end=%s "
-                                         "skill_y top=%d bottom=%d portrait_y=%d",
-                                         gear_start, gear_end, gear_start[1]-46+8,
-                                         gear_start[1]-46+80, slots[0][1])
-                        except Exception as _e:
-                            logging.debug("clean capture failed: %s", _e)
                     # Kill phase (allies still up): battle 1 turns 1-2 evade
                     # EVERY slot (no S3), then force S3 on her columns (top
                     # chip / bottom gem) and evade the rest, so her AoE cuts
@@ -930,7 +650,6 @@ def fight(lux=False):
                     evade_all_now = (p.SAIKAI_BATTLE <= 1 and saikai_turn <= 2)
                     evade_slots = slots
                     force_offsets = {}
-                    debug_suspect = False
                     if slots:
                         skill_num = _skill_count(gear_start, gear_end)
                         ryoshu_cols = {}
@@ -958,7 +677,6 @@ def fight(lux=False):
                             kind = ("top S3" if col in top_s3 else
                                     "bottom S3" if col in bottom_s3 else "evade")
                             logging.info("SAIKAI: col %d -> %s.", col, kind)
-                        debug_suspect = (not evade_all_now and not attack_cols)
                     else:
                         chain(gear_start, gear_end, background, execute=False,
                               force_offsets=force_offsets)
@@ -969,41 +687,12 @@ def fight(lux=False):
                             logging.warning("SAIKAI: Ryoshu evade failed.")
                     else:
                         logging.info("SAIKAI: every one of her slots has S3 - all attacking.")
-                    if _SAIKAI_DEBUG_CAPTURE and slots:
-                        try:
-                            time.sleep(0.25)
-                            win_moveTo(960, 160)
-                            time.sleep(0.2)
-                            cv2.imwrite("debug_selected.png", screenshot((0, 0, 1920, 1080)))
-                            logging.info("SAIKAI DEBUG: post-selection frame saved to debug_selected.png "
-                                         "(offsets used: %s).", force_offsets)
-                        except Exception as _e:
-                            logging.debug("selected capture failed: %s", _e)
-                    if (_SAIKAI_DEBUG_STOP_TURN and saikai_turn >= _SAIKAI_DEBUG_STOP_TURN) or \
-                       (_SAIKAI_DEBUG_STOP_ALLEVADE and debug_suspect):
-                        logging.info("SAIKAI DEBUG: turn %d would evade every slot (no S3 "
-                                     "detected) - stopping WITHOUT pressing Enter so the clean "
-                                     "frame can be inspected. Set the debug flags to off/0 for "
-                                     "normal runs.",
-                                     saikai_turn)
-                        if p.APP:
-                            QMetaObject.invokeMethod(p.APP, "stop_execution",
-                                                     Qt.ConnectionType.QueuedConnection)
-                        raise StopExecution
                     logging.info("SAIKAI: turn %d done - pressing Enter to execute.", saikai_turn)
                     gui.press("enter", 1, 0.1)
                     time.sleep(1)
                 elif p.RUN_SCRIPT == "hollow":
                     from .hollow import chain_turn
                     chain_turn(gear_start, gear_end)
-                elif p.RUN_SCRIPT == "thrill" and getattr(p, "THRILL_DONE", False):
-                    # THRILL non-focused battles after Thrill is crafted. Do NOT
-                    # press 'p' (Thrill build opts out of winrate auto-targeting).
-                    thrill_chain_turn(gear_start, gear_end, background)
-                    time.sleep(1)
-                    if now.button("winrate"):
-                        gui.press("enter", 1, 0.1)
-                        time.sleep(1)
                 else:
                     chain(gear_start, gear_end, background)
                     time.sleep(1)
@@ -1016,13 +705,7 @@ def fight(lux=False):
                 if is_focused:
                     logging.info("Encounter type: FOCUSED (per-skill targeting)")
 
-                if is_focused and p.RUN_SCRIPT == "thrill":
-                    # THRILL focused: no 'p'/winrate; evade, drag gems, Enter.
-                    thrill_focused_turn()
-                    if not lux and not p.SKIP_EGO_BATTLE: select_ego()
-                    gui.press("enter", 1, 0.1)
-                    time.sleep(1)
-                elif is_focused and p.RUN_SCRIPT == "hollow":
+                if is_focused and p.RUN_SCRIPT == "hollow":
                     from .hollow import (chain_turn, focused_turn,
                                          squad_focused_turn, _with_fallback)
                     if _with_fallback():
@@ -1086,7 +769,6 @@ def fight(lux=False):
                     wait_while_condition(lambda: not now.button("Confirm_retry", method=cv2.TM_SQDIFF_NORMED), lambda: win_click(1200, 670), interval=1, timer=3)
                     gui.press("space")
                     loading_halt()
-                    print("Battle is over")
                     logging.info("Battle is over")
                     # Backing out only returns to the map, and the node is
                     # still the way forward: have main_loop end the run.
@@ -1103,16 +785,11 @@ def fight(lux=False):
         for i in exit_if:
             if now.button(i):
                 if i == "loading": loading_halt()
-                print("Battle is over")
                 p.RUN_BATTLES_WON = int(getattr(p, "RUN_BATTLES_WON", 0) or 0) + 1
                 logging.info("Battle is over (run battles won: %d)",
                              p.RUN_BATTLES_WON)
                 return True
-            
-        # for i in range(3):
-        #     if now_rgb.button(f"end_{i}", "skip_yap"):
-        #         gui.press("space")
-        
+
         if p.LIMBUS_NAME not in (win := gui.getActiveWindowTitle()):
             ck = True
             pause(win)

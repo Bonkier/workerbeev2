@@ -8,7 +8,6 @@ TEAM = ["BURN"]
 NAME_ORDER = 0
 DUPLICATES = False
 
-LOG = True
 # "Debug image matches" (Settings > Advanced): trace every template match's
 # confidence against its threshold, misses included, into game.log.
 DEBUG_MATCH_CONF = False
@@ -25,9 +24,6 @@ BUFF = [1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
 CARD = [1, 0, 2, 3, 4]
 # % of baseline cursor speed; scales movement timing.
 MOUSE_SPEED = 100
-# Click muscle-memory: learn common button spots and pre-move there while
-# waiting (faster + more human; the click still lands on the real button).
-MOUSE_MEMORY = True
 # Read the screen through DXGI duplication (what the display shows) rather
 # than the compositor's copy, which Windows 10 stops refreshing for a game
 # covering the screen. Off only for troubleshooting.
@@ -35,10 +31,14 @@ CAPTURE_DXGI = True
 KEYWORDLESS = {}
 # Up to 3 EGO gift display names to auto-select at MD start (gift_catalog).
 GIFT_SEARCH = []
-# Market/Fuse per-gift tags (market_catalog display names): dict with keys
+# Market per-gift tags (market_catalog display names): dict with keys
 # keep_fuse / keep_sell / sell / buy -> lists of names ("buy" is click order).
 # Consumed by the shop sell/fuse/buy flows.
 MARKET_GIFTS = {}
+# Floor Packs/Market: {floor: {"market_gifts": tags, "skip_...": bool}} laid
+# over the run-wide values at that floor's shop; SHOP_RUNWIDE keeps those.
+MARKET_FLOORS = {}
+SHOP_RUNWIDE = {}
 # Pack selection: True = refresh the floor offering to hunt priority packs;
 # False = take a random available pack (or configured priorities), no refresh.
 PACK_SEARCH = True
@@ -51,7 +51,8 @@ PACK_REFRESHES = 7
 PACK_SEARCH_FLOORS = {}
 HARD = False        # current effective difficulty (may change mid-run)
 EXTREME = False
-# "F3 Hard": starts Normal, switches to HARD_TARGET at HARD_FROM_FLOOR.
+# A floor's Hard switch: starts Normal, switches to HARD_TARGET at
+# HARD_FROM_FLOOR.
 # Ordinary runs use HARD_FROM_FLOOR=1 so HARD == HARD_TARGET.
 HARD_TARGET = False
 HARD_FROM_FLOOR = 1
@@ -69,13 +70,6 @@ SAIKAI_DEPLOYED = 7
 # Set once the end-of-run gift scan has run for the current attempt.
 RUN_GIFTS_SCANNED = False
 DIAG_DONE = set()      # diagnostic dump tags already written this run
-# SAIKAI "Go to floor 10": >0 = run the Infinite MD and leave after this floor,
-# claiming rewards (0 = normal 5-floor run, ended by the game at floor 5).
-SAIKAI_STOP_FLOOR = 0
-# Set when the floor-stop forfeit fires, so dungeon_fail claims (keeps) rewards.
-SAIKAI_LEAVE_CLAIM = False
-# THRILL: SINNERS indices (Yi Sang=0 .. Gregor=11) excluded from the squad swap.
-THRILL_EXCLUDE = []
 # Squad max-energy swap (Behaviour: "Swap for max energy"). When True, the bot
 # swaps each non-excluded 0-energy sinner for a +5 ID at the squad screen.
 SWAP_MAX_ENERGY = False
@@ -110,17 +104,15 @@ CUSTOM_ENHANCE_DONE = {}
 # Fuse targets confirmed crafted this attempt, so later shops skip the whole
 # open-menu/verify dance for them. Reset per attempt in execute_me.
 CUSTOM_FUSE_DONE = set()
-CUSTOM_FUSE_ACTIVE = False
-CUSTOM_SELL_ACTIVE = False
+# Gifts the E.G.O Gift Search took this attempt: a floor plan that protects
+# one fuses nothing while the owned shelf scan cannot find it.
+RUN_HELD = set()
+# Shelf refreshes clicked in the current shop visit (the first ones are free
+# with Star of the Beginning, the paid ones cost 15 more each time).
+SHELF_REFRESHES = 0
 CLAIM_ON_DEFEAT = False
 # Run `shutdown /l` after the run queue finishes (unattended runs).
 LOGOUT_ON_FINISH = False
-# THRILL: set once the F1 Thrill T4 EGO gift is crafted, so fusion is skipped
-# on F2/F3 markets. Reset per run.
-THRILL_DONE = False
-# THRILL: set by thrill_market_f1 when F1 exits without crafting Thrill.
-# Triggers no-claim forfeit + a "Restart" telemetry entry (not a defeat).
-THRILL_F1_RESTART = False
 # Set by fight() when a battle is lost three times over; main_loop then
 # forfeits the run rather than walking back into the same node.
 STUCK_FORFEIT = False
@@ -145,6 +137,7 @@ HOLLOW_NODE = ""
 SKILL_REPLACE_ACTIVE = set()
 SKILL_REPLACE_ORDER = {}
 SKILL_REPLACE_REMAINING = {}
+SKILL_REPLACE_SKIP_FLOORS = set()    # floors whose shops take no skill offer
 SKILL_REPLACE_USED_THIS_SHOP = 0
 SKILL_REPLACE_SINNERS_THIS_SHOP = set()
 SKILL_REPLACE_SCAN_LOGGED = False

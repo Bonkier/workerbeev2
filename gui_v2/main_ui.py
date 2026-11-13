@@ -230,18 +230,6 @@ class MainUI(QWidget):
             not bool(load_settings().get("sidebar_collapsed", False)),
             animate=False, persist=False)
 
-        # Deferred so it runs after the window is shown and allWidgets()
-        # is fully populated.
-        QTimer.singleShot(0, self._apply_help_text)
-
-    def _apply_help_text(self):
-        """Show/hide UI helper text per the saved setting."""
-        try:
-            from .help_text import apply as apply_help
-            apply_help()
-        except Exception:
-            pass
-
     # --- Sidebar ----------------------------------------------------
     def _build_brand(self):
         """Sidebar brand for the active skin: the animated voxel bee with the
@@ -460,7 +448,9 @@ class MainUI(QWidget):
         mirror = MirrorDungeonPage(self._stack)
         mirror.start_requested.connect(self.start_requested.emit)
         mirror.stop_requested.connect(self.stop_requested.emit)
-        mirror.open_stk_settings.connect(self._reveal_stk_settings)
+        mirror.open_team_settings.connect(self._reveal_team_settings)
+        mirror.open_settings.connect(lambda: self._select("settings"))
+        mirror.config_loaded.connect(self._reload_after_config)
         self._pages["mirror_dungeon"] = mirror
 
         lux = LuxcavationPage(self._stack)
@@ -499,7 +489,6 @@ class MainUI(QWidget):
                     restore()
                 except Exception:
                     pass
-        self._apply_help_text()
 
     def _wrap_scroll(self, page: QWidget) -> QWidget:
         # Pages that scroll internally opt out to avoid a double scroll.
@@ -530,20 +519,20 @@ class MainUI(QWidget):
             return
         self._stack.setCurrentWidget(target)
 
-    def _reveal_stk_settings(self, run=None):
-        """Switch to Settings and scroll the custom run card near the top,
-        showing `run` when one is named. Deferred past the page transition
-        so the scroll area has final geometry (the switch animates and grabs
-        page pixmaps for ~Motion.NORMAL ms)."""
+    def _reveal_team_settings(self, run=None):
+        """Switch to Settings, put the run on the CUSTOM RUN TEAMS card and
+        scroll it near the top. Deferred past the page transition so the
+        scroll area has final geometry (the switch animates and grabs page
+        pixmaps for ~Motion.NORMAL ms)."""
         self._select("settings")
         page = self._pages.get("settings")
         wrapper = self._wrappers.get("settings")
-        seg = getattr(page, "_stk_seg", None)
-        if run and seg is not None and run in getattr(seg, "_buttons", {}):
-            seg._buttons[run].click()
-        card = getattr(page, "_stk_card", None)
+        card = getattr(page, "_team_card", None)
         if card is None or not isinstance(wrapper, QScrollArea):
             return
+        show = getattr(page, "show_team", None)
+        if run and callable(show):
+            show(run)
 
         def _scroll():
             y = card.mapTo(page, card.rect().topLeft()).y()

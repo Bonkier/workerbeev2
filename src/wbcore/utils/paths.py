@@ -44,24 +44,6 @@ def _runtime_base_path():
 
 BASE_PATH = _runtime_base_path()
 
-VERSION_FILE = os.path.join(BASE_PATH, "version")
-
-
-def _read_app_version(default="0.0.0"):
-    # `version` (historical bundles) before `version.json` (repo format).
-    for candidate in (VERSION_FILE, VERSION_FILE + ".json"):
-        try:
-            with open(candidate, "r", encoding="utf-8") as fh:
-                text = fh.read().strip()
-                if text:
-                    return text
-        except OSError:
-            continue
-    return default
-
-
-APP_VERSION = _read_app_version()
-
 
 ASSETS_DIR = os.path.join(BASE_PATH,"ImageAssets/UI")
 
@@ -129,7 +111,6 @@ REG = {
     "teams"          : (  96,  441,  180,  350),
     "current_team"   : ( 330,  165,  200,   50),
     "arrow"          : ( 189,  443,   16,   15),
-    "skip_yap"       : ( 740,  450,  470,  200),
     "ego_warning"    : (1250,  880,  670,  200),
     "ego_usage"      : (1850, 1020,   70,   60),
     "RetryStage"     : ( 937,  476,  170,   46),
@@ -216,7 +197,6 @@ REG = {
     "Confirm_retry.0": ( 987,  704,  318,   71),
     # regions not binded to an image
     "affinity!"      : ( 368,  327, 1160,  442),
-    "revenue!"       : (1405,  126,  241,   56),
     "forecast!"      : ( 280,  257,  540,  334),
 
     # utils.py
@@ -455,31 +435,3 @@ HARD_BANNED = [
     'Line5', 'TheSurrenderedWitnessing', 'ImpenetrablePath', "TheDuskofAmber", 
     "CharmWanderDoubt", "Textbook", "BladeandArtwork", "TheUnsevering"
 ]
-
-
-def get_unique(pack_list):
-    unique = []
-    seen = set()
-    for floor in sorted(pack_list):
-        for item in pack_list[floor]:
-            if item not in seen:
-                seen.add(item)
-                unique.append(item)
-    return unique
-
-
-FLOORS_UNIQUE = get_unique(FLOORS)
-HARD_UNIQUE = get_unique(HARD_FLOORS)
-
-
-
-if __name__ == "__main__":
-    count = 0
-    for name, floors in PACKS.items():
-        easy, hard = floors
-        
-        if 5 in hard:
-            print(f"{name}")
-            count += 1
-        
-    print(count, "packs")

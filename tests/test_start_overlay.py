@@ -60,7 +60,6 @@ def test_saikai_difficulty_variants():
     assert diff(hard_from_floor=1) == "Hard on every floor"
     assert diff(hard_from_floor=0) == "Normal on every floor"
     assert diff(hard_from_floor=2) == "Normal, then Hard from floor 2"
-    assert diff(saikai_floor10=True).endswith("leaving after floor 10")
 
 
 def test_standard_run_summary():
@@ -83,14 +82,6 @@ def test_standard_run_summary():
     assert rows["Pack search"] == "No floor configured, 1 refresh"
     assert rows["Switched on"] == "Nothing"
     assert "Mouse" not in rows                  # no app settings given
-
-
-def test_thrill_summary():
-    rows = _rows(R.md_summary({"custom_run": True, "custom_strategy": "Thrill",
-                               "thrill_status": "Rupture"}))
-    assert rows["Difficulty"] == "Normal, forfeit after floor 3"
-    assert rows["Team keyword"] == "Rupture"
-    assert rows["Sinner order"] == "Default"
 
 
 def test_lux_summaries():
@@ -201,7 +192,7 @@ class _Coord(QObject):
 for _name in ("_arm_button_start", "_pending_summary", "_open_start_overlay",
               "_apply_arming", "_on_countdown_tick", "_fire_pending_start",
               "_cancel_countdown", "_toggle_md", "_toggle_lux",
-              "_hollow_fallback_ok"):
+              "_hollow_fallback_ok", "_custom_run_ok", "_custom_team_prompt"):
     setattr(_Coord, _name, getattr(RC.RunCoordinator, _name))
 
 
@@ -463,7 +454,7 @@ def test_hollow_without_a_fallback_team_asks_before_arming(coord, monkeypatch):
     asked, revealed = [], []
     answer = {"v": "secondary"}
     monkeypatch.setattr(D, "ask_choice", lambda *a, **k: asked.append(k) or answer["v"])
-    coord._ui._reveal_stk_settings = lambda run=None: revealed.append(run)
+    coord._ui._reveal_team_settings = lambda run=None: revealed.append(run)
     coord._md_state = lambda: {"custom_run": True, "custom_strategy": HOLLOW_LABEL,
                                "hollow_order": ["Faust"]}
     _arm(coord)
@@ -474,14 +465,78 @@ def test_hollow_without_a_fallback_team_asks_before_arming(coord, monkeypatch):
     _arm(coord)
     assert len(asked) == 2 and coord._countdown_timer.isActive()
     coord._cancel_countdown()
-    # A fallback team set, or another strategy: no question.
+    # A fallback team set, or no custom run: no question.
     coord._md_state = lambda: {"custom_run": True, "custom_strategy": HOLLOW_LABEL,
                                "hollow_order": ["Faust", "Gregor"]}
     _arm(coord)
     assert len(asked) == 2 and coord._countdown_timer.isActive()
     coord._cancel_countdown()
     answer["v"] = None
-    coord._md_state = lambda: {"custom_run": True, "custom_strategy": "F3 Hard",
+    coord._md_state = lambda: {"custom_run": False, "custom_strategy": HOLLOW_LABEL,
                                "hollow_order": []}
     _arm(coord)
     assert len(asked) == 2 and coord._countdown_timer.isActive()
+
+
+# --- A custom run whose Settings card was never touched --------------------
+
+class _Teams:
+    def __init__(self, configured=()):
+        self.configured, self.acknowledged = set(configured), []
+
+    sinner_selection = sinner_exclusion = staticmethod(dict)
+
+    def custom_team_configured(self, run):
+        return run in self.configured
+
+    def acknowledge_custom_team(self, run):
+        self.acknowledged.append(run)
+        self.configured.add(run)
+
+
+def test_an_untouched_custom_team_is_asked_about_once(coord, monkeypatch):
+    import gui_v2.dialogs as D
+    from gui_v2.run_config import HOLLOW_LABEL, SAIKAI_LABEL
+    asked, revealed = [], []
+    answer = {"v": "secondary"}
+    monkeypatch.setattr(D, "ask_choice",
+                        lambda parent, text, **k: asked.append((text, k)) or answer["v"])
+    coord._ui._reveal_team_settings = lambda run=None: revealed.append(run)
+    coord._settings = _Teams()
+    coord._md_state = lambda: {"custom_run": True, "custom_strategy": SAIKAI_LABEL}
+    _arm(coord)
+    text, kw = asked[-1]
+    assert text.startswith("SAIKAI has not been configured. Default settings will be used.")
+    assert text.endswith("Continue anyway?")
+    assert kw == {"title": "SAIKAI", "primary": "Yes", "secondary": "No"}
+    assert revealed == ["SAIKAI"] and coord.fired == []
+    assert not coord._countdown_timer.isActive()
+    answer["v"] = "primary"
+    _arm(coord)
+    assert len(asked) == 2 and coord._settings.acknowledged == ["SAIKAI"]
+    assert coord._countdown_timer.isActive()
+    coord._cancel_countdown()
+    _arm(coord)                                  # the Yes is remembered
+    assert len(asked) == 2 and coord._countdown_timer.isActive()
+    coord._cancel_countdown()
+    # Hollow: the one prompt covers the fallback squad, so a Yes arms the run.
+    coord._md_state = lambda: {"custom_run": True, "custom_strategy": HOLLOW_LABEL,
+                               "hollow_order": []}
+    _arm(coord)
+    assert len(asked) == 3 and asked[-1][1]["title"] == "HOLLOW"
+    assert asked[-1][1]["title"] == "HOLLOW" and coord._countdown_timer.isActive()
+    coord._cancel_countdown()
+    _arm(coord)                                  # set up now: the fallback question
+    assert len(asked) == 4 and asked[-1][1]["secondary"] == "Go to HOLLOW settings"
+    assert coord._countdown_timer.isActive()
+    coord._cancel_countdown()
+    # A standard run, or no Settings page, never asks.
+    coord._settings = _Teams()
+    coord._md_state = lambda: {"custom_run": False, "custom_strategy": SAIKAI_LABEL}
+    _arm(coord)
+    assert len(asked) == 4 and coord._countdown_timer.isActive()
+    coord._cancel_countdown()
+    coord._settings = None
+    coord._md_state = lambda: {"custom_run": True, "custom_strategy": SAIKAI_LABEL}
+    _arm(coord)
+    assert len(asked) == 4 and coord._countdown_timer.isActive()

@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from src.wbcore.detection import Match
-from src.wbcore.input import InputBackend, Mouse
+from src.wbcore.input import Mouse
 from src.wbcore.regionspec import Region, WindowGeometry
 from src.wbcore.vision import Finder, TemplateLoader
 from src.wbcore.verifier import Verifier

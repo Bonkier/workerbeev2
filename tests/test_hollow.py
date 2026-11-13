@@ -10,7 +10,6 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication, QWidget
 
-from gui_v2 import copy as C
 from gui_v2 import run_config as RC
 from gui_v2 import run_summary as RS
 from wbcore import bot as B
@@ -349,7 +348,7 @@ def test_hollow_clicks_pierce_and_the_row_its_gift_is_on(archetype, monkeypatch)
     assert _picked(archetype) == [(1239, 395), (1239, 549)]
 
 
-def test_hollow_searches_the_sheets_two_gifts_and_leaves_a_slot(monkeypatch):
+def test_hollow_searches_the_picks_and_never_its_starter(monkeypatch):
     import types
     seen = {}
     monkeypatch.setattr(B, "_select_archetype_gifts",
@@ -360,25 +359,29 @@ def test_hollow_searches_the_sheets_two_gifts_and_leaves_a_slot(monkeypatch):
     monkeypatch.setattr(B.gui, "press", lambda *a, **k: None)
     monkeypatch.setattr(B.time, "sleep", lambda s: None)
     monkeypatch.setattr(p, "RUN_SCRIPT", "hollow")
-    monkeypatch.setattr(p, "GIFT_SEARCH", [])
+    monkeypatch.setattr(p, "GIFT_SEARCH", list(RC.HOLLOW_SEARCH_GIFTS))    # as the preset leaves it
     B.select_starting_gift()
     assert seen["team"] is H.starting_team() and seen["row"] is H.starting_gift_row
     assert seen["targets"] == ["Grand Welcome", "Sharp Needle & Thread"]
+    # The picks are the user's: other gifts, fewer, or none at all.
     monkeypatch.setattr(p, "GIFT_SEARCH", ["Grand Welcome", "Equalizer",
                                            "Heishou Bolus - Mao"])
     B.select_starting_gift()
-    assert seen["targets"] == ["Grand Welcome", "Sharp Needle & Thread", "Equalizer"]
+    assert seen["targets"] == ["Grand Welcome", "Equalizer", "Heishou Bolus - Mao"]
+    seen.pop("targets")
+    monkeypatch.setattr(p, "GIFT_SEARCH", [])
+    B.select_starting_gift()
+    assert "targets" not in seen                              # nothing picked: no search
     # The starter gift is never searched for, even when the picker has it.
     monkeypatch.setattr(p, "GIFT_SEARCH", ["Torn Bandolier", "Equalizer"])
     B.select_starting_gift()
-    assert seen["targets"] == ["Grand Welcome", "Sharp Needle & Thread", "Equalizer"]
+    assert seen["targets"] == ["Equalizer"]
 
 
-def test_the_gift_names_exist_in_the_catalog_and_agree_across_modules():
+def test_the_gift_names_exist_in_the_catalog():
     from wbcore import gift_catalog
-    for name in H.SEARCH_GIFTS + (H.STARTING_GIFT,):
+    for name in tuple(RC.HOLLOW_SEARCH_GIFTS) + (H.STARTING_GIFT,):
         assert gift_catalog.gift_info(name), name
-    assert tuple(RC.HOLLOW_SEARCH_GIFTS) == H.SEARCH_GIFTS
 
 
 def test_the_attack_position_is_left_alone_when_right(screen, monkeypatch):
@@ -567,27 +570,39 @@ def test_the_sell_pass_needs_floor_4_and_every_craft():
     assert H.sell_ready(set(), floor=5) is False
 
 
-def test_the_market_plan_follows_the_owners_summary(monkeypatch):
+def test_cost_is_spent_on_refreshes_for_the_rock_on_any_floor_and_the_rest_from_floor_4():
+    rock, mirror, decay = "Fragment of Conceit", "Clear Mirror, Calm Water", "Fragment of Decay"
+    for floor in (1, 2, 3):
+        assert H.paid_refreshes(rock, floor)
+        assert not H.paid_refreshes(mirror, floor) and not H.paid_refreshes(decay, floor)
+    for floor in (4, 5):
+        assert all(H.paid_refreshes(n, floor) for n in (rock, mirror, decay))
+
+
+def test_the_market_plan_follows_the_sheets_ranking(monkeypatch):
     conceit, decay = "Fragment of Conceit", "Fragment of Decay"
     mirror, sense = "Clear Mirror, Calm Water", "Artistic Sense"
     thread, welcome, bandolier = "Sharp Needle & Thread", "Grand Welcome", "Torn Bandolier"
     f1 = H.market_plan(1)
     assert set(f1["protected"]) == {conceit, decay, welcome, bandolier, thread, mirror, sense}
-    assert f1["fuse"] == [conceit, decay, mirror, sense] and f1["enhance2"] == []
-    assert f1["must"] == [conceit, decay]
+    # Poise Rock > Clear Mirror > Sinking Rock > Artistic Sense.
+    assert f1["fuse"] == [conceit, mirror, decay, sense] and f1["enhance2"] == []
+    assert f1["must"] == [conceit, mirror]
     f2 = H.market_plan(2)
-    assert set(f2["protected"]) == {conceit, decay, welcome, bandolier, thread}
-    assert f2["fuse"] == [conceit, decay, mirror, sense] and f2["enhance2"] == []
+    # A gift of the plan is never fuel: floor 2 keeps Clear Mirror and
+    # Artistic Sense too (one crafted early used to be fused away there).
+    assert set(f2["protected"]) == set(f1["protected"])
+    assert f2["fuse"] == [conceit, mirror, decay, sense] and f2["enhance2"] == []
     f3 = H.market_plan(3)
     assert set(f3["protected"]) == {conceit, decay, bandolier, thread, mirror, sense}
     assert welcome not in f3["protected"]                    # fuel from floor 3
     for floor in (1, 2, 3, 4, 5):
         assert bandolier in H.market_plan(floor)["protected"]   # every floor
-    assert f3["fuse"] == [conceit, decay, mirror, sense]      # still owed
+    assert f3["fuse"] == [conceit, mirror, decay, sense]      # still owed
     assert f3["enhance2"] == [mirror, sense]
-    assert H.market_plan(3, crafted={conceit})["fuse"] == [decay, mirror, sense]
+    assert H.market_plan(3, crafted={conceit})["fuse"] == [mirror, decay, sense]
     assert H.market_plan(4, crafted={conceit, decay})["fuse"] == [mirror, sense]
-    assert H.market_plan(4, crafted={conceit, decay})["must"] == [conceit, decay]
+    assert H.market_plan(4, crafted={conceit, decay})["must"] == [conceit, mirror]
     assert H.market_plan(5, crafted={conceit}) == H.market_plan(3, crafted={conceit})
     from wbcore import shop as S
     monkeypatch.setattr(p, "RUN_SCRIPT", "saikai_ryoshu")
@@ -595,7 +610,39 @@ def test_the_market_plan_follows_the_owners_summary(monkeypatch):
     monkeypatch.setattr(p, "RUN_SCRIPT", "hollow")
     monkeypatch.setattr(p, "LVL", 2)
     monkeypatch.setattr(p, "CUSTOM_FUSE_DONE", set())
-    assert S._hollow_plan()["fuse"] == [conceit, decay, mirror, sense]
+    assert S._hollow_plan()["fuse"] == [conceit, mirror, decay, sense]
+    # No plan tags on the run: the sheet's plan stands.
+    monkeypatch.setattr(p, "MARKET_GIFTS", {"buy": ["X"]}, raising=False)
+    assert S._hollow_plan()["fuse"] == [conceit, mirror, decay, sense]
+    assert set(S._hollow_plan()["protected"]) == set(H.MARKET_PROTECTED[2])
+    # Plan tags on the run: they are the plan, the must-gets still first.
+    monkeypatch.setattr(p, "MARKET_GIFTS", {"keep_fuse": [thread], "fuse": [mirror, conceit],
+                                            "enhance1": [mirror], "buy": ["X"]}, raising=False)
+    plan = S._hollow_plan()
+    assert plan["protected"] == [thread] and plan["fuse"] == [conceit, mirror]
+    assert plan["must"] == [conceit, mirror] and plan["targets"] == [conceit, mirror]
+    assert plan["enhance1"] == [] and plan["enhance2"] == []      # upties from floor 3
+    monkeypatch.setattr(p, "LVL", 3)
+    assert S._hollow_plan()["enhance1"] == [mirror]
+    monkeypatch.setattr(p, "CUSTOM_FUSE_DONE", {conceit})
+    assert S._hollow_plan()["fuse"] == [mirror]
+    assert H.enhance_ready({conceit}, targets=[conceit, mirror]) is False
+    assert H.enhance_ready({conceit, mirror}, targets=[conceit, mirror]) is True
+    assert H.sell_ready({conceit, mirror}, floor=4, targets=[conceit, mirror]) is True
+    # The starting gift's uptie is the first shop's own step: its tag stays
+    # out of the plan's lists, so no later shop reserves cost for it.
+    monkeypatch.setattr(p, "MARKET_GIFTS", {"fuse": [conceit], "enhance1": [bandolier],
+                                            "enhance2": [mirror]}, raising=False)
+    assert S._hollow_plan()["enhance1"] == [] and S._hollow_plan()["enhance2"] == [mirror]
+    monkeypatch.setattr(p, "MARKET_GIFTS", {"fuse": [conceit],
+                                            "enhance2": [bandolier, mirror]}, raising=False)
+    assert S._hollow_plan()["enhance2"] == [mirror]
+    # Saved tags are alphabetical; the upties follow the plan's ranking,
+    # Clear Mirror before Artistic Sense, a gift outside the plan last.
+    monkeypatch.setattr(p, "MARKET_GIFTS", {
+        "fuse": sorted([conceit, decay, mirror, sense]),
+        "enhance2": ["Artistic Sense", "Blanket", "Clear Mirror, Calm Water"]}, raising=False)
+    assert S._hollow_plan()["enhance2"] == [mirror, sense, "Blanket"]
 
 
 def test_the_market_works_poise_gifts_first(monkeypatch):
@@ -646,7 +693,7 @@ def test_a_card_that_only_highlights_is_clicked_again(monkeypatch):
 def test_the_heal_is_judged_by_the_cost_drop(monkeypatch, caplog):
     import logging
     from wbcore import shop as S
-    costs = iter([300, 200])
+    costs = iter([300, 200, 100])       # at the shop, after the heal, after the second
     monkeypatch.setattr(S, "balance", lambda: next(costs))
     monkeypatch.setattr(H, "ClickAction", lambda *a, **k: type(
         "A", (), {"execute": lambda self, preset: True})())
@@ -664,6 +711,8 @@ def test_the_heal_is_judged_by_the_cost_drop(monkeypatch, caplog):
         assert H.shop_visit()
     text = caplog.text
     assert "went through (cost 300 to 200)" in text
+    # Her badge never read 45 SP, so she was healed once more.
+    assert "healing FAUST once more" in text and "went through (cost 200 to 100)" in text
     # Her 45 SP badge is proof enough: no second cost read at all.
     caplog.clear()
     monkeypatch.setattr(H, "_sp_badge", lambda i, name, conf=0.8: name == "hollow_sp45")
@@ -678,11 +727,11 @@ def test_the_heal_is_judged_by_the_cost_drop(monkeypatch, caplog):
     assert p.HOLLOW_CORRODED is False               # Faust was the target
     assert p.HOLLOW_CORRODED_FLOOR == 4
     caplog.clear()
-    costs = iter([300, 300])
+    costs = iter([300, 300, 300])
     monkeypatch.setattr(S, "balance", lambda: next(costs))
     with caplog.at_level(logging.INFO):
         H.shop_visit()
-    assert "may not have gone through (cost 300, was 300)" in caplog.text
+    assert caplog.text.count("may not have gone through (cost 300, was 300)") == 2
 
 
 def _heal_screen(monkeypatch):
@@ -700,6 +749,96 @@ def _heal_screen(monkeypatch):
     monkeypatch.setattr(p, "LVL", 4)
     monkeypatch.setattr(p, "HOLLOW_CORRODED", True)
     return clicks, left
+
+
+def _heals(clicks):
+    """How many times Select was pressed on the heal screen."""
+    return clicks.count(H._SHOP_CONFIRM)
+
+
+def test_faust_is_healed_twice_while_her_badge_does_not_read_45(monkeypatch, caplog):
+    """A heal gives 45 SP: from below 0 one is not enough."""
+    from wbcore import shop as S
+    clicks, left = _heal_screen(monkeypatch)
+    monkeypatch.setattr(H, "_heal_row_lit", lambda i: True)
+    monkeypatch.setattr(H, "_heal_button", lambda name: True)
+    monkeypatch.setattr(H, "_at_shop", lambda: True)
+    costs = iter([700, 600, 500])
+    monkeypatch.setattr(S, "balance", lambda: next(costs))
+    with caplog.at_level("INFO"):
+        assert H.shop_visit()
+    faust = (H._SHOP_PORTRAIT_X[1], H._SHOP_PORTRAIT_Y)
+    assert clicks == [H._SHOP_HEAL_SINGLE, faust, H._SHOP_CONFIRM] * 2
+    assert left == [True, True] and H.FAUST_HEALS == 2        # never a third
+    assert "healing FAUST (floor 4)" in caplog.text
+    assert "healing FAUST once more, not at 45 SP yet (floor 4)" in caplog.text
+
+
+def test_one_heal_is_enough_once_the_badge_reads_45(monkeypatch, caplog):
+    from wbcore import shop as S
+    clicks, left = _heal_screen(monkeypatch)
+    monkeypatch.setattr(H, "_heal_row_lit", lambda i: True)
+    monkeypatch.setattr(H, "_heal_button", lambda name: True)
+    monkeypatch.setattr(H, "_at_shop", lambda: True)
+    monkeypatch.setattr(S, "balance", lambda: 700)
+    # Read right after the heal, on its result screen.
+    monkeypatch.setattr(H, "_sp_badge", lambda i, name, conf=0.8: (
+        name == "hollow_sp45" and _heals(clicks) == 1))
+    with caplog.at_level("INFO"):
+        assert H.shop_visit()
+    assert _heals(clicks) == 1 and "reads 45 SP after the heal" in caplog.text
+    # Missed there, read back on the shop screen: still no second heal.
+    del clicks[:]
+    after = []
+
+    def badge(i, name, conf=0.8):
+        if name != "hollow_sp45" or _heals(clicks) != 1:
+            return False
+        after.append(name)
+        return len(after) >= 2            # the result screen misses, the shop screen reads
+    monkeypatch.setattr(H, "_sp_badge", badge)
+    costs = iter([700, 600])
+    monkeypatch.setattr(S, "balance", lambda: next(costs))
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        assert H.shop_visit()
+    assert _heals(clicks) == 1
+    assert "FAUST already reads 45 SP; no second heal needed" in caplog.text
+
+
+def test_the_second_heal_needs_its_100_cost_and_is_faust_s_alone(monkeypatch, caplog):
+    from wbcore import shop as S
+    clicks, left = _heal_screen(monkeypatch)
+    monkeypatch.setattr(H, "_heal_row_lit", lambda i: True)
+    monkeypatch.setattr(H, "_heal_button", lambda name: True)
+    monkeypatch.setattr(H, "_at_shop", lambda: True)
+    # 150 cost: one heal, and the 50 left is reckoned, not read again.
+    costs = iter([150, 1])
+    monkeypatch.setattr(S, "balance", lambda: next(costs))
+    with caplog.at_level("INFO"):
+        assert H.shop_visit()
+    assert _heals(clicks) == 1 and "under 100 cost, no second heal" in caplog.text
+    # The floor 1 heal of the chosen sinner stays a single one.
+    del clicks[:]
+    monkeypatch.setattr(p, "LVL", 1)
+    monkeypatch.setattr(p, "HOLLOW_HEAL", "GREGOR", raising=False)
+    costs = iter([700, 600, 500])
+    monkeypatch.setattr(S, "balance", lambda: next(costs))
+    assert H.shop_visit()
+    assert _heals(clicks) == 1
+
+
+def test_no_second_heal_when_the_shop_screen_did_not_come_back(monkeypatch):
+    from wbcore import shop as S
+    clicks, left = _heal_screen(monkeypatch)
+    monkeypatch.setattr(H, "_heal_row_lit", lambda i: True)
+    monkeypatch.setattr(H, "_heal_button", lambda name: True)
+    monkeypatch.setattr(H, "_at_shop", lambda: True)
+    monkeypatch.setattr(H, "_leave_heal_menu", lambda: left.append(False) and False)
+    costs = iter([700, 600])
+    monkeypatch.setattr(S, "balance", lambda: next(costs))
+    assert H.shop_visit()
+    assert _heals(clicks) == 1 and left == [False]
 
 
 def test_45_sp_on_the_type_list_means_return_not_the_option(monkeypatch, caplog):
@@ -1108,7 +1247,7 @@ def test_hollow_is_only_built_when_chosen(monkeypatch):
     monkeypatch.setattr(RC, "_build_hollow_run",
                         lambda md: built.append(md) or (1, {}, {}, True))
     for md in (dict(_MD, custom_run=False),
-               dict(_MD, custom_strategy="F3 Hard")):
+               dict(_MD, custom_strategy="")):
         try:
             RC.build_md_run(md, {}, {})
         except ValueError:
@@ -1133,7 +1272,8 @@ def test_the_start_summary_describes_the_run():
     assert picked["Graces"] == "Star Shower, Chance Comet ++"
     assert rows["Squad"] == "Faust alone"
     assert rows["Fallback (miniboss)"] == "Yi Sang, Gregor"      # no Faust
-    assert rows["Shop heals"] == "Gregor on floor 1, Faust on floors 4 and 5"
+    assert rows["Shop heals"] == ("Gregor on floor 1, Faust on floors 4 and 5 "
+                                  "(twice when one heal leaves her under 45 SP)")
     assert rows["Team keyword"] == "Poise"
     assert rows["Market"].startswith("Torn Bandolier uptied first on floor 1, then the heal")
     assert rows["Pack search"] == "One pack per floor, 2 refreshes"
@@ -1146,12 +1286,6 @@ def test_the_start_summary_describes_the_run():
                                 "custom_strategy": RC.HOLLOW_LABEL}))
     assert rows["Fallback (miniboss)"] == "None"
     assert rows["Shop heals"].startswith("Yi Sang on floor 1")
-
-
-def test_the_custom_run_hint_mentions_hollow():
-    assert "Hollow" in C.MD_CUSTOM_RUN_HINT
-    assert "Le Trou" in C.MD_CUSTOM_RUN_HINT
-    assert "IDs. Hollow" in C.MD_CUSTOM_RUN_HINT      # the sentences are spaced
 
 
 # --- the controls ----------------------------------------------------------
@@ -1185,97 +1319,130 @@ def ui():
     mp.undo()
 
 
-def test_settings_shows_the_heal_pick_for_hollow_only(ui):
+def test_the_settings_sinners_wear_their_emblems(ui):
+    from PySide6.QtWidgets import QComboBox
+    from gui_v2.settings_page import _SINNER_NAMES
     page = ui.page("settings")
-    assert "Hollow" in page._stk_seg._buttons
-    assert page._stk_heal_row.isHidden()
-    assert not page._stk_exclude_box.isHidden()
-    page._stk_seg._buttons["Hollow"].click()
-    assert page._stk_run == "Hollow"
-    assert not page._stk_order._chips["Faust"].isEnabled()
-    assert not page._stk_heal_row.isHidden()
-    assert not page._stk_exclude_box.isHidden()          # Hollow swaps too
-    assert "hollow_exclude" in page.saikai_thrill_config()
-    assert not hasattr(page, "_stk_order_hint")
-    assert page._stk_order_label.text() == "Fallback sinners"
-    names = [page._stk_heal.itemText(i) for i in range(page._stk_heal.count())]
+    w = page._team_widgets
+    for grid in (page._sinner_order, page._sinner_exclude, w["order"], w["exclude"]):
+        for name in _SINNER_NAMES:
+            chip = grid._chips[name]
+            assert not chip._emblem.isNull() and chip._emblem.height() <= chip._ICON
+            bare = chip.fontMetrics().horizontalAdvance(name) + 2 * chip._HPAD
+            assert chip.sizeHint().width() > bare + chip._ICON
+    assert isinstance(w["heal"], QComboBox) and w["heal"].iconSize().width() == 18
+    assert all(not w["heal"].itemIcon(i).isNull() for i in range(w["heal"].count()))
+
+
+def test_settings_has_one_card_for_both_custom_runs(ui):
+    page = ui.page("settings")
+    assert page._team_card.plain_title == "CUSTOM RUN TEAMS"
+    w = page._team_widgets
+    assert list(w["run"]._buttons) == ["SAIKAI", "Hollow"]
+    assert page._team_run == "SAIKAI"
+    assert not w["s3_only_row"].isHidden() and w["heal_row"].isHidden()
+    assert w["order"]._chips["Faust"].isEnabled()
+    assert w["order_label"].text() == "Sinner order"
+    page.show_team("Hollow")
+    assert page._team_run == "Hollow" and w["run"].selected() == "Hollow"
+    assert w["s3_only_row"].isHidden() and not w["heal_row"].isHidden()
+    assert not w["order"]._chips["Faust"].isEnabled()
+    assert w["order_label"].text() == "Fallback sinners"
+    assert "hollow_exclude" in page.custom_teams_config()
+    names = [w["heal"].itemText(i) for i in range(w["heal"].count())]
     assert "Faust" not in names and "Yi Sang" in names and len(names) == 11
 
-    saikai_before = {k: v for k, v in page.saikai_thrill_config().items()
+    saikai_before = {k: v for k, v in page.custom_teams_config().items()
                      if k.startswith("saikai")}
-    page._stk_heal.setCurrentText("Gregor")
-    cfg = page.saikai_thrill_config()
+    w["heal"].setCurrentText("Gregor")
+    cfg = page.custom_teams_config()
     assert cfg["hollow_heal"] == "Gregor"
-    # The keyword and order come from the saved config on this machine.
-    assert cfg["hollow_status"] == page._stk_states["Hollow"]["keyword"]
-    assert cfg["hollow_order"] == page._stk_states["Hollow"]["order"]
+    # The keyword comes from the saved config on this machine.
+    assert cfg["hollow_status"] == page._team_states["Hollow"]["keyword"]
     # The SAIKAI entries are untouched by the Hollow pick.
     assert {k: v for k, v in cfg.items()
             if k.startswith("saikai")} == saikai_before
+    assert page.custom_team_configured("Hollow")       # the heal pick counts
+    page.show_team("SAIKAI")
+    assert page._team_run == "SAIKAI" and w["order"]._chips["Faust"].isEnabled()
+    assert page.custom_teams_config()["hollow_heal"] == "Gregor"   # kept off screen
 
-    page._stk_seg._buttons["SAIKAI"].click()
-    assert page._stk_order._chips["Faust"].isEnabled()
-    assert page._stk_heal_row.isHidden()
-    assert not page._stk_exclude_box.isHidden()
-    assert page._stk_order_label.text() == "Sinner order"
-    assert page.saikai_thrill_config()["hollow_heal"] == "Gregor"
+
+def test_an_order_left_empty_is_the_default_one(ui):
+    from gui_v2 import presets as P
+    page = ui.page("settings")
+    page._restore_teams({"Hollow": {"order": [], "configured": True},
+                         "SAIKAI": {"order": []}})
+    cfg = page.custom_teams_config()
+    assert cfg["hollow_order"] == P.default_team("Hollow")["order"]
+    assert cfg["saikai_order"] == P.default_team("SAIKAI")["order"]
+    assert not page.custom_team_configured("SAIKAI")
+    page._restore_teams({"Hollow": {"order": ["Faust", "Gregor"]},
+                         "SAIKAI": {"order": ["Outis", "Gregor"]}})
+    cfg = page.custom_teams_config()
+    assert cfg["hollow_order"] == ["Gregor"] and cfg["saikai_order"] == ["Outis", "Gregor"]
 
 
 def test_settings_restores_a_saved_hollow_block(ui):
     page = ui.page("settings")
-    page._restore_stk({"Hollow": {"order": ["Faust", "Gregor", "Nobody"],
-                                  "keyword": "Bleed", "heal": "Faust"}})
-    cfg = page.saikai_thrill_config()
+    page._restore_teams({"Hollow": {"order": ["Faust", "Gregor", "Nobody"],
+                                    "keyword": "Bleed", "heal": "Faust"}})
+    cfg = page.custom_teams_config()
     assert cfg["hollow_order"] == ["Gregor"]                # no Faust
     assert cfg["hollow_status"] == "Bleed"
     assert cfg["hollow_heal"] == "Yi Sang"          # Faust is refused
-    page._restore_stk({"Hollow": {"heal": "Ishmael"}})
-    assert page.saikai_thrill_config()["hollow_heal"] == "Ishmael"
-    page._stk_seg._buttons["Hollow"].click()
-    assert page._stk_heal.currentText() == "Ishmael"
-    page._stk_seg._buttons["SAIKAI"].click()
+    assert page.custom_team_configured("Hollow")           # an order was saved
+    page._restore_teams({"Hollow": {"heal": "Ishmael"}})
+    assert page.custom_teams_config()["hollow_heal"] == "Ishmael"
+    page.show_team("Hollow")
+    assert page._team_widgets["heal"].currentText() == "Ishmael"
+    assert not page.custom_team_configured("Hollow")       # nothing set up yet
+    page.acknowledge_custom_team("Hollow")
+    assert page.custom_team_configured("Hollow")
+    page._restore_teams({"Hollow": {"configured": True},
+                         "SAIKAI": {"keyword": "Burn"}})
+    assert page.custom_team_configured("Hollow")
+    assert not page.custom_team_configured("SAIKAI")
+    assert page.custom_teams_config()["saikai_status"] == "Burn"
 
 
 def test_an_exclusion_saved_while_the_grid_was_hidden_keeps_the_faust_default(ui):
     page = ui.page("settings")
-    page._restore_stk({"Hollow": {"order": ["Gregor"], "exclude": [],
-                                  "keyword": "Rupture", "heal": "Hong Lu"}})   # a v2.5.1e save
-    assert page.saikai_thrill_config()["hollow_exclude"] == ["Faust"]
-    page._restore_stk({"Hollow": {"exclude": [], "exclude_set": True}})       # cleared on purpose
-    assert page.saikai_thrill_config()["hollow_exclude"] == []
-    page._restore_stk({"Hollow": {"exclude": ["Gregor"], "exclude_set": True}})
-    assert page.saikai_thrill_config()["hollow_exclude"] == ["Gregor"]
-    page._restore_stk({"Hollow": {"exclude": ["Gregor"]}})
-    assert page.saikai_thrill_config()["hollow_exclude"] == ["Faust"]
-    page._stk_seg._buttons["Hollow"].click()
-    page._stk_exclude.set_order(["Faust", "Gregor"])
-    page._stk_sync()                                                          # the grid was used
-    assert page._stk_states["Hollow"]["exclude_set"] is True
-    assert page.saikai_thrill_config()["hollow_exclude"] == ["Faust", "Gregor"]
-    page._stk_seg._buttons["SAIKAI"].click()
+    page._restore_teams({"Hollow": {"order": ["Gregor"], "exclude": [],
+                                    "keyword": "Rupture", "heal": "Hong Lu"}})   # a v2.5.1e save
+    assert page.custom_teams_config()["hollow_exclude"] == ["Faust"]
+    page._restore_teams({"Hollow": {"exclude": [], "exclude_set": True}})       # cleared on purpose
+    assert page.custom_teams_config()["hollow_exclude"] == []
+    page._restore_teams({"Hollow": {"exclude": ["Gregor"], "exclude_set": True}})
+    assert page.custom_teams_config()["hollow_exclude"] == ["Gregor"]
+    page._restore_teams({"Hollow": {"exclude": ["Gregor"]}})
+    assert page.custom_teams_config()["hollow_exclude"] == ["Faust"]
+    page.show_team("Hollow")
+    page._team_widgets["exclude"].set_order(["Faust", "Gregor"])
+    page._team_sync()                                                         # the grid was used
+    assert page._team_states["Hollow"]["exclude_set"] is True
+    assert page.custom_teams_config()["hollow_exclude"] == ["Faust", "Gregor"]
 
 
-def test_the_mirror_dungeon_page_pins_the_search_gifts_for_hollow(ui):
+def test_picking_hollow_brings_its_search_gifts_as_ordinary_picks(ui):
     md = ui.page("mirror_dungeon")
     assert "Hollow" in md._custom_strategy._buttons
     md._custom_run.setChecked(True)
     md._custom_strategy._buttons["Hollow"].click()
     assert md.state()["custom_strategy"] == "Hollow"
     # The starter gift comes from the starter screen, not the search picker;
-    # the picker pins the two gifts the sheet searches for.
-    assert md._gift_gallery._locked == {"Grand Welcome", "Sharp Needle & Thread"}
-    assert "Torn Bandolier" not in md.state()["gift_search"]
-    assert set(md.state()["gift_search"]) >= {"Grand Welcome",
-                                              "Sharp Needle & Thread"}
-    from PySide6.QtWidgets import QPushButton
-    chips = [c.text() for c in md._gift_gallery._chips_holder.findChildren(QPushButton)]
-    assert any(c.startswith("Sharp Needle && Thread") for c in chips), chips
-    assert not md._stk_link.isHidden()
-    assert md._stk_link.text() == "Go to custom run settings"
-    md._custom_strategy._buttons["F3 Hard"].click()
-    assert md._gift_gallery._locked == set()
-    assert md._stk_link.isHidden()
-    md._custom_run.setChecked(False)
+    # the picker starts from the two gifts the sheet searches for.
+    assert md.state()["gift_search"] == ["Grand Welcome", "Sharp Needle & Thread"]
+    from gui_v2.mirror_dungeon_page import _PickChip
+    chips = {c.name(): c for c in md._gift_gallery._chips_holder.findChildren(_PickChip)}
+    assert "Click to remove" in chips["Sharp Needle & Thread"].toolTip()
+    chips["Sharp Needle & Thread"].click()          # nothing is locked: the x takes it off
+    assert md.state()["gift_search"] == ["Grand Welcome"]
+    assert not md._team_link.isHidden()
+    assert md._team_link.text() == "Go to custom run settings"
+    md._custom_run.setChecked(False)                # the run left takes its gifts with it
+    assert md.state()["gift_search"] == []
+    assert md._team_link.isHidden()
 
 
 def test_hollow_keeps_its_own_graces(ui):
@@ -1338,6 +1505,7 @@ def test_the_floor_one_shop_upties_torn_bandolier_first(monkeypatch, caplog):
     uptied = []
     monkeypatch.setattr(S, "_enhance_catalog", lambda targets: uptied.append(list(targets)))
     monkeypatch.setattr(p, "SKIP_EGO_ENHANCING", False)
+    monkeypatch.setattr(p, "MARKET_GIFTS", {"enhance2": ["Torn Bandolier"]}, raising=False)
     H.begin_run()
     with caplog.at_level("INFO"):
         S._hollow_first_uptie()
@@ -1352,3 +1520,10 @@ def test_the_floor_one_shop_upties_torn_bandolier_first(monkeypatch, caplog):
     S._hollow_first_uptie()
     assert len(uptied) == 2
     assert H.FIRST_UPTIE == (H.STARTING_GIFT, 2)
+    monkeypatch.setattr(p, "SKIP_EGO_ENHANCING", False)
+    for tags, levels in (({"enhance1": ["Torn Bandolier"]}, 1),   # retagged: one uptie
+                         ({"buy": ["X"]}, 2), (None, 2)):         # untagged: the sheet's two
+        H.begin_run()
+        monkeypatch.setattr(p, "MARKET_GIFTS", tags, raising=False)
+        S._hollow_first_uptie()
+        assert uptied[-1] == [("Torn Bandolier", levels)]

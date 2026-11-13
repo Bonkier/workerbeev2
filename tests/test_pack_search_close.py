@@ -297,3 +297,17 @@ def test_the_card_band_is_waited_on_until_it_stops_moving(monkeypatch):
                         lambda region=None: np.full((4, 4, 3), next(moving) * 50 % 256, np.uint8))
     monkeypatch.setattr(pack, "time", _Clock())
     assert pack._wait_cards_still(timeout=1.0) is False
+
+
+def test_the_window_is_searched_without_hunting_a_refresh_logo(env, monkeypatch):
+    # The window lost its refresh logo; three seconds went on waiting for it.
+    env(_Screen(closes_on=1))
+    taps = []
+    monkeypatch.setattr(pack, "tap_center",
+                        lambda name, *a, **k: taps.append(name) or True)
+    monkeypatch.setattr(pack, "PTH", {"packsearch": "x", "packconfirm": "x",
+                                      "packrefresh": "x"})
+    monkeypatch.setattr(p, "HARD", False, raising=False)
+    assert pack._pack_search_window(1, [(STEM, KEY)], "PackSearch") == KEY
+    assert taps == ["packsearch", "packconfirm"]
+    assert pack.time.now < 6.0

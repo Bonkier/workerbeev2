@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget,
 )
 
-import os
 
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 
@@ -109,11 +108,7 @@ def _gift_icon_path(name: str) -> str:
         return PTH.get(name, "") or ""
     except Exception:
         return ""
-from .copy import (
-    STATS_HISTORY_EMPTY,
-    STATS_PACKS_EMPTY,
-    STATS_PACKS_HINT,
-)
+from .copy import STATS_HISTORY_EMPTY, STATS_PACKS_EMPTY
 from .theme import Colors, Sizing
 from .widgets import (
     AnimatedStack, Card, ElidedLabel, GhostButton, HRule, IconlessTabBar,
@@ -214,10 +209,6 @@ class StatsPage(QWidget):
         v = QVBoxLayout(w)
         v.setContentsMargins(0, Sizing.SPACE_MD, 0, 0)
         v.setSpacing(Sizing.SPACE_MD)
-
-        hint = QLabel(STATS_PACKS_HINT, w, objectName="inlineHint")
-        hint.setWordWrap(True)
-        v.addWidget(hint)
         # One card per floor, built on refresh: a floor's packs only mean
         # anything against each other, so they get their own block.
         self._overall_body = QVBoxLayout()
@@ -314,7 +305,7 @@ class StatsPage(QWidget):
             with open(path, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 w.writerow(["timestamp", "result", "duration_seconds",
-                            "team", "mode", "floors", "gifts"])
+                            "team", "mode", "floors", "gifts", "run"])
                 for r in runs:
                     ts = r.get("ts", 0)
                     when = (_dt.datetime.fromtimestamp(ts).isoformat()
@@ -324,7 +315,7 @@ class StatsPage(QWidget):
                         f"{int(round(f.get('duration', 0) or 0))}s"
                         for f in (r.get("floors") or []))
                     gifts = "; ".join(
-                        str(g.get("name", "")) + ("[+]" if g.get("uptied") else "")
+                        str(g.get("name", "")) + stats.gift_badge(g, sep="")
                         for g in (r.get("gifts") or []))
                     w.writerow([
                         when,
@@ -334,6 +325,7 @@ class StatsPage(QWidget):
                         r.get("mode", "mirror"),
                         floors,
                         gifts,
+                        r.get("run", ""),
                     ])
         except OSError:
             pass
@@ -352,9 +344,9 @@ class StatsPage(QWidget):
 
 
 class _GiftStrip(QWidget):
-    """A run's EGO gifts as a wrapped row of icons. Uptied gifts carry a
-    small accent "+" badge in the corner, so the haul reads at a glance
-    instead of as a paragraph of names."""
+    """A run's EGO gifts as a wrapped row of icons. An enhanced gift
+    carries a small accent "+" or "++" badge in the corner, so the haul
+    reads at a glance instead of as a paragraph of names."""
 
     _ICON = 34
     _GAP = 4
@@ -369,9 +361,9 @@ class _GiftStrip(QWidget):
                 pm = pm.scaled(self._ICON, self._ICON,
                                Qt.AspectRatioMode.KeepAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)
-            self._items.append((name, pm, bool(g.get("uptied"))))
+            self._items.append((name, pm, stats.gift_level(g)))
         self.setToolTip(", ".join(
-            n + (" [+]" if u else "") for n, _p, u in self._items))
+            n + stats.gift_badge({"level": lv}) for n, _p, lv in self._items))
         self._cols = 1
         self.setMinimumHeight(self._ICON + 2)
 
@@ -398,7 +390,7 @@ class _GiftStrip(QWidget):
         step = self._ICON + self._GAP
         badge = QColor(Colors.ACCENT)
         b = 11
-        for i, (_name, pm, up) in enumerate(self._items):
+        for i, (_name, pm, lv) in enumerate(self._items):
             x = (i % cols) * step
             y = (i // cols) * step
             if not pm.isNull():
@@ -413,12 +405,16 @@ class _GiftStrip(QWidget):
                 p.fillRect(int(x), int(y), self._ICON, self._ICON,
                            QColor(Colors.BG_OVERLAY))
                 bx, by = int(x + self._ICON - b), int(y)
-            if up:
-                # "+" badge, top-right of the art.
-                p.fillRect(bx, by, b, b, badge)
+            if lv:
+                # "+" badge, top-right of the art; "++" once enhanced twice.
+                w = b if lv == 1 else 2 * b - 4
+                bx -= w - b
+                p.fillRect(bx, by, w, b, badge)
                 p.setPen(QPen(QColor(Colors.BG_BASE), 2))
-                p.drawLine(bx + 3, by + b // 2, bx + b - 3, by + b // 2)
-                p.drawLine(bx + b // 2, by + 3, bx + b // 2, by + b - 3)
+                for k in range(min(lv, 2)):
+                    cx = bx + b // 2 + k * (b - 4)
+                    p.drawLine(cx - 2, by + b // 2, cx + 2, by + b // 2)
+                    p.drawLine(cx, by + 3, cx, by + b - 3)
         p.end()
 
 
@@ -443,12 +439,15 @@ class _HistoryRow(QWidget):
             f"color: {Colors.SUCCESS if completed else Colors.ERROR};")
         row.addWidget(dot)
 
-        team = (run.get("team") or "").strip()
-        label = team.title() if team else "Mirror Dungeon"
+        team = (run.get("team") or "").strip().title()
+        script = (run.get("run") or "").strip()
+        label = script or team or "Mirror Dungeon"
         result = "Completed" if completed else "Failed"
         name = QLabel(f"{label}  ·  {result}", top,
                       objectName="settingTitle")
         row.addWidget(name)
+        if script and team:
+            row.addWidget(QLabel(team, top, objectName="inlineMeta"))
         self._row = row
         self._after_name = row.count()
         row.addStretch(1)
@@ -494,8 +493,8 @@ class _HistoryRow(QWidget):
                     raw_pack = str(f.get("pack", ""))
                     dur_text = stats.fmt_duration(f.get("duration", 0))
                     if raw_pack == "Restart":
-                        # Synthetic entry from a THRILL F1 forfeit on an
-                        # earlier attempt; no floor and no pack of its own.
+                        # An attempt restarted partway on an older build;
+                        # no floor and no pack of its own.
                         sh.addWidget(_FloorCell(
                             None, "", "Restart", dur_text, strip))
                         continue
@@ -522,13 +521,11 @@ class _HistoryRow(QWidget):
                             | Qt.AlignmentFlag.AlignHCenter)
                 dv.addWidget(strip)
             if gifts:
-                # End-of-run fuse-shelf scan; [+] marks an uptied gift
-                # Icons, not a wall of names: a run's gift haul is much
-                # easier to read as art, with a "+" badge marking the ones
-                # that were uptied.
-                uptied = sum(1 for g in gifts if g.get("uptied"))
+                # End-of-run fuse-shelf scan. Icons, not a wall of names:
+                # a run's gift haul is much easier to read as art, with a
+                # "+" or "++" badge marking the enhanced ones.
                 dv.addWidget(QLabel(
-                    f"Gifts  ({len(gifts)}, {uptied} uptied)",
+                    f"Gifts  ({stats.gift_counts(gifts)})",
                     self._details, objectName="inlineMeta"))
                 dv.addWidget(_GiftStrip(gifts, self._details))
             self._details.setVisible(False)

@@ -12,7 +12,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QIcon, QPainter
 from PySide6.QtWidgets import (
     QSizePolicy, QSpacerItem,
-    QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMainWindow,
+    QFrame, QGraphicsOpacityEffect, QHBoxLayout, QMainWindow,
     QPushButton, QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -21,7 +21,6 @@ from .init_worker import (
 )
 from .main_ui import MainUI
 from .run_coordinator import RunCoordinator
-from .settings import get_splash_size
 from .splash import SplashWidget, _read_version
 from .theme import Colors, Motion, Sizing
 
@@ -326,11 +325,7 @@ class MainWindow(QMainWindow):
         )
 
     def _size_to_splash(self):
-        # Clamped so a stale config can't push the window off a small screen.
-        saved_w, saved_h = get_splash_size(Sizing.SPLASH_W, Sizing.SPLASH_H)
-        saved_w = max(saved_w, 320)
-        saved_h = max(saved_h, 160)
-        w, h = self._clamp_to_screen(saved_w, saved_h)
+        w, h = self._clamp_to_screen(Sizing.SPLASH_W, Sizing.SPLASH_H)
         self.setGeometry(self._centered_rect(w, h))
         # Lock size so rotating tips with different widths don't resize.
         self.setFixedSize(w, h)

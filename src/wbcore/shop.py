@@ -41,6 +41,13 @@ def uptie_cost(tier, levels=1) -> int:
     base = enhance_cost.get(int(tier or 0), 100)
     return base if int(levels) <= 1 else base * 3
 
+
+def uptie_owed(tier, done, levels) -> int:
+    """Cost of the levels a gift still owes, `done` of `levels` bought: the
+    first costs the base, the second twice that."""
+    base = enhance_cost.get(int(tier or 0), 100)
+    return sum(base * level for level in range(int(done or 0) + 1, int(levels) + 1))
+
 fusion_ranges = {
     1: (9, 10),
     2: (11, 16),
@@ -106,9 +113,6 @@ def decide_fusion(target_tier, inventory, depth=0):
         
         if missing.get(4, 0) > 0: # never buy T4 for fusion
             continue
-        if p.RUN_SCRIPT == "thrill" and missing.get(1, 0) > 0:
-            # Thrill: never spend modules on T1 gifts.
-            continue
 
         if p.SUPER == "shop" and not depth and missing.get(3, 0) == 1 and \
            sum([missing.get(i, 0) for i in range(1, 3)]) == 0:
@@ -161,6 +165,11 @@ _MARKET_CONF = 0.85
 # top of the tier bars; a match that fails whole is tried again with that
 # band masked out.
 _BADGE_BAND = 0.40
+# The badge itself sits above and to the right of the gift's centre; the
+# + plate marks one enhancement and the ++ plate two.
+_BADGE_CROP = (-70, -14, -16, 58)      # dy0, dy1, dx0, dx1 from the centre
+_BADGE_CONF = 0.80
+_BADGE_TPL_CACHE = {}
 # Safety net: cap fuse_loop passes so a stuck shop (e.g. buy() reporting success
 # without obtaining the needed fuel) leaves instead of looping forever.
 _FUSE_LOOP_CAP = 12
@@ -169,13 +178,15 @@ _FUSE_LOOP_CAP = 12
 _MARKET_REFRESH_CAP = 30
 
 
-def _stem_named(stem, names) -> bool:
-    """Whether a team template stem (clearmirror, holder) names one of the
-    catalog display names (Clear Mirror, Calm Water; Cigarette Holder)."""
+def _stem_name(stem, names):
+    """The catalog display name (Clear Mirror, Calm Water; Cigarette Holder)
+    a team template stem (clearmirror, holder) stands for, or None."""
     key = "".join(c for c in str(stem).lower() if c.isalnum())
-    return bool(key) and any(
-        key in "".join(c for c in str(n).lower() if c.isalnum())
-        for n in names or ())
+    if not key:
+        return None
+    return next((n for n in names or ()
+                 if key in "".join(c for c in str(n).lower() if c.isalnum())),
+                None)
 
 
 def _ccoeff_best(image, tpl, mask=None):
@@ -190,6 +201,47 @@ def _ccoeff_best(image, tpl, mask=None):
     res = np.nan_to_num(res, nan=-1.0, posinf=-1.0, neginf=-1.0)
     _min, best, _at, loc = cv2.minMaxLoc(res)
     return (float(best) + 1.0) / 2.0, loc
+
+
+def _badge_crop(shelf, x, y, reg, comp):
+    """The badge band of the gift centred at FHD (x, y) on the shelf
+    capture of `reg`, at window scale."""
+    dy0, dy1, dx0, dx1 = _BADGE_CROP
+    y0, y1 = (max(0, int((y + d - reg[1]) * comp)) for d in (dy0, dy1))
+    x0, x1 = (max(0, int((x + d - reg[0]) * comp)) for d in (dx0, dx1))
+    return shelf[y0:y1, x0:x1]
+
+
+def _badge_tpl(key, comp):
+    ck = (key, round(comp, 3))
+    tpl = _BADGE_TPL_CACHE.get(ck)
+    if tpl is None:
+        tpl = cv2.imread(PTH[key])
+        if abs(comp - 1.0) > 1e-3:
+            tpl = cv2.resize(tpl, None, fx=comp, fy=comp,
+                             interpolation=cv2.INTER_AREA if comp < 1 else cv2.INTER_CUBIC)
+        _BADGE_TPL_CACHE[ck] = tpl
+    return tpl
+
+
+def _badge_level(crop, comp=1.0) -> int:
+    """How far the gift under `crop` has been enhanced: 2 for the ++ plate,
+    1 for a single +, 0 for none."""
+    if crop is None or crop.size == 0:
+        return 0
+
+    def score(key):
+        tpl = _badge_tpl(key, comp)
+        if crop.shape[0] < tpl.shape[0] or crop.shape[1] < tpl.shape[1]:
+            return 0.0
+        res = cv2.matchTemplate(crop, tpl, cv2.TM_CCOEFF_NORMED)
+        return float(np.nan_to_num(res, nan=-1.0).max())
+
+    if score("++") >= _BADGE_CONF:
+        return 2
+    if max(score("plus"), score("+")) >= _BADGE_CONF:
+        return 1
+    return 0
 
 
 def _catalog_hit(image, reg, tpl):
@@ -213,7 +265,7 @@ def _catalog_hit(image, reg, tpl):
 
 
 def _market_scan(image, reg, names, path_key="path"):
-    """Locate Market/Fuse-tagged gifts (market_catalog display names) on the
+    """Locate market-tagged gifts (market_catalog display names) on the
     amplified shelf `image` via their catalog template, at native scale.
     `path_key` picks the template: "path" (egogifts, fuse/sell shelf) or
     "buy_path" (markettemplate, buy shelf). Returns {name: (x, y)}. These are
@@ -276,19 +328,18 @@ def inventory_check(reg, h, uptie_det=True, market_mode=None):
                 have[gift] = (x, y, h)
 
                 if uptie_det and gift in uptie_ego.keys():
-                    uptie_region = fuse_shelf[int((y-66-reg[1])*comp):int((y-22-reg[1])*comp), int((x-14-reg[0])*comp):int((x+55-reg[0])*comp)]
                     try:
-                        if not LocateRGB.check(PTH["+"], image=uptie_region, wait=False):
+                        if not _badge_level(_badge_crop(fuse_shelf, x, y, reg, comp), comp):
                             uptie[gift] = uptie_cost(uptie_ego[gift], 2)
                     except cv2.error:
-                        print("Uptie detection failed")
+                        pass
 
-                # THRILL: protect only thrill itself; other Rupture gifts stay
-                # as fusion fuel. Other runs keep full team protection.
-                if ((p.RUN_SCRIPT != "thrill" or gift == "thrill")
-                        and (not custom or _stem_named(gift, kept))):
+                kept_as = _stem_name(gift, kept) if custom else None
+                if not custom or kept_as:
                     fuse_shelf = rectangle(fuse_shelf, (int(x - 62 - reg[0]), int(y - 72 - reg[1])), (int(x + 60 - reg[0]), int(y + 60 - reg[1])), (0, 0, 0), -1)
                     image = rectangle(image, (int(x - 62 - reg[0]), int(y - 72 - reg[1])), (int(x + 60 - reg[0]), int(y + 60 - reg[1])), (0, 0, 0), -1)
+                    if kept_as:
+                        have["kept:" + kept_as] = (x, y, h)
             except gui.ImageNotFoundException:
                 continue
 
@@ -300,17 +351,18 @@ def inventory_check(reg, h, uptie_det=True, market_mode=None):
             have[gift] = (x, y, h)
 
             if uptie_det and p.KEYWORDLESS[gift] > 2:
-                uptie_region = fuse_shelf[int((y-66-reg[1])*comp):int((y-22-reg[1])*comp), int((x-14-reg[0])*comp):int((x+55-reg[0])*comp)]
                 try:
-                    if not LocateRGB.check(PTH["+"], image=uptie_region, wait=False):
+                    if not _badge_level(_badge_crop(fuse_shelf, x, y, reg, comp), comp):
                         uptie[gift] = uptie_cost(WORDLESS_MAP[gift], 2)
                 except cv2.error:
-                    print("Uptie detection failed")
+                    pass
 
-            # THRILL: keywordless gifts also go into the fuel pool.
-            if p.RUN_SCRIPT != "thrill" and (not custom or _stem_named(gift, kept)):
+            kept_as = _stem_name(gift, kept) if custom else None
+            if not custom or kept_as:
                 fuse_shelf = rectangle(fuse_shelf, (int(x - 62 - reg[0]), int(y - 72 - reg[1])), (int(x + 60 - reg[0]), int(y + 60 - reg[1])), (0, 0, 0), -1)
                 image = rectangle(image, (int(x - 62 - reg[0]), int(y - 72 - reg[1])), (int(x + 60 - reg[0]), int(y + 60 - reg[1])), (0, 0, 0), -1)
+                if kept_as:
+                    have["kept:" + kept_as] = (x, y, h)
         except gui.ImageNotFoundException:
             continue
 
@@ -348,7 +400,7 @@ def inventory_check(reg, h, uptie_det=True, market_mode=None):
         except gui.ImageNotFoundException:
             pass
 
-    # Market/Fuse: protect the user's tagged gifts for THIS pass (keep_fuse on a
+    # Market tags: protect the user's tagged gifts for THIS pass (keep_fuse on a
     # fuse pass, keep_sell on a sell pass). Located via egogifts (the team PTH
     # set doesn't cover them) and blacked out before the tier scan, so they never
     # enter the fusion/sell pool.
@@ -362,6 +414,8 @@ def inventory_check(reg, h, uptie_det=True, market_mode=None):
                 (int(_mx + 60 - reg[0]), int(_my + 60 - reg[1])), (0, 0, 0), -1)
             logging.info("Market: %s '%s' at (%d,%d) - excluded from this pass.",
                          _mkey, _mn, _mx, _my)
+            if custom:
+                have["kept:" + _mn] = (_mx, _my, h)
         if custom and _mnames:
             # The plan's protected gifts that are not on this shelf page: an
             # owned one missing here is the first thing to check when a
@@ -432,7 +486,6 @@ def get_inventory():
     uptie = None
     hook_x = random.choice([1083, 1228, 1370, 1515])
     while not now_rgb.button("scroll.0") and now_rgb.button("scroll", "scroll_full"):
-        print("scroll down for inventory alignment")
         browse_fast(hook_x)
         time.sleep(0.5)
 
@@ -453,7 +506,6 @@ def get_inventory():
                 if box:
                     break
             else:
-                print("scroll up for invetory scan")
                 browse(hook_x, step=-140, adj=adj)
 
                 if LocateGray.check(PTH["gifts_owned"], region=REG["fuse_shelf"], wait=False):
@@ -467,7 +519,6 @@ def get_inventory():
 
                 ck = LocateRGB.locate(PTH["height_ck"], region=(920, 585, 790, 165), method=1)
                 adj = 625 - gui.center(ck)[1] if ck else 0
-                print(adj)
             h += 1
     else:
         box = LocateGray.locate(PTH["gifts_owned"], region=REG["fuse_shelf"])
@@ -517,7 +568,6 @@ def perform_clicks(to_click):
 
     hook_x = random.choice([1083, 1228, 1370, 1515])
     while not now_rgb.button("scroll.0") and now_rgb.button("scroll", "scroll_full"):
-        print("scroll down for inventory click alignment")
         browse_fast(hook_x)
         time.sleep(0.5)
 
@@ -526,7 +576,6 @@ def perform_clicks(to_click):
     adj = 0
     for pos in to_click:
         if pos[2] - h > 0:
-            print("iterating items for fuse")
             for _ in range(pos[2] - h):
                 browse(hook_x, step=-135, adj=adj)
                 ck = LocateRGB.locate(PTH["height_ck"], region=REG["fuse_shelf_low"])
@@ -540,7 +589,6 @@ def perform_clicks(to_click):
 
     hook_x = random.choice([1083, 1228, 1370, 1515])
     while not now_rgb.button("scroll") and now_rgb.button("scroll", "scroll_full"):
-        print("scroll up for alignment")
         browse_fast(hook_x, up=True)
         time.sleep(0.5)
 
@@ -596,7 +644,6 @@ def get_gifts(gifts, reg, is_fuse=False):
             if gift in CACHE: template = CACHE[gift]
             else: template = amplify(cv2.imread(PTH[gift]))
             x, y = gui.center(LocateRGB.try_locate(template, image=image, region=reg, conf=0.88))
-            print(f'got {gift}')
             yield (x, y)
         except gui.ImageNotFoundException:
             continue
@@ -608,17 +655,14 @@ def click_gifts(gifts, reg, chain=None, is_fuse=False):
     gift_searcher = get_gifts(gifts, reg, is_fuse=is_fuse)
     for coord in gift_searcher:
         ignore = LocateRGB.locate_all(PTH["cannot_fuse"], region=reg, threshold=80)
-        print(ignore)
         if any(abs(gui.center(res)[0] - coord[0]) < 50 for res in ignore):
             continue
 
-        print('got a gift for fusion!')
         win_click(coord)
         if chain is not None and callable(chain):
             chain()
         time.sleep(0.2)
         if is_fuse and LocateGray.check(PTH["gifts_owned"], region=REG["gifts_owned"], wait=False):
-            print("all fused!")
             return True
     return False
 
@@ -632,10 +676,8 @@ def get_fuse_list():
     return gift_list    
 
 def handle_available_fusion():
-    print("checking available fusion...")
     hook_x = random.choice([1083, 1228, 1370, 1515])
     while not now_rgb.button("scroll") and now_rgb.button("scroll", "scroll_full"):
-        print("scroll up for alignment")
         browse_fast(hook_x, up=True)
         time.sleep(0.5)
 
@@ -643,24 +685,20 @@ def handle_available_fusion():
         return now_rgb.button("scroll", "scroll_full")
     
     gift_list = get_fuse_list()
-    print(f"gifts to fuse: {gift_list}")
     if not gift_list: return now_rgb.button("scroll", "scroll_full")
     
     if click_gifts(gift_list, REG["fuse_shelf_top"], chain=fuse_selected, is_fuse=True):
         return now_rgb.button("scroll", "scroll_full")
     
     if now_rgb.button("scroll", "scroll_full"):
-        h = 1
         adj = 0
         hook_x = random.choice([1083, 1228, 1370, 1515])
         while not now_rgb.button("scroll.0") and now_rgb.button("scroll", "scroll_full"):
-            print("scroll down for available fusions tab")
             browse(hook_x, adj=adj)
             if click_gifts(gift_list, REG["fuse_shelf_top"], chain=fuse_selected, is_fuse=True):
                 return now_rgb.button("scroll", "scroll_full")
             ck = LocateRGB.locate(PTH["height_ck"], region=REG["fuse_shelf_top"])
             adj = 625 - gui.center(ck)[1] if ck else 0
-            h += 1
     return False
 
 
@@ -670,17 +708,10 @@ def fuse():
     if handle_available_fusion():
         hook_x = random.choice([1083, 1228, 1370, 1515])
         while not now_rgb.button("scroll.0") and now_rgb.button("scroll", "scroll_full"):
-            print("scroll down for invetory scan alignment")
             browse_fast(hook_x)
             time.sleep(0.5)
     
     coords, coords_agg, have = get_inventory()
-    # THRILL: once Thrill is in inventory, exit so fuse_loop skips F2/F3 markets.
-    if p.RUN_SCRIPT == "thrill" and "thrill" in have:
-        if not getattr(p, "THRILL_DONE", False):
-            logging.info("THRILL: thrill EGO gift confirmed in inventory.")
-        p.THRILL_DONE = True
-        raise ShopClear
     to_click = []
     fuse_type = 0
     got_all = False
@@ -782,7 +813,6 @@ def scan_run_gifts(wait=False):
     `wait` it is returned right here."""
     if getattr(p, "SKIP_EGO_CHECK", False):
         return []
-    found = {}
     # Open the menu THROUGH the keyword flow, exactly like the fuse targets
     # do: a fresh fuse menu pops the keyword-selection dialog over the shelf,
     # and template detection of that dialog is unreliable (the affinity tiles
@@ -886,19 +916,18 @@ def _capture_shelf(hook_x, max_pages=8) -> list:
 
 
 def _name_shelf(frames, reg, comp, team_names, cat_names) -> list:
-    """[(name, uptied)] for every team and catalogue gift on the frames."""
+    """[(name, level)] for every team and catalogue gift on the frames;
+    the level is 0, 1 (+) or 2 (++)."""
     found = {}
     for shelf in frames:
         shelf = shelf.copy()
         image = amplify(shelf)
 
         def _badge(x, y):
-            crop = shelf[int((y-66-reg[1])*comp):int((y-22-reg[1])*comp),
-                         int((x-14-reg[0])*comp):int((x+55-reg[0])*comp)]
             try:
-                return bool(LocateRGB.check(PTH["+"], image=crop, wait=False))
+                return _badge_level(_badge_crop(shelf, x, y, reg, comp), comp)
             except cv2.error:
-                return False
+                return 0
 
         def _blackout(x, y):
             # Remove the hit so the catalog pass cannot re-report the same
@@ -937,7 +966,8 @@ def _name_shelf_later(frames, reg, comp, team_names, cat_names):
         items = []
     _GIFT_SCAN["items"] = items
     logging.info("Run gifts (%d): %s", len(items),
-                 ", ".join(n + (" [uptied]" if u else "") for n, u in items)
+                 ", ".join(n + (" [%s]" % ("+" * int(u)) if u else "")
+                           for n, u in items)
                  or "none detected")
 
 
@@ -971,11 +1001,6 @@ def fuse_loop():
     if getattr(p, "SKIP_EGO_FUSION", False):
         logging.info("Skipping fuse_loop (Behaviour: Skip EGO fusion).")
         return
-    # THRILL: once Thrill is crafted on F1, skip fusion on F2/F3.
-    if (p.RUN_SCRIPT == "thrill" and getattr(p, "THRILL_DONE", False)
-            and p.LVL >= 2):
-        logging.info("THRILL: thrill already crafted - skipping fuse on floor %d.", p.LVL)
-        return
     init_fuse()
     ehnance_flag = True
     ref_count = 1 + (p.BUFF[5] > 2)
@@ -990,7 +1015,6 @@ def fuse_loop():
             try:
                 missing = fuse()
             except RuntimeError:
-                print("oops")
                 close_panel()
                 continue
 
@@ -998,98 +1022,23 @@ def fuse_loop():
                 close_panel()
 
                 if ehnance_flag and p.TO_UPTIE:
-                    # THRILL: only thrill itself gets enhanced (in thrill_market_f1).
-                    if p.RUN_SCRIPT != "thrill":
-                        enhance(p.TO_UPTIE)
+                    enhance(p.TO_UPTIE)
                     ehnance_flag = False
 
                 if len(LocateRGB.locate_all(PTH["purchased"], region=REG["buy_shelf"], threshold=100)) == 8: return
 
-                # THRILL: skip the module-costing keyword refresh.
-                kw_ref = False if p.RUN_SCRIPT == "thrill" else (ref_count > 0)
-                result = buy_loop(missing, keyword_ref=kw_ref)
+                result = buy_loop(missing, keyword_ref=ref_count > 0)
                 ref_count -= 1
                 if not result:
-                    if p.RUN_SCRIPT == "thrill":
-                        # F1 MUST craft thrill: keep retrying until success or
-                        # budget-out (RuntimeError hard-fails the run).
-                        while not result:
-                            try:
-                                bal = balance()
-                            except Exception:
-                                bal = 0
-                            if bal < 200:
-                                logging.error("THRILL: F1 market - budget out "
-                                              "(bal=%s) without crafting thrill. "
-                                              "RUN FAILED.", bal)
-                                raise RuntimeError(
-                                    "THRILL: market could not buy fuel - run failed")
-                            logging.info("THRILL: shelf refresh (bal=%s) - "
-                                         "retry buy %s.", bal, missing)
-                            win_click(1489, 177, tsize=(180, 53))
-                            connection()
-                            time.sleep(0.3)
-                            result, missing = buy(missing)
-                    else:
-                        return
-                init_fuse() # open fusing (success path for both branches)
+                    return
+                init_fuse()
     except ShopClear:
         close_panel()
-
-        # THRILL handles its own enhance and wants no extra buys.
-        if p.RUN_SCRIPT == "thrill":
-            return
 
         if p.TO_UPTIE:
             enhance(p.TO_UPTIE)
 
         buy_some(2 + 2*(p.LVL < 11))
-
-
-def thrill_market_f1():
-    """F1 market flow for the Thrill scripted run: skip uptie1 enhance, buy
-    T3 (fall back to T2), let fuse_loop craft Thrill, then enhance Thrill."""
-    logging.info("THRILL: F1 market - starting.")
-
-    # Close the upgrade menu opened on shop entry (Thrill skips uptie1 enhance).
-    close_panel()
-    time.sleep(0.3)
-
-    # T3 first, fall back to T2. floor1=False so the refresh only runs on a
-    # failed buy. keyword_ref=False skips the module-costing keyword refresh.
-    try:
-        bought_t3 = buy_loop({3: 1}, keyword_ref=False)
-        if bought_t3:
-            logging.info("THRILL: F1 - T3 bought (Case II).")
-        else:
-            logging.info("THRILL: F1 - no T3 in shop, buying T2 (Case I).")
-            buy_loop({2: 4}, keyword_ref=False)
-    except Exception as exc:
-        logging.warning("THRILL: F1 - buy phase errored: %s", exc)
-
-    # Fuse phase. RuntimeError (budget-out) MUST propagate to hard-fail the run;
-    # other exceptions are caught so a flaky frame doesn't nuke an otherwise fine run.
-    try:
-        fuse_loop()
-    except RuntimeError:
-        raise
-    except Exception as exc:
-        logging.warning("THRILL: F1 - fuse_loop hit non-fatal error: %s", exc)
-
-    # If thrill isn't in inventory, set the F1 RESTART flag; main_loop runs the
-    # no-claim forfeit and emits tele.restart() so the run lists as "Restart".
-    if not getattr(p, "THRILL_DONE", False):
-        logging.error("THRILL: F1 market exited without crafting thrill. "
-                      "Triggering F1 RESTART (no claim).")
-        p.THRILL_F1_RESTART = True
-        return
-
-    logging.info("THRILL: F1 - enhancing thrill (only).")
-    try:
-        ClickAction((250, 581), ver="power").execute(click)
-        enhance({"thrill": 4}, floor1=True)
-    except Exception as exc:
-        logging.warning("THRILL: F1 - thrill enhance failed: %s", exc)
 
 
 def power_up():
@@ -1100,23 +1049,20 @@ def power_up():
 def get_uptie_inventory(gift_list):
     click_gifts(gift_list, REG["fuse_shelf"], chain=power_up)
     if now_rgb.button("scroll", "scroll_full"):
-        h = 1
         adj = 0
         hook_x = random.choice([1083, 1228, 1370, 1515])
         while not now_rgb.button("scroll.0") and now_rgb.button("scroll", "scroll_full"):
-            print("scroll down for enhance click")
             browse(hook_x, adj=adj)
             click_gifts(gift_list, REG["fuse_shelf_low"], chain=power_up)
             ck = LocateRGB.locate(PTH["height_ck"], region=REG["fuse_shelf_low"])
             adj = 625 - gui.center(ck)[1] if ck else 0
-            h += 1
 
-def search_sell(reg):
+def search_sell(reg, tiers=(2, 1, 3, 4)):
     coords, _, _, _ = inventory_check(reg, 0, uptie_det=True, market_mode="sell")
     # T4 last: it is premium fusion fuel (15 points). T2 leads so each sell
     # pass (a full shelf rescan) recovers decent value without burning the
     # cheap T1 fusion fuel or the mid fuel first.
-    for i in (2, 1, 3, 4):
+    for i in tiers:
         if coords[i] != []:
             win_click(coords[i][0][:2])
             time.sleep(0.2)
@@ -1127,8 +1073,12 @@ def search_sell(reg):
             return True
     return False
 
-def sell(gifts):
+def sell(gifts, tiers=(2, 1, 3, 4), limit=None):
+    """Sell a gift per pass until the cost reaches the sum of `gifts`:
+    of `tiers` only, in that order, and `limit` gifts at most. True when
+    the cost got there."""
     money = None
+    sold = 0
     while True:
         update_money = balance()
         if money is not None and update_money == money:
@@ -1136,29 +1086,31 @@ def sell(gifts):
         money = update_money
 
         if money < sum(gifts.values()):
+            if limit is not None and sold >= limit:
+                return False
             Action(p.SUPER, click=(600, 585), ver="sell").execute(click)
             time.sleep(0.2)
             found_flag = False
-            if search_sell((920, 295, 790, 345)):
+            if search_sell((920, 295, 790, 345), tiers):
                 found_flag = True
             elif now_rgb.button("scroll", "scroll_full"):
                 hook_x = random.choice([1088, 1226, 1364, 1501])
                 while not now_rgb.button("scroll.0") and now_rgb.button("scroll", "scroll_full"):
-                    print("scroll down for sell scan")
                     browse_fast(hook_x)
                     time.sleep(0.5)
                 adj = 0
                 hook_x = random.choice([1088, 1226, 1364, 1501])
                 while not now_rgb.button("scroll") and now_rgb.button("scroll", "scroll_full"):
-                    if search_sell((920, 585, 790, 165)):
+                    if search_sell((920, 585, 790, 165), tiers):
                         found_flag = True
                         break
-                    print("scroll up for sell click")
                     browse(hook_x, step=-165, adj=adj)
                     ck = LocateRGB.locate(PTH["height_ck"], region=(920, 585, 790, 165))
                     adj = 618 - gui.center(ck)[1] if ck else 0
             
-            if found_flag: continue
+            if found_flag:
+                sold += 1
+                continue
 
             close_panel()
             return False
@@ -1280,7 +1232,6 @@ def balance():
             time.sleep(0.2)
             answer_me = False # low reading may be mid-update; re-read
             bal = -1
-    print("money", bal)
     if p.LVL > 10:
         bal = apply_inflation(bal)
     return bal
@@ -1353,7 +1304,6 @@ def buy_known(aff):
     for gift in aff["buy"]:
         try:
             res = gui.center(LocateRGB.try_locate(PTH[gift], image=shop_shelf, region=REG["buy_shelf"], comp=0.75, conf=0.83))
-            print(f'got {gift}')
             win_click(res, tsize=(90, 90))
             conf_gift()
             time.sleep(0.1)
@@ -1404,8 +1354,7 @@ def buy_configured_only():
         loops = 0
         while balance() >= 200 and loops < _MARKET_REFRESH_CAP:
             loops += 1
-            win_click(1489, 177, tsize=(180, 53))
-            connection()
+            _refresh_shelf()
             time.sleep(0.1)
             do_skill_replace()
             _buy_configured(names)
@@ -1413,8 +1362,7 @@ def buy_configured_only():
         for _ in range(int(getattr(p, "MARKET_REFRESH_COUNT", 0) or 0)):
             if balance() < 200:
                 break
-            win_click(1489, 177, tsize=(180, 53))
-            connection()
+            _refresh_shelf()
             time.sleep(0.1)
             do_skill_replace()
             _buy_configured(names)
@@ -1449,8 +1397,7 @@ def buy_some(rerolls=1, priority=False):
         if len(LocateRGB.locate_all(PTH["purchased"], region=REG["buy_shelf"], threshold=100)) == 8: break
         if rerolls and balance() >= 200:
             rerolls -= 1
-            win_click(1489, 177, tsize=(180, 53))
-            connection()
+            _refresh_shelf()
             time.sleep(0.1)
             do_skill_replace()
         elif balance() < 120: return
@@ -1471,7 +1418,6 @@ def buy(missing):
     for tier in sorted(missing.keys(), reverse=True):
         for _ in range(missing[tier]):
             have = get_shop(shop_shelf)
-            print(f'got {have}')
             if have[tier]:
                 win_click(have[tier][0])
                 conf_gift()
@@ -1487,7 +1433,6 @@ def buy_loop(missing, floor1=False, keyword_ref=True):
         return
     if not getattr(p, "DEFAULT_MARKET_WORKFLOW", True):
         return buy_configured_only()
-    print("need", missing)
     result, missing = buy(missing)
     if not result or floor1:
         try: 
@@ -1507,8 +1452,7 @@ def buy_loop(missing, floor1=False, keyword_ref=True):
                 result, missing = buy(missing)
 
             if (not result or floor1) and balance() >= 200:
-                win_click(1489, 177, tsize=(180, 53))
-                connection()
+                _refresh_shelf()
                 time.sleep(0.1)
                 do_skill_replace()
                 if p.EXTREME:
@@ -1519,7 +1463,7 @@ def buy_loop(missing, floor1=False, keyword_ref=True):
                 new_result, _ = buy(missing)
                 result = result or new_result
         except RuntimeError:
-            print("no cash, sorry")
+            pass
     return result
 
 
@@ -1744,6 +1688,11 @@ def do_skill_replace():
     if not getattr(p, "SKILL_REPLACE_ACTIVE", None):
         logging.info("Skill replace: no sinners enabled - nothing to do.")
         return 0
+    floor = int(getattr(p, "LVL", 1) or 1)
+    if floor in (getattr(p, "SKILL_REPLACE_SKIP_FLOORS", None) or ()):
+        logging.info("Skill replace: floor %d takes no offer (Floor Packs/"
+                     "Market) - nothing to do.", floor)
+        return 0
     if _SKILL_REPLACE_MENU not in PTH:
         # Without the menu detector, no way to confirm we opened the swap UI.
         logging.warning("Skill replace: %s template missing - disabled for "
@@ -1877,6 +1826,9 @@ def do_skill_replace():
 # Safety net on per-target fusion attempts: fusion is random, so a wrong result
 # re-fuses from the remaining pool; the cap bounds that if verify keeps missing.
 _CUSTOM_FUSE_CAP = 6
+# Buying trips one fuse session may make: a craft can land on another gift
+# and leave the pool short again.
+_FUEL_TRIPS_CAP = 3
 
 
 def _keyword_checks(keyword):
@@ -1943,92 +1895,373 @@ def _shelf_has_catalog(name):
     return None
 
 
-def plan_fuel(have, tiers):
-    """Fuel for every pending target at once, in gifts: a tier 4 takes two
-    tier 3 and one tier 2, a tier 3 takes three tier 2, and spare tier 2s
-    are turned into tier 3s before anything is bought. `have` is {tier:
-    count} of the fuel pool. Returns (crafts, deficit): tier 3s to craft
-    from tier 2s first, and {3: n, 2: m} still to buy."""
-    t3 = int(have.get(3, 0) or 0)
-    t2 = int(have.get(2, 0) or 0)
-    fours = sum(1 for t in tiers if int(t) == 4)
-    threes = sum(1 for t in tiers if int(t) == 3)
-    need3 = 2 * fours
-    need2 = fours + 3 * threes
-    short3 = max(0, need3 - t3)
-    spare2 = max(0, t2 - need2)
-    crafts = min(short3, spare2 // 3)
-    short3 -= crafts
-    short2 = max(0, need2 + 3 * crafts - t2)
-    return crafts, {3: short3, 2: short2}
+# Typical shelf prices by tier (the wiki's gift table: medians 148, 200,
+# 250 and 400, nearly every gift within 40 of them). A purchase is weighed
+# against them and tried only with the price and that margin above what
+# is kept back; the game itself hides what the cost cannot cover.
+_SHELF_PRICE = {1: 150, 2: 200, 3: 250, 4: 400}
+_PRICE_MARGIN = 40
+# Purchases that may fail in one buying trip before it is given up.
+_BUY_FAILS_CAP = 2
+# A tier 3 shows on about one shelf in three (the owner's run logs: 28
+# bought against 51 shelves without one), so finding one is reckoned at
+# the next three refreshes' fees.
+_TIER3_SHELVES = 3
+# Shelves in a row with nothing bought before the trip is given up, and
+# shelves in a row showing no gift at all (the shelf is not being read).
+_DRY_SHELVES_CAP = 12
+_BLIND_SHELVES_CAP = 3
 
 
-_FUEL_REFRESH_CAP = 3
+def _free_refreshes() -> int:
+    """Free shelf refreshes per shop visit (Star of the Beginning: one,
+    two at ++)."""
+    level = int((getattr(p, "BUFF", None) or [0])[0] or 0)
+    return 2 if level >= 3 else 1 if level else 0
 
 
-def _buy_fuel_plan(have, tiers, keep=0, stock=False) -> dict:
-    """On the shop screen: buy what the plan is short of. Tier 3s first; a
-    tier 2 only to finish a craft, or towards a missing tier 3 once a
-    refresh has shown no tier 3 either. The shelf is refreshed while
-    something is short, a few times at most. With `stock`, tier 3s still
-    on the shelf are bought once the plan is covered, while cost allows.
-    `have` is updated with the buys. Returns the deficit left."""
-    refreshes = 0
-    no_t3 = False
-    floor = 200 + int(keep or 0)
-    while True:
-        _crafts, deficit = plan_fuel(have, tiers)
-        short = bool(deficit[3] or deficit[2])
-        if not short and not stock:
-            return deficit
+def _refresh_fee() -> int:
+    """What the next shelf refresh costs: nothing while a free one is
+    left, then 15 and 15 more with each one paid for in this visit."""
+    paid = int(getattr(p, "SHELF_REFRESHES", 0) or 0) - _free_refreshes()
+    return 0 if paid < 0 else 15 * (paid + 1)
+
+
+def _search_fee() -> int:
+    """What looking for a tier 3 is expected to cost in refresh fees from
+    here in the visit."""
+    done = int(getattr(p, "SHELF_REFRESHES", 0) or 0)
+    free = _free_refreshes()
+    return sum(15 * (done + i - free + 1) for i in range(_TIER3_SHELVES)
+               if done + i >= free)
+
+
+def _refresh_shelf():
+    """Click the shelf refresh and count it for the visit."""
+    win_click(1489, 177, tsize=(180, 53))
+    connection()
+    p.SHELF_REFRESHES = int(getattr(p, "SHELF_REFRESHES", 0) or 0) + 1
+
+
+def _shelf_gifts(shelf, names) -> dict:
+    """The catalogue gifts `names` on sale on the buy shelf capture,
+    {name: (x, y)}."""
+    if not names:
+        return {}
+    return _market_scan(amplify(shelf), REG["buy_shelf"], names,
+                        path_key="buy_path")
+
+
+def _settled_cost(tries=4, pause=0.25) -> int:
+    """The cost once two readings in a row agree: the number can be caught
+    mid-change right after a purchase or a paid refresh."""
+    last = balance()
+    for _ in range(tries):
+        time.sleep(pause)
+        seen = balance()
+        if seen == last:
+            break
+        last = seen
+    return last
+
+
+def _buy_shelf_gift(pos, funds, **click):
+    """Buy the gift at `pos` on the buy shelf. The purchase counts once the
+    cost has dropped: returns the cost left, or None when it did not go
+    through (a dialog left open is closed)."""
+    win_click(pos, **click)
+    conf_gift()
+    for _ in range(2):
         try:
-            funds = balance()
+            left = _settled_cost()
         except RuntimeError:
-            return deficit
-        if funds < floor:
-            logging.info("Custom market: %d cost left; no more fuel.", funds)
-            return deficit
-        shelf = get_shop(update_shelf())
-        if shelf.get(3) and (deficit[3] or not short):
-            win_click(shelf[3][0])
-            conf_gift()
-            time.sleep(0.1)
-            have[3] = have.get(3, 0) + 1
-            logging.info("Custom market: bought a tier 3 %s.",
-                         "for fuel" if deficit[3] else "for later crafts")
+            break
+        if left < funds:
+            return left
+        time.sleep(0.5)
+    close_panel()
+    return None
+
+
+def _tier3_first(tier, pool, missing) -> bool:
+    """Whether a tier 4 short of its tier 3s gets one made from spare
+    tier 2s first (three for it, one left for the craft)."""
+    return bool(missing and int(tier) == 4 and p.SUPER == "shop"
+                and len(pool[3]) < 2 and len(pool[2]) >= 4)
+
+
+def plan_fuel(have, tiers):
+    """What the crafts still owed take from the fuel pool, found by
+    replaying the session's own fusing on the counts. `have` is {tier:
+    count} of the pool, `tiers` the targets in order. A tier 4 takes two
+    tier 3 and a tier 2 (a third tier 3 does as well; with a spare tier 4,
+    one tier 3 and any other gift), spare tier 2s are turned into a tier 3
+    first, and a Super Shop's cheaper fusions count as they are. Returns
+    (crafts, deficit): the tier 3s crafted on the way, and {tier: count}
+    still to buy."""
+    pool = {t: [0] * max(0, int(have.get(t, 0) or 0)) for t in (1, 2, 3, 4)}
+    ranges = fusion_ranges if p.SUPER == "shop" else super_ranges
+    deficit = {3: 0, 2: 0}
+    crafts = 0
+    for tier in tiers:
+        tier = int(tier)
+        for _ in range(4):                 # a tier 3 or two on the way, then the craft
+            combo, missing = decide_fusion(tier, pool)
+            if combo is None:
+                break
+            if _tier3_first(tier, pool, missing):
+                combo, missing = (2, 2, 2), None
+            for t, n in (missing or {}).items():
+                deficit[t] = deficit.get(t, 0) + n
+                pool[t] += [0] * n
+            for t in combo:
+                pool[t].pop()
+            if sum(item_points[t] for t in combo) >= ranges[tier][0]:
+                break
+            pool[3].append(0)
+            crafts += 1
+    return crafts, deficit
+
+
+def _fuel_cost(deficit) -> int:
+    """What a deficit comes to at typical shelf prices."""
+    return sum(_SHELF_PRICE[t] * n for t, n in deficit.items())
+
+
+def _fuel_pick(have, tiers, on_sale, room, search_fee=0):
+    """The shelf tier worth buying towards these crafts, or None: a tier 2
+    that turns spare tier 2s into a missing tier 3, a tier 3 while one is
+    short, and with the tier 3s in hand the cheapest gift that finishes a
+    craft. With no tier 3 on the shelf, tier 2s towards one are bought
+    once they come cheaper than a tier 3 and the `search_fee` of looking
+    for it. Only what `room` covers is considered."""
+    deficit = plan_fuel(have, tiers)[1]
+    owed = _fuel_cost(deficit)
+
+    def saved(tier, count=1):
+        if not on_sale.get(tier) or room < _SHELF_PRICE[tier] + _PRICE_MARGIN:
+            return 0
+        trial = dict(have)
+        trial[tier] = int(trial.get(tier, 0) or 0) + count
+        return owed - _fuel_cost(plan_fuel(trial, tiers)[1])
+
+    if saved(2) > _SHELF_PRICE[2]:
+        return 2
+    if deficit.get(3):
+        if saved(3) > 0:
+            return 3
+        more = next((n for n in (2, 3) if saved(2, n) >= _SHELF_PRICE[3]), None)
+        if (more and more * _SHELF_PRICE[2] <= _SHELF_PRICE[3] + search_fee
+                and room >= more * _SHELF_PRICE[2] + _PRICE_MARGIN):
+            return 2
+        return None
+    return next((tier for tier in (1, 2, 3) if saved(tier) > 0), None)
+
+
+def _spare_tier1(have, tiers) -> int:
+    """How many tier 1 gifts of the pool no craft still owed would use: all
+    of them in a regular shop without a spare tier 4."""
+    ones = int(have.get(1, 0) or 0)
+    base = _fuel_cost(plan_fuel(have, tiers)[1])
+    spare = ones
+    while spare:
+        trial = dict(have)
+        trial[1] = ones - spare
+        if _fuel_cost(plan_fuel(trial, tiers)[1]) <= base:
+            break
+        spare -= 1
+    return spare
+
+
+def _near(pos, others, tol=40) -> bool:
+    return any(abs(pos[0] - o[0]) <= tol and abs(pos[1] - o[1]) <= tol
+               for o in others)
+
+
+def _buy_fuel(have, names, tier_of, keep=0, paid_for=None, stock=None,
+              raise_cost=None):
+    """One buying trip on the shop screen for the crafts still owed, in
+    their order. A gift of the plan the shelf sells outright is bought,
+    once the cost also covers the fuel of the crafts ranked before it.
+    Otherwise fuel for the first craft that is short: what _fuel_pick
+    finds on the shelf, down to what that craft keeps back (`keep`, one
+    figure or {name: cost}). With nothing to buy the shelf is refreshed:
+    the free refreshes first, paid ones while `paid_for(name)` allows
+    (always, without it) and the cost still covers a gift after the fee.
+    Every purchase is confirmed by the cost dropping, and `have` follows.
+    With every craft covered, tier 3s still on the shelf are bought down
+    to `stock` (not at all when None). `raise_cost(target, limit)`, when
+    given, is called first if the cost is short of what the crafts that
+    may have cost spent on them need: it sells up to `limit` tier 1 gifts
+    no craft uses. Returns (short, got): the first craft still short as
+    (name, deficit), or None, and the plan's gifts bought outright."""
+    def kept(name):
+        return int((keep.get(name, 0) if isinstance(keep, dict) else keep) or 0)
+
+    if raise_cost is not None:
+        every = [tier_of[n] for n in names]
+        costs = [_fuel_cost(plan_fuel(have, every[:i + 1])[1])
+                 for i in range(len(names))]
+        target = max([kept(n) + c for n, c in zip(names, costs)
+                      if c and (paid_for is None or paid_for(n))] or [0])
+        spare = _spare_tier1(have, every)
+        try:
+            funds = balance() if target and spare else target
+        except RuntimeError:
+            funds = target
+        if funds < target:
+            logging.info("Custom market: %d cost, the fuel still owed comes "
+                         "to about %d; selling up to %d tier 1 gift(s) no "
+                         "craft uses.", funds, target, spare)
+            raise_cost(target, spare)
+            have[1] = int(have.get(1, 0) or 0) - spare
+    got, dud, fails, refreshes, dry, blind = [], [], 0, 0, 0, 0
+    while True:
+        owed = [n for n in names if n not in got]
+        tiers = [tier_of[n] for n in owed]
+        at = next((i for i in range(len(owed))
+                   if any(plan_fuel(have, tiers[:i + 1])[1].values())), None)
+        short = None
+        if at is not None:
+            short = (owed[at], plan_fuel(have, tiers[:at + 1])[1])
+        if fails >= _BUY_FAILS_CAP:
+            return short, got
+        try:
+            funds = _settled_cost()
+        except RuntimeError:
+            return short, got
+        shelf = update_shelf()
+        shown = get_shop(shelf)
+        on_sale = {t: [pos for pos in found if not _near(pos, dud)]
+                   for t, found in shown.items()}
+        blind = 0 if any(shown.values()) else blind + 1
+        named = _shelf_gifts(shelf, owed)
+        pos = tier = name = None
+        for i, gift in enumerate(owed):
+            spot = named.get(gift)
+            if spot is None or _near(spot, dud):
+                continue
+            ahead = _fuel_cost(plan_fuel(have, tiers[:i])[1])
+            price = _SHELF_PRICE.get(tier_of[gift], _SHELF_PRICE[4])
+            if funds - kept(gift) - ahead >= price + _PRICE_MARGIN:
+                pos, name = spot, gift
+                break
+        if name is not None:
+            left = _buy_shelf_gift(pos, funds, tsize=(90, 90))
+            if left is None:
+                dud.append(pos)
+                fails += 1
+                logging.info("Custom market: '%s' on the shelf would not "
+                             "sell.", name)
+            else:
+                got.append(name)
+                dry = 0
+                logging.info("Custom market: bought '%s' off the shelf "
+                             "(%d cost left).", name, left)
             continue
-        if shelf.get(2) and short and (not deficit[3] or no_t3):
-            win_click(shelf[2][0])
-            conf_gift()
-            time.sleep(0.1)
-            have[2] = have.get(2, 0) + 1
-            logging.info("Custom market: bought a tier 2 %s.",
-                         "to complete a craft" if not deficit[3]
-                         else "towards a missing tier 3")
+        if short is None:
+            if (stock is None or not on_sale.get(3)
+                    or funds - int(stock) < _SHELF_PRICE[3] + _PRICE_MARGIN):
+                return None, got
+            tier, why = 3, "for later crafts"
+        else:
+            room = funds - kept(short[0])
+            pays = paid_for is None or paid_for(short[0])
+            tier = _fuel_pick(have, tiers[:at + 1], on_sale, room,
+                              _search_fee() if pays else 0)
+            why = "for '%s'" % short[0]
+        if tier is not None:
+            pos = on_sale[tier][0]
+            left = _buy_shelf_gift(pos, funds)
+            if left is None:
+                dud.append(pos)
+                fails += 1
+                logging.info("Custom market: a tier %d on the shelf would "
+                             "not sell.", tier)
+            else:
+                have[tier] = int(have.get(tier, 0) or 0) + 1
+                dry = 0
+                logging.info("Custom market: bought a tier %d %s (%d cost "
+                             "left).", tier, why, left)
             continue
-        if not short or refreshes >= _FUEL_REFRESH_CAP:
-            return deficit
+        # Nothing on this shelf for the craft: another shelf, when one is
+        # free or the cost may be spent on it.
+        deficit = short[1]
+        fee = _refresh_fee()
+        need = 3 if deficit.get(3) else min(t for t, n in deficit.items() if n)
+        if fee and not pays:
+            logging.info("Custom market: '%s' is short %s; no cost is spent "
+                         "on refreshes for it on this floor.", short[0], deficit)
+            return short, got
+        if blind >= _BLIND_SHELVES_CAP:
+            logging.warning("Custom market: %d shelves in a row show no gift "
+                            "at all; the shelf is not being read, no more "
+                            "refreshes this trip.", blind)
+            return short, got
+        if dry >= _DRY_SHELVES_CAP or refreshes >= _MARKET_REFRESH_CAP:
+            logging.warning("Custom market: nothing for '%s' on %d shelves in "
+                            "a row (short %s); no more refreshes this trip.",
+                            short[0], dry, deficit)
+            return short, got
+        if room - fee < _SHELF_PRICE[need] + _PRICE_MARGIN:
+            logging.info("Custom market: '%s' is short %s with %d cost left "
+                         "(%d kept back); no more fuel.", short[0], deficit,
+                         funds, kept(short[0]))
+            return short, got
         refreshes += 1
-        no_t3 = not shelf.get(3)
-        logging.info("Custom market: nothing useful on the shelf (short %s); "
-                     "refresh %d.", deficit, refreshes)
-        win_click(1489, 177, tsize=(180, 53))
-        connection()
+        dry += 1
+        dud = []
+        logging.info("Custom market: nothing for '%s' on the shelf (short "
+                     "%s); refresh %d%s.", short[0], deficit, refreshes,
+                     " for %d cost" % fee if fee else ", free")
+        _refresh_shelf()
         time.sleep(0.2)
 
 
-def _fuse_session(names, done_fuse, keep=0, buy_allowed=True,
-                  sequential=False, stock=False, must=()):
+def _unseen_kept(seen) -> list:
+    """Gifts the gift search took for this run that the floor's plan keeps
+    out of the fuel pool and the owned shelf scan did not find. With one
+    unseen the scan cannot tell it from fuel."""
+    if p.RUN_SCRIPT != "hollow":
+        return []
+    held = getattr(p, "RUN_HELD", None) or ()
+    kept = (getattr(p, "MARKET_GIFTS", None) or {}).get("keep_fuse") or []
+    return [n for n in kept if n in held and "kept:" + n not in seen]
+
+
+def _report_unseen(names):
+    """Once per run: the Detection check advisory and a match report for
+    the gifts the owned shelf scan did not recognise."""
+    try:
+        from .bot import _diag_once
+        from .market_catalog import load_market_catalog
+        cat = load_market_catalog()
+        _diag_once("kept_unseen",
+                   advise="%s was not recognised on the owned gifts shelf, so "
+                          "nothing was fused: it could have gone as fusion "
+                          "fuel." % ", ".join(names),
+                   extra=[(n, (cat.get(n) or {}).get("path"), REG["fuse_shelf"])
+                          for n in names],
+                   region=REG["fuse_shelf"], gate=_MARKET_CONF,
+                   note="protected gift not found on the owned shelf")
+    except Exception as exc:
+        logging.debug("Custom market: unseen gift report failed: %s", exc)
+
+
+def _fuse_session(names, done_fuse, buy_allowed=True, sequential=False,
+                  must=(), **trip):
     """One open fuse menu for every pending target: the keyword with the
     most targets first (the plan's own first target ahead of all), each
     target crafted in turn, a tier 3 made from spare tier 2s first when
     that is what the pool allows, the fuel bought on the shop screen only
-    when the target cannot be crafted from the pool as it is, and every
-    craft confirmed on the owned shelf without leaving the menu. The tab's
-    order is `sequential` (a short target holds the later ones for the next
-    shop); a floor plan `stock`s spare tier 3s while buying. With `must`,
-    those targets go first in their own order (the keyword switched as
-    needed); the rest follow, fuel bought for them as well."""
+    when the target cannot be crafted from the pool as it is (again later
+    in the visit, unless the last trip stopped short at this target or one
+    before it), and every craft confirmed on the owned shelf without
+    leaving the menu. The tab's order is `sequential` (a short target
+    holds the later ones for the next shop). With `must`, those targets go
+    first in their own order (the keyword switched as needed); the rest
+    follow, fuel bought for them as well. `trip` is the buying trip's own
+    options (_buy_fuel: keep, paid_for, stock, raise_cost)."""
     from .market_catalog import load_market_catalog
     cat = load_market_catalog()
     pending, tier_of, kw_of = [], {}, {}
@@ -2063,14 +2296,17 @@ def _fuse_session(names, done_fuse, keep=0, buy_allowed=True,
     if not _open_fuse_menu():
         logging.warning("Custom market: the fuse menu did not open.")
         return
-    current, bought = None, False
-    p.CUSTOM_FUSE_ACTIVE = True
+    # `stuck`: where in the sequence the last buying trip stopped short.
+    current, trips, stuck = None, 0, len(sequence)
+    bought, rescans, landed = [], 0, False
     short_tier, skipped = 5, []
     try:
         for name in sequence:
+            if name in done_fuse:
+                continue
             kw = kw_of[name]
             tier = tier_of[name]
-            if tier >= short_tier:
+            if tier >= short_tier and name not in bought:
                 # The pool that could not craft one tier 4 cannot craft
                 # another; no point switching keywords to find that out.
                 skipped.append(name)
@@ -2085,8 +2321,20 @@ def _fuse_session(names, done_fuse, keep=0, buy_allowed=True,
                     current = kw
                 if _shelf_has_catalog(name):
                     done_fuse.add(name)
-                    logging.info("Custom market: crafted '%s'.", name)
+                    logging.info("Custom market: %s '%s'.",
+                                 "bought" if name in bought else "crafted", name)
                     break
+                if landed:
+                    # The fusion gave another gift: the keyword's other
+                    # target, as likely as this one while both are owed.
+                    landed = False
+                    for other in sequence:
+                        if (other != name and other not in done_fuse
+                                and kw_of[other] == kw
+                                and _shelf_has_catalog(other)):
+                            done_fuse.add(other)
+                            logging.info("Custom market: the craft landed "
+                                         "on '%s'.", other)
                 try:
                     coords, coords_agg, _have = get_inventory()
                 except gui.PauseException:
@@ -2095,13 +2343,27 @@ def _fuse_session(names, done_fuse, keep=0, buy_allowed=True,
                     logging.warning("Custom market: '%s' inventory scan "
                                     "failed: %s", name, exc)
                     break
-                # SAIKAI: if Spiderweb was not located (and so not blacked
-                # out of the fuel pool), stop rather than risk burning it.
-                if p.RUN_SCRIPT == "saikai_ryoshu" and "spiderwebego" not in _have:
+                # SAIKAI: if the Spiderweb the run searched for was not
+                # located (and so not blacked out of the fuel pool), stop
+                # rather than risk burning it.
+                if (p.RUN_SCRIPT == "saikai_ryoshu" and "spiderwebego" not in _have
+                        and "Spiderweb Entangled in Red"
+                        in (getattr(p, "GIFT_SEARCH", None) or [])):
                     logging.warning("SAIKAI: Spiderweb NOT found in fuse "
                                     "inventory - skipping fusion so it can "
                                     "never be used as fuel (check the "
                                     "template if this keeps firing).")
+                    return
+                unseen = _unseen_kept(_have)
+                if unseen and not rescans:
+                    rescans += 1
+                    time.sleep(0.5)
+                    continue                # one more look before giving up
+                if unseen:
+                    logging.warning("HOLLOW: %s not recognised on the owned "
+                                    "shelf; nothing is fused this visit, so "
+                                    "it cannot go as fuel.", ", ".join(unseen))
+                    _report_unseen(unseen)
                     return
                 pool = coords if p.EXTREME else coords_agg
                 if not pool:
@@ -2110,25 +2372,29 @@ def _fuse_session(names, done_fuse, keep=0, buy_allowed=True,
                                     "can be crafted this visit.")
                     return
                 counts = {t: len(v) for t, v in pool.items()}
-                left = [tier_of[n] for n in pending if n not in done_fuse]
-                crafts, deficit = plan_fuel(counts, left)
+                owed = [n for n in sequence if n not in done_fuse]
+                _crafts, deficit = plan_fuel(counts, [tier_of[n] for n in owed])
                 _combo, now_missing = decide_fusion(tier, pool)
-                if (now_missing and (deficit[3] or deficit[2])
-                        and buy_allowed and not bought):
+                if (now_missing and any(deficit.values()) and buy_allowed
+                        and trips < _FUEL_TRIPS_CAP
+                        and sequence.index(name) < stuck):
                     logging.info("Custom market: pool %s is short %s for "
                                  "%d target(s); buying fuel.", counts,
-                                 deficit, len(left))
+                                 deficit, len(owed))
                     close_panel()
-                    bought = True
-                    _buy_fuel_plan(counts, left, keep, stock=stock)
+                    trips += 1
+                    short, got = _buy_fuel(counts, owed, tier_of, **trip)
+                    bought += got
+                    # A trip that stopped short has spent what the cost and
+                    # the floor allow on that craft and the ones after it.
+                    stuck = sequence.index(short[0]) if short else len(sequence)
                     if not _open_fuse_menu():
                         logging.warning("Custom market: the fuse menu did "
                                         "not reopen after buying.")
                         return
                     current = None
                     continue
-                if (now_missing and crafts and tier == 4
-                        and counts.get(3, 0) < 2 and counts.get(2, 0) >= 4):
+                if _tier3_first(tier, pool, now_missing):
                     logging.info("Custom market: a tier 3 from spare "
                                  "tier 2s first.")
                     if actual_fuse(3, pool) is None:
@@ -2143,7 +2409,7 @@ def _fuse_session(names, done_fuse, keep=0, buy_allowed=True,
                         return
                     short_tier = min(short_tier, tier)
                     break
-                # a craft landed: the next pass confirms it on the shelf
+                landed = True       # the next pass confirms it on the shelf
             else:
                 if _shelf_has_catalog(name):
                     done_fuse.add(name)
@@ -2155,16 +2421,23 @@ def _fuse_session(names, done_fuse, keep=0, buy_allowed=True,
             logging.info("Custom market: no fuel for a tier %d; %s left for "
                          "the next shop.", short_tier, ", ".join(skipped))
     finally:
-        p.CUSTOM_FUSE_ACTIVE = False
         close_panel()
 
 
 def _hollow_plan():
-    """The Hollow run's own market plan for this floor, or None."""
+    """The Hollow run's market plan for this floor, from its market tags
+    (the sheet's plan as the preset writes it, or what the user made of
+    it; the sheet's plan again when every plan tag is cleared), or None
+    outside a Hollow run."""
     if p.RUN_SCRIPT != "hollow":
         return None
     from .hollow import market_plan
-    plan = market_plan(crafted=getattr(p, "CUSTOM_FUSE_DONE", None) or set())
+    tags = getattr(p, "MARKET_GIFTS", None)
+    if not (isinstance(tags, dict)
+            and any(tags.get(m) for m in ("keep_fuse", "fuse", "enhance2"))):
+        tags = None
+    plan = market_plan(crafted=getattr(p, "CUSTOM_FUSE_DONE", None) or set(),
+                       tags=tags)
     logging.info("HOLLOW: floor %d market plan: must get %s; then %s; keep %s; "
                  "uptie %s.", int(getattr(p, "LVL", 1) or 1),
                  ", ".join(n for n in plan["must"] if n in plan["fuse"]) or "nothing more",
@@ -2188,13 +2461,23 @@ def _scripted_order(names):
     return ordered
 
 
+def _plan_kept(plan) -> list:
+    """What a floor plan keeps out of the fuel pool and the sell pass: its
+    protected gifts, and its fuse targets and uptie gifts, which are never
+    spent once owned."""
+    return list(dict.fromkeys(
+        list(plan.get("protected") or [])
+        + list(plan.get("targets") or plan.get("fuse") or [])
+        + list(plan.get("enhance1") or []) + list(plan.get("enhance2") or [])))
+
+
 def _upties_wait(plan, done_fuse) -> bool:
     """A scripted run upties only once every gift of its plan is crafted,
     or from floor 4 whatever is still missing."""
     if not plan:
         return False
     from .hollow import enhance_ready
-    return not enhance_ready(done_fuse)
+    return not enhance_ready(done_fuse, targets=plan.get("targets"))
 
 
 def _held_back(targets):
@@ -2219,41 +2502,42 @@ def _uptie_reserve(targets, done_enh, pending_fuse=()) -> int:
     for name, levels in targets:
         if name in pending_fuse:
             continue
-        owed = int(levels) - int((done_enh or {}).get(name, 0))
-        if owed > 0:
-            total += uptie_cost((cat.get(name) or {}).get("tier"), owed)
+        total += uptie_owed((cat.get(name) or {}).get("tier"),
+                            (done_enh or {}).get(name, 0), levels)
     return total
 
 
-def _hollow_sell(plan, done_fuse, targets):
-    """The floor 4 shop on, with every gift of the plan crafted: the gifts
-    the plan does not protect (nor the tab's Keep sell tags) are sold until
-    the cost covers the upties still owed."""
-    if not plan or not targets:
-        return
-    from .hollow import sell_ready
-    if not sell_ready(done_fuse):
-        return
-    need = _uptie_reserve(targets, getattr(p, "CUSTOM_ENHANCE_DONE", None) or {})
-    if not need:
-        return
-    have = balance()
-    if have >= need:
-        logging.info("HOLLOW: %d cost covers the %d the upties need; nothing sold.",
-                     have, need)
-        return
-    logging.info("HOLLOW: %d cost, the upties need %d; selling the gifts the "
-                 "plan does not protect.", have, need)
-    gifts = p.MARKET_GIFTS
-    saved = gifts.get("keep_sell")
-    gifts["keep_sell"] = list(dict.fromkeys(list(plan["protected"]) + list(saved or [])))
-    p.CUSTOM_SELL_ACTIVE = True
+def _ranked_reserve(plan, targets, done_enh, done_fuse) -> dict:
+    """What a floor plan keeps back while fuel is bought for each craft
+    still owed, {craft: cost}. The plan ranks its gifts, so only the upties
+    of the gifts ranked before a craft come ahead of its fuel (an earlier
+    craft's own, still owed, included); an uptie tagged on any other gift
+    is kept throughout."""
+    from .market_catalog import load_market_catalog
+    cat = load_market_catalog()
+    order = list(plan.get("targets") or [])
+    owed = {}
+    for name, levels in targets:
+        cost = uptie_owed((cat.get(name) or {}).get("tier"),
+                          (done_enh or {}).get(name, 0), levels)
+        if cost:
+            owed[name] = cost
+    base = sum(cost for name, cost in owed.items() if name not in order)
+    return {name: base + sum(owed.get(n, 0) for n in order[:i])
+            for i, name in enumerate(order) if name not in (done_fuse or ())}
+
+
+def _plan_sale(plan, gifts, tiers=(2, 1, 3, 4), limit=None) -> bool:
+    """A sell pass for a floor plan: what the plan keeps (and the tab's
+    Keep sell tags) stays, the rest is sold as sell() has it. True when
+    the cost got to the target."""
+    tags = p.MARKET_GIFTS
+    saved = tags.get("keep_sell")
+    tags["keep_sell"] = list(dict.fromkeys(_plan_kept(plan) + list(saved or [])))
     try:
-        if sell({"upties": need}):
-            logging.info("HOLLOW: the upties' cost is covered.")
-        else:
-            logging.info("HOLLOW: nothing more to sell; the upties take what "
-                         "the cost allows.")
+        if tuple(tiers) == (2, 1, 3, 4) and limit is None:
+            return bool(sell(gifts))
+        return bool(sell(gifts, tiers=tiers, limit=limit))
     except gui.PauseException:
         raise
     except Exception as exc:
@@ -2262,12 +2546,44 @@ def _hollow_sell(plan, done_fuse, targets):
             close_panel()
         except Exception:
             pass
+        return False
     finally:
-        p.CUSTOM_SELL_ACTIVE = False
         if saved is None:
-            gifts.pop("keep_sell", None)
+            tags.pop("keep_sell", None)
         else:
-            gifts["keep_sell"] = saved
+            tags["keep_sell"] = saved
+
+
+def _hollow_sell(plan, done_fuse, targets):
+    """The floor 4 shop on: gifts are sold until the cost covers the upties
+    still owed. With every gift of the plan crafted, whatever the plan
+    does not protect (nor the tab's Keep sell tags); before that only
+    tier 1 gifts, which no craft uses, for the upties of the gifts
+    already crafted."""
+    if not plan or not targets:
+        return
+    from .hollow import sell_ready, SELL_FROM_FLOOR
+    if int(getattr(p, "LVL", 1) or 1) < SELL_FROM_FLOOR:
+        return
+    everything = sell_ready(done_fuse, targets=plan.get("targets"))
+    owed = [] if everything else [n for n in (plan.get("targets") or plan.get("fuse") or [])
+                                  if n not in done_fuse]
+    need = _uptie_reserve(targets, getattr(p, "CUSTOM_ENHANCE_DONE", None) or {}, owed)
+    if not need:
+        return
+    have = balance()
+    if have >= need:
+        logging.info("HOLLOW: %d cost covers the %d the upties need; nothing sold.",
+                     have, need)
+        return
+    logging.info("HOLLOW: %d cost, the upties need %d; selling %s.", have, need,
+                 "the gifts the plan does not protect" if everything
+                 else "tier 1 gifts")
+    if _plan_sale(plan, {"upties": need}, tiers=(2, 1, 3, 4) if everything else (1,)):
+        logging.info("HOLLOW: the upties' cost is covered.")
+    else:
+        logging.info("HOLLOW: nothing more to sell; the upties take what "
+                     "the cost allows.")
 
 
 def _confirm_lit() -> bool:
@@ -2396,9 +2712,17 @@ def _hollow_first_uptie():
         return
     p.HOLLOW_FIRST_UPTIE_DONE = True
     name, levels = FIRST_UPTIE
+    pick = str(getattr(p, "STARTER_GIFT", "") or "")
+    if pick and pick != name:
+        logging.info("HOLLOW: %s not taken (starter gift %s), so not uptied "
+                     "first.", name, pick)
+        return
     if getattr(p, "SKIP_EGO_ENHANCING", False):
         logging.info("HOLLOW: %s not uptied first (Behaviour: Skip EGO enhancing).", name)
         return
+    tags = getattr(p, "MARKET_GIFTS", None)
+    if isinstance(tags, dict) and name in (tags.get("enhance1") or []):
+        levels = 1                         # tagged for one uptie, not two
     logging.info("HOLLOW: floor 1 shop, %s first (%d levels).", name, levels)
     try:
         _enhance_catalog([(name, levels)])
@@ -2426,7 +2750,8 @@ def custom_market():
     buy_names = _scripted_order(gifts.get("buy"))
     must = []
     if plan:
-        fuse_names, enh1, enh2 = list(plan["fuse"]), [], list(plan["enhance2"])
+        fuse_names = list(plan["fuse"])
+        enh1, enh2 = list(plan.get("enhance1") or []), list(plan["enhance2"])
         must = list(plan.get("must") or [])
     else:
         fuse_names = _scripted_order(gifts.get("fuse"))
@@ -2445,15 +2770,34 @@ def custom_market():
     # leaves it untouched.
     _enh_targets = _held_back([(n, 1) for n in enh1] + [(n, 2) for n in enh2])
     enh_reserve = 0
-    if (_enh_targets and not getattr(p, "SKIP_EGO_ENHANCING", False)
-            and not _upties_wait(plan, done_fuse)):
-        enh_reserve = _uptie_reserve(
-            _enh_targets, done_enh, [n for n in fuse_names if n not in done_fuse])
-        if enh_reserve:
-            logging.info("Custom market: reserving %d cost for the configured "
-                         "upties.", enh_reserve)
+    if _enh_targets and not getattr(p, "SKIP_EGO_ENHANCING", False):
+        if plan:
+            # Kept back even while the upties wait for the last crafts:
+            # the floor 3 shop spent what Clear Mirror's ++ needed at the
+            # floor 4 one on the gifts ranked after it.
+            enh_reserve = _ranked_reserve(plan, _enh_targets, done_enh, done_fuse)
+            if any(enh_reserve.values()):
+                logging.info("HOLLOW: cost kept back while buying fuel: %s.",
+                             ", ".join("%s %d" % kv for kv in enh_reserve.items()))
+        else:
+            enh_reserve = _uptie_reserve(
+                _enh_targets, done_enh,
+                [n for n in fuse_names if n not in done_fuse])
+            if enh_reserve:
+                logging.info("Custom market: reserving %d cost for the "
+                             "configured upties.", enh_reserve)
     buy_allowed = (not getattr(p, "SKIP_EGO_BUYING", False)
                    and (bool(plan) or getattr(p, "BUY_EGO_FUEL", False)))
+    # A floor plan spends cost on shelf refreshes by its own floor rule,
+    # sells tier 1 gifts when that cost is short, and stocks tier 3s down
+    # to the cost of its upties once every craft is covered.
+    trip = {"keep": enh_reserve}
+    if plan:
+        from .hollow import paid_refreshes
+        trip.update(paid_for=paid_refreshes,
+                    stock=_uptie_reserve(_enh_targets, done_enh),
+                    raise_cost=lambda target, limit: _plan_sale(
+                        plan, {"fuel": target}, tiers=(1,), limit=limit))
 
     # Step 1: the tagged buys, refreshing per the tab's count / until-cost
     # toggle. Fuel is not bought here: the fuse session plans it from what
@@ -2465,8 +2809,7 @@ def custom_market():
             loops = 0
             while balance() >= 200 and loops < _MARKET_REFRESH_CAP:
                 loops += 1
-                win_click(1489, 177, tsize=(180, 53))
-                connection()
+                _refresh_shelf()
                 time.sleep(0.1)
                 do_skill_replace()
                 _buy_configured(buy_names)
@@ -2474,8 +2817,7 @@ def custom_market():
             for _ in range(int(getattr(p, "MARKET_REFRESH_COUNT", 0) or 0)):
                 if balance() < 200:
                     break
-                win_click(1489, 177, tsize=(180, 53))
-                connection()
+                _refresh_shelf()
                 time.sleep(0.1)
                 do_skill_replace()
                 _buy_configured(buy_names)
@@ -2486,9 +2828,10 @@ def custom_market():
     protect = list(dict.fromkeys(list(fuse_names) + list(enh1) + list(enh2)))
     saved_keep = gifts.get("keep_fuse")
     if plan:
-        # The Hollow plan says exactly what the fuel pool may not touch on
-        # this floor; the tab's own keep list is set aside for the visit.
-        protect = list(plan["protected"])
+        # The Hollow plan says what the fuel pool may not touch on this
+        # floor (the tab's own keep list is set aside for the visit); its
+        # own targets and uptie gifts are kept whatever the tags say.
+        protect = _plan_kept(plan)
         gifts["keep_fuse"] = list(protect)
     elif protect:
         gifts["keep_fuse"] = list(dict.fromkeys((saved_keep or []) + protect))
@@ -2496,9 +2839,8 @@ def custom_market():
         # Steps 2-3: one fuse session for every pending target.
         if fuse_names and not getattr(p, "SKIP_EGO_FUSION", False):
             try:
-                _fuse_session(fuse_names, done_fuse, keep=enh_reserve,
-                              buy_allowed=buy_allowed, sequential=plan is None,
-                              stock=plan is not None, must=must)
+                _fuse_session(fuse_names, done_fuse, buy_allowed=buy_allowed,
+                              sequential=plan is None, must=must, **trip)
             except gui.PauseException:
                 raise
             except Exception as exc:
@@ -2534,7 +2876,53 @@ def custom_market():
                 gifts["keep_fuse"] = saved_keep
 
 
+# Floor Packs/Market: the run-wide values a floor can replace for its own
+# shop visit, and the step keys as the page stores them.
+FLOOR_SHOP_FIELDS = ("MARKET_GIFTS", "SKIP_RESTSHOP", "SKIP_EGO_CHECK",
+                     "SKIP_EGO_FUSION", "SKIP_EGO_ENHANCING",
+                     "SKIP_EGO_BUYING", "SKIP_SINNER_HEALING")
+_FLOOR_STEPS = {
+    "skip_restshop": ("SKIP_RESTSHOP", "rest shop"),
+    "skip_ego_check": ("SKIP_EGO_CHECK", "gift check"),
+    "skip_ego_fusion": ("SKIP_EGO_FUSION", "fusion"),
+    "skip_ego_enhancing": ("SKIP_EGO_ENHANCING", "upties"),
+    "skip_ego_buying": ("SKIP_EGO_BUYING", "buying"),
+    "skip_sinner_healing": ("SKIP_SINNER_HEALING", "healing"),
+}
+
+
+def snapshot_runwide():
+    """Keep the run-wide shop values for apply_floor_config to restore."""
+    p.SHOP_RUNWIDE = {name: getattr(p, name) for name in FLOOR_SHOP_FIELDS}
+    p.FLOOR_CONFIG_LOGGED = None
+
+
+def apply_floor_config(floor=None):
+    """Lay the floor's own market tags and shop steps over the run-wide
+    ones for this visit; a floor that sets nothing gets the run-wide
+    values back."""
+    base = getattr(p, "SHOP_RUNWIDE", None)
+    if not base:
+        return
+    floor = int(floor if floor is not None else getattr(p, "LVL", 1) or 1)
+    own = (getattr(p, "MARKET_FLOORS", None) or {}).get(floor) or {}
+    for name, value in base.items():
+        setattr(p, name, dict(value) if isinstance(value, dict) else value)
+    if isinstance(own.get("market_gifts"), dict):
+        p.MARKET_GIFTS = dict(own["market_gifts"])
+    for key, (name, _word) in _FLOOR_STEPS.items():
+        if key in own:
+            setattr(p, name, bool(own[key]))
+    if own and getattr(p, "FLOOR_CONFIG_LOGGED", None) != floor:
+        p.FLOOR_CONFIG_LOGGED = floor
+        steps = ["%s %s" % (word, "off" if own[key] else "on")
+                 for key, (_name, word) in _FLOOR_STEPS.items() if key in own]
+        logging.info("Floor %d shop: %s.", floor, ", ".join(
+            (["its own market tags"] if "market_gifts" in own else []) + steps))
+
+
 def shop():
+    apply_floor_config()
     if getattr(p, "SKIP_RESTSHOP", False):
         # Two cases: (1) called on a non-shop screen -> return False so caller
         # moves on; (2) actually on a shop screen -> leave() to exit cleanly
@@ -2564,7 +2952,6 @@ def shop():
         if p.HARD_TARGET:
             p.HARD = True
     else: return False
-    print("shop check")
     time.sleep(0.2)
     # Per-visit reset (cap applies across refreshes within one visit).
     p.SKILL_REPLACE_USED_THIS_SHOP = 0
@@ -2572,6 +2959,7 @@ def shop():
     p.SKILL_REPLACE_SCAN_LOGGED = False
     p.MARKET_CONFIGURED_DONE = False
     p.CUSTOM_MARKET_DONE = False
+    p.SHELF_REFRESHES = 0
     p.RUN_SHOP_VISITS = int(getattr(p, "RUN_SHOP_VISITS", 0) or 0) + 1
     logging.info("shop: entry (%s, run shop-count now %d)",
                  p.SUPER, p.RUN_SHOP_VISITS)
@@ -2604,10 +2992,6 @@ def shop():
         if p.RUN_SCRIPT == "saikai_ryoshu":
             logging.info("SAIKAI: %d sinner(s) down - skipping revive AND heal "
                          "(both banned for this run).", p.DEAD)
-        elif p.RUN_SCRIPT == "thrill" and not getattr(p, "THRILL_DONE", False):
-            # THRILL F1 must keep its whole budget for the mandatory craft;
-            # spending on revive/heal here can budget-out the run.
-            logging.info("THRILL: deferring revive/heal until Thrill is crafted.")
         else:
             revive_idiots()
             heal_all()
@@ -2633,9 +3017,7 @@ def shop():
         if not loc_shop.button("+", "fuse_shelf", conf=0.95):
             # genuinely on the first floor
             try:
-                if p.RUN_SCRIPT == "thrill":
-                    thrill_market_f1()
-                elif not getattr(p, "DEFAULT_MARKET_WORKFLOW", True):
+                if not getattr(p, "DEFAULT_MARKET_WORKFLOW", True):
                     close_panel()
                     custom_market()
                 else:
@@ -2647,54 +3029,24 @@ def shop():
             # bot was started midway; not the first floor
             p.LVL = 2
             close_panel()
-            if os.environ.get("WB_SCAN_DEBUG"):
-                # Debug: starting the bot AT a shop runs the gift scan right
-                # here, then stops WITHOUT leaving so the result can be
-                # inspected and the scan re-run at will.
-                logging.info("SCAN DEBUG: mid-start at a shop - running the "
-                             "gift scan here, then stopping (shop stays open).")
-                try:
-                    items = scan_run_gifts(wait=True)
-                    logging.info("SCAN DEBUG: scan returned %d gift(s).",
-                                 len(items))
-                except gui.PauseException:
-                    raise
-                except Exception as exc:
-                    logging.warning("SCAN DEBUG: scan failed: %s", exc)
-                if p.APP:
-                    QMetaObject.invokeMethod(p.APP, "stop_execution",
-                                             Qt.ConnectionType.QueuedConnection)
-                raise StopExecution
     # Range includes the boss-prep floor (F5 Normal, F16 Extreme). Using `>`
     # excluded those, so SKIP=on would waste the last gear-up chance.
     if 5 + p.EXTREME*11 >= p.LVL > 1 or not p.SKIP:
-        if p.RUN_SCRIPT == "thrill" and getattr(p, "THRILL_DONE", False):
-            # THRILL F2: top off the thrill enhance (no-op if F1 fully landed).
-            # F3+: nothing (run forfeits after F3; don't spend leftover budget).
-            if p.LVL == 2:
-                logging.info("THRILL: F2 market - topping off thrill enhance only.")
-                try:
-                    enhance({"thrill": 4})
-                except Exception as exc:
-                    logging.warning("THRILL: F2 thrill enhance failed: %s", exc)
-            else:
-                logging.info("THRILL: F%d market - no market actions.", p.LVL)
-        elif not getattr(p, "DEFAULT_MARKET_WORKFLOW", True):
+        if not getattr(p, "DEFAULT_MARKET_WORKFLOW", True):
             custom_market()
         else:
             buy_some(rerolls=0, priority=True)
             fuse_loop()
     
     if p.EXTREME:
-        win_click(1489, 177, tsize=(180, 53))
-        connection()
+        _refresh_shelf()
         time.sleep(0.1)
         for _ in range(1 + int(p.SUPER == "supershop")):
             buy_skill3()
 
     # End-of-run gift inventory: scan at the run's LAST shop floor (5, 16 on
-    # Extreme, or the SAIKAI stop floor), once per attempt.
-    _last_shop = int(getattr(p, "SAIKAI_STOP_FLOOR", 0) or 0) or (5 + p.EXTREME * 11)
+    # Extreme), once per attempt.
+    _last_shop = 5 + p.EXTREME * 11
     if p.LVL == _last_shop and not getattr(p, "RUN_GIFTS_SCANNED", False):
         p.RUN_GIFTS_SCANNED = True
         try:

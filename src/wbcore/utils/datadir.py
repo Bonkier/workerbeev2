@@ -2,8 +2,8 @@
 """Single source of truth for WorkerBee's writable data directory.
 
 Frozen builds write under %LOCALAPPDATA%\\WorkerBee - outside the install dir,
-so the self-updater's `robocopy /MIR` never purges it (the config/ dir and
-click_memory.json already live here). game.log / game.csv go here too, so run
+so the self-updater's `robocopy /MIR` never purges it (the config/ dir already
+lives here). game.log / game.csv go here too, so run
 statistics survive updates instead of being wiped with the old install.
 
 Source runs use the repo root so dev logs/stats stay next to the tree. Kept

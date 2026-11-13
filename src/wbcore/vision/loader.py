@@ -16,7 +16,7 @@ from typing import Union
 import cv2
 import numpy as np
 
-from ..regionspec import FHD_WIDTH, WindowGeometry
+from ..regionspec import WindowGeometry
 
 
 PathLike = Union[str, Path]

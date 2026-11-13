@@ -81,7 +81,7 @@ preferred shape for code that reads the result downstream.
 ### 2. Click at a fixed coordinate after finding
 
 ```python
-# Legacy (used in THRILL_FAIL sequence)
+# Legacy (a click at a fixed spot once the template is found)
 LocateRGB.check(PTH["ClaimInvert"], click=(1315, 818), wait=2)
 
 # New
@@ -260,8 +260,8 @@ new method by what behavior you actually want:
 
 ## Things that look like they need migration but do not
 
-- **Hardcoded slot positions** (`_THRILL_FOCUSED_HARDCODED_SLOTS`,
-  chain bar geometry, etc). These are FHD constants and stay where
+- **Hardcoded slot positions** (chain bar geometry, the Hollow slot
+  rows, etc). These are FHD constants and stay where
   they are. They become `mouse.click(slot)` calls at the migration site.
 - **`p.WINDOW` reads inside the legacy backend modules**
   (`os_windows_backend`, `os_x11_backend`). Those are window
@@ -273,16 +273,16 @@ new method by what behavior you actually want:
 
 1. **Migrate one call site at a time.** The legacy `Locate*` classes
    still work; nothing is force-removed.
-2. **Verify visually after migration.** Run the macro on a non-Thrill
+2. **Verify visually after migration.** Run the macro on a stable
    path (Lux Cavation is the safest) and confirm telemetry events
    still show up in the overlay. The Finder's `on_match` callback
    feeds the same vision channel the legacy code did.
 3. **PTH is built at startup.** Any template change still requires a
    relaunch. The new TemplateLoader cache respects this.
-4. **Do not migrate THRILL paths first.** Thrill is the active feature
-   and is the riskiest place to introduce a regression. Migrate
-   stable paths (Confirm dialogs, loading-screen waits, SAIKAI Normal
-   floors) before touching anything Thrill-specific.
+4. **Do not migrate the scripted runs first.** SAIKAI and Hollow are
+   the riskiest places to introduce a regression. Migrate stable paths
+   (Confirm dialogs, loading-screen waits, the Normal floors) before
+   touching anything script-specific.
 
 ## Telemetry parity check
 

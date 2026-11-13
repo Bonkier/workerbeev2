@@ -4,11 +4,14 @@ block and a Join Discord button."""
 
 import logging
 import os
+import re
 import webbrowser
+from html import escape
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QVBoxLayout,
+    QWidget,
 )
 
 from .splash import _read_version
@@ -27,21 +30,57 @@ def _help_path() -> str:
 
 
 def _parse_sections(text: str):
-    """Split on blank lines into (title, body) blocks; a block's first
-    line is the title if it ends with ':'."""
+    """Help.txt as (title, blocks) sections. A line ending with ":" at the
+    top of a blank-line-separated block opens a section, and every block up
+    to the next such line belongs to it. Within a block, lines starting
+    with "- " are the items of a list (an indented line continues the item
+    above) and the other lines run together into a paragraph."""
     sections = []
     for block in text.split("\n\n"):
-        lines = [ln for ln in block.splitlines() if ln.strip()]
+        lines = [ln.rstrip() for ln in block.splitlines() if ln.strip()]
         if not lines:
             continue
-        if lines[0].rstrip().endswith(":"):
-            title = lines[0].rstrip().rstrip(":")
-            body = "\n".join(lines[1:])
-        else:
-            title = ""
-            body = "\n".join(lines)
-        sections.append((title, body))
+        if lines[0].endswith(":") and not lines[0].startswith("- "):
+            sections.append((lines[0].rstrip(":"), []))
+            lines = lines[1:]
+        if not sections:
+            sections.append(("", []))
+        blocks = sections[-1][1]
+        kind, items = None, []
+
+        def flush():
+            if kind == "list" and items:
+                blocks.append(("list", list(items)))
+            elif kind == "text" and items:
+                blocks.append(("text", " ".join(items)))
+
+        for ln in lines:
+            if ln.startswith("- "):
+                if kind != "list":
+                    flush()
+                    kind, items = "list", []
+                items.append(ln[2:].strip())
+            elif ln.startswith(" ") and kind == "list":
+                items[-1] += " " + ln.strip()
+            else:
+                if kind != "text":
+                    flush()
+                    kind, items = "text", []
+                items.append(ln.strip())
+        flush()
     return sections
+
+
+_LEAD = re.compile(r"^([^:]{2,40}):\s+(.+)$", re.S)
+
+
+def _rich(text: str, lead: bool = False) -> str:
+    """Body text as Qt rich text; a list item's short lead term before a
+    colon is set bold."""
+    m = _LEAD.match(text) if lead else None
+    if m:
+        return "<b>%s</b>: %s" % (escape(m.group(1)), escape(m.group(2)))
+    return escape(text)
 
 
 class HelpPage(QWidget):
@@ -67,11 +106,14 @@ class HelpPage(QWidget):
         except OSError:
             text = ""
 
-        for title, body in _parse_sections(text):
+        for title, blocks in _parse_sections(text):
             section = Card(title.upper() if title else "GUIDE", self)
-            lbl = QLabel(body, section, objectName="helpBody")
-            lbl.setWordWrap(True)
-            section.body.addWidget(lbl)
+            section.body.setSpacing(Sizing.SPACE_SM)
+            for kind, payload in blocks:
+                if kind == "list":
+                    section.body.addLayout(self._bullets(payload, section))
+                else:
+                    section.body.addWidget(self._body(_rich(payload), section))
             outer.addWidget(section)
 
         from .copy import HELP_ABOUT_BODY
@@ -98,6 +140,33 @@ class HelpPage(QWidget):
         outer.addWidget(about)
 
         outer.addStretch(1)
+
+    @staticmethod
+    def _body(rich: str, host: QWidget) -> QLabel:
+        lbl = QLabel(rich, host, objectName="helpBody")
+        lbl.setTextFormat(Qt.TextFormat.RichText)
+        lbl.setWordWrap(True)
+        return lbl
+
+    def _bullets(self, items, host: QWidget) -> QVBoxLayout:
+        """A list: an accent square ahead of each item, its lead term bold."""
+        col = QVBoxLayout()
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(Sizing.SPACE_XS)
+        for item in items:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(Sizing.SPACE_SM)
+            mark_col = QVBoxLayout()
+            mark_col.setContentsMargins(0, 7, 0, 0)
+            mark = QFrame(host, objectName="helpBullet")
+            mark.setFixedSize(6, 6)
+            mark_col.addWidget(mark)
+            mark_col.addStretch(1)
+            row.addLayout(mark_col)
+            row.addWidget(self._body(_rich(item, lead=True), host), 1)
+            col.addLayout(row)
+        return col
 
     # --- One-click update flow -------------------------------------
     def _on_update_now(self):

@@ -9,47 +9,18 @@ from PySide6.QtCore import (
     QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal,
 )
 from PySide6.QtGui import (
-    QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPen, QPixmap,
-    QRegion,
+    QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPen,
+    QPixmap, QRegion,
 )
 from PySide6.QtWidgets import (
     QAbstractButton, QFrame, QGraphicsDropShadowEffect,
-    QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel, QLayout,
+    QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLayout,
     QLineEdit, QListWidget, QListWidgetItem, QPushButton, QScrollArea,
     QSizePolicy, QStackedWidget, QStyle, QStyledItemDelegate,
     QVBoxLayout, QWidget,
 )
 
 from .theme import Colors, Fonts, Motion, Sizing
-
-
-# Once-per-feature W.I.P. notice; suppressed after the first call per session.
-_PLACEHOLDER_SEEN: set[str] = set()
-
-
-def show_placeholder_notice(parent: QWidget | None, feature: str,
-                            blurb: str | None = None) -> None:
-    """Show a "Work in progress" notice the first time `feature` is poked."""
-    if feature in _PLACEHOLDER_SEEN:
-        return
-    _PLACEHOLDER_SEEN.add(feature)
-    # Deferred import keeps widgets.py importable headless.
-    from PySide6.QtWidgets import QMessageBox
-    body = blurb or (
-        f"{feature} is a work-in-progress placeholder. The UI is in "
-        "place so you can capture your preferences now, but the "
-        "macro-side logic ships in a follow-up release. Anything you "
-        "set here will be persisted and picked up automatically once "
-        "the backend lands."
-    )
-    box = QMessageBox(parent)
-    box.setIcon(QMessageBox.Icon.Information)
-    box.setWindowTitle("Work in progress")
-    from .copy import PLACEHOLDER_NOTICE_TEMPLATE
-    box.setText(PLACEHOLDER_NOTICE_TEMPLATE.format(feature=feature))
-    box.setInformativeText(body)
-    box.setStandardButtons(QMessageBox.StandardButton.Ok)
-    box.exec()
 
 
 def _lerp_color(a: QColor, b: QColor, t: float) -> QColor:
@@ -60,6 +31,18 @@ def _lerp_color(a: QColor, b: QColor, t: float) -> QColor:
         int(a.blue() + (b.blue() - a.blue()) * t),
         int(a.alpha() + (b.alpha() - a.alpha()) * t),
     )
+
+
+def ui_font(size: int = Fonts.SIZE_SM, weight=QFont.Weight.Medium) -> QFont:
+    """The UI face at a size. A widget that sizes itself by text metrics
+    in __init__ still has the platform default font: the stylesheet sets
+    its own only once the widget is polished, and widths taken from the
+    default come out short."""
+    f = QFont()
+    f.setFamilies([fam.strip() for fam in Fonts.FAMILY.split(",")])
+    f.setPointSize(int(size))
+    f.setWeight(weight)
+    return f
 
 
 class FlowLayout(QLayout):
@@ -270,35 +253,6 @@ class AnimatedStack(QStackedWidget):
         # A resize mid-slide would leave stale overlays; finish now.
         if self._overlays:
             self._cleanup()
-
-
-class Section(QWidget):
-    """Vertical container with an uppercase label header. Add children to
-    `section.body`."""
-
-    def __init__(self, label: str, parent: QWidget | None = None,
-                 trailing: QWidget | None = None):
-        super().__init__(parent)
-        self.setObjectName("section")
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(Sizing.SPACE_SM)
-
-        head = QHBoxLayout()
-        head.setContentsMargins(0, 0, 0, 0)
-        head.setSpacing(Sizing.SPACE_SM)
-        title = QLabel(label, self)
-        title.setObjectName("sectionLabel")
-        head.addWidget(title)
-        head.addStretch(1)
-        if trailing is not None:
-            head.addWidget(trailing)
-        outer.addLayout(head)
-
-        self.body = QVBoxLayout()
-        self.body.setContentsMargins(0, 0, 0, 0)
-        self.body.setSpacing(Sizing.SPACE_XS)
-        outer.addLayout(self.body)
 
 
 def _rad(value: float) -> float:
@@ -680,9 +634,6 @@ class ElidedLabel(QLabel):
         self.updateGeometry()
         self._elide()
 
-    def full_text(self) -> str:
-        return self._full
-
     def sizeHint(self) -> QSize:
         fm = QFontMetrics(self.font())
         return QSize(fm.horizontalAdvance(self._full), fm.height())
@@ -713,30 +664,22 @@ class HRule(QFrame):
         self.setFixedHeight(1)
 
 
-class StatLine(QWidget):
-    """Single 'label ... value' row."""
-
-    def __init__(self, label: str, value: str, accent: bool = False,
-                 parent: QWidget | None = None):
-        super().__init__(parent)
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, Sizing.SPACE_XS, 0, Sizing.SPACE_XS)
-        row.setSpacing(Sizing.SPACE_LG)
-
-        self._label = QLabel(label, self)
-        self._label.setObjectName("statRowLabel")
-        row.addWidget(self._label, stretch=1)
-
-        self._value = QLabel(value, self)
-        self._value.setObjectName("statRowValueAccent" if accent
-                                  else "statRowValue")
-        self._value.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        row.addWidget(self._value)
-
-    def set_value(self, value: str):
-        self._value.setText(value)
+def _stat_label(text: str, parent) -> QWidget:
+    """A tile's caption: the pixel face on voxel, small tracked capitals
+    on legacy."""
+    try:
+        from .skins import is_voxel
+        if is_voxel():
+            from .voxel import PixelLabel
+            lbl = PixelLabel(text, pixel=2, color=Colors.TEXT_TERTIARY,
+                             parent=parent)
+            lbl.setObjectName("statTileLabel")
+            return lbl
+    except Exception:
+        pass
+    lbl = QLabel(text.upper(), parent)
+    lbl.setObjectName("statTileLabel")
+    return lbl
 
 
 class StatTiles(QWidget):
@@ -773,9 +716,7 @@ class StatTiles(QWidget):
                               else "statTileValue")
             cv.addWidget(val)
 
-            lab = QLabel(label.upper(), cell)
-            lab.setObjectName("statTileLabel")
-            cv.addWidget(lab)
+            cv.addWidget(_stat_label(label, cell))
 
             row.addWidget(cell, stretch=1)
             self._values[label] = val
@@ -919,6 +860,7 @@ class PageHeader(QWidget):
                                    section=False)
         row.addWidget(self._title)
         row.addStretch(1)
+        self._row = row
 
         self._actions_row = QHBoxLayout()
         self._actions_row.setSpacing(Sizing.SPACE_SM)
@@ -927,46 +869,9 @@ class PageHeader(QWidget):
     def add_action(self, widget: QWidget):
         self._actions_row.addWidget(widget)
 
-
-class ActivityRow(QFrame):
-    """Hover-highlighted row: status dot + title + subtitle + meta."""
-
-    def __init__(self, status_color: str, title: str, subtitle: str,
-                 meta: str, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setObjectName("activityRow")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        row = QHBoxLayout(self)
-        row.setContentsMargins(
-            Sizing.SPACE_SM, Sizing.SPACE_SM,
-            Sizing.SPACE_SM, Sizing.SPACE_SM,
-        )
-        row.setSpacing(Sizing.SPACE_MD)
-
-        dot = QLabel("●", self)
-        dot.setObjectName("activityDot")
-        dot.setFixedWidth(12)
-        dot.setStyleSheet(f"color: {status_color};")
-        row.addWidget(dot)
-
-        text_col = QVBoxLayout()
-        text_col.setSpacing(2)
-        title_lbl = QLabel(title, self)
-        title_lbl.setObjectName("activityTitle")
-        text_col.addWidget(title_lbl)
-        sub_lbl = QLabel(subtitle, self)
-        sub_lbl.setObjectName("activitySubtitle")
-        text_col.addWidget(sub_lbl)
-        row.addLayout(text_col, stretch=1)
-
-        meta_lbl = QLabel(meta, self)
-        meta_lbl.setObjectName("activityMeta")
-        meta_lbl.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        row.addWidget(meta_lbl)
+    def add_badge(self, widget: QWidget):
+        """A small plate right after the title."""
+        self._row.insertWidget(1, widget, 0, Qt.AlignmentFlag.AlignVCenter)
 
 
 def windows_logo_pixmap(size: int = 18) -> "QPixmap":
@@ -991,16 +896,15 @@ def windows_logo_pixmap(size: int = 18) -> "QPixmap":
 
 
 class SettingRow(QWidget):
-    """Preference row: title + control on one line, description below.
-    `leading_icon` flags rows that reach outside the macro."""
+    """Preference row: title + control on one line. `leading_icon` flags
+    rows that reach outside the macro."""
 
-    def __init__(self, title: str, subtitle: str, control: QWidget,
+    def __init__(self, title: str, control: QWidget,
                  parent: QWidget | None = None,
                  leading_icon=None, rail: int | None = None):
         super().__init__(parent)
         self.setObjectName("settingRow")
         self.title_text = title
-        self.subtitle_text = subtitle or ""
         # `rail` fixes the row's width so every trailing control lands on the
         # same vertical line instead of the panel's right edge. Without it a
         # wide panel opens a 200-400px gap between a label and its own switch
@@ -1043,12 +947,6 @@ class SettingRow(QWidget):
                                   control.minimumHeight())
                               + 2 * Sizing.SPACE_SM)
         outer.addLayout(title_row)
-
-        if subtitle:
-            sub_lbl = QLabel(subtitle, self)
-            sub_lbl.setObjectName("settingSubtitle")
-            sub_lbl.setWordWrap(True)
-            outer.addWidget(sub_lbl)
 
 
 class Toggle(QAbstractButton):
@@ -1179,6 +1077,7 @@ class IconlessTabBar(QWidget):
             btn.deleteLater()
         self._buttons = {}
 
+        bold = QFontMetrics(ui_font(Fonts.SIZE_SM, QFont.Weight.DemiBold))
         for i, label in enumerate(tabs):
             btn = QPushButton(label, self)
             btn.setObjectName("tabBtn")
@@ -1186,6 +1085,9 @@ class IconlessTabBar(QWidget):
             btn.setAutoExclusive(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _c=False, k=label: self._emit(k))
+            # The checked tab is set bolder than the face its hint is
+            # measured in: room for the bold face, or it is cut short.
+            btn.setMinimumWidth(bold.horizontalAdvance(label) + 2 * 16 + 6)
             self._row.insertWidget(i, btn)  # before trailing stretch
             self._buttons[label] = btn
 
@@ -1493,6 +1395,10 @@ class _AnimatedChip(QAbstractButton):
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._paint_frame(p)
+        self._paint_label(p, self.rect())
+
+    def _paint_frame(self, p):
         r = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
         radius = 0.0  # sharp corners
         bg = QColor(self._bg)
@@ -1508,12 +1414,14 @@ class _AnimatedChip(QAbstractButton):
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r, _rad(radius), _rad(radius))
+
+    def _paint_label(self, p, rect):
         f = self.font()
         f.setWeight(QFont.Weight.DemiBold if self._bold
                     else QFont.Weight.Medium)
         p.setFont(f)
         p.setPen(self._fg)
-        p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
+        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.text())
 
 
 class _CheckChip(_AnimatedChip):
@@ -1545,12 +1453,21 @@ class _OrderChip(_AnimatedChip):
     """Chip used by ClickOrderGrid. Behaves like a non-checkable button
     that the grid drives between off (plain name) and on (numbered) by
     setting the label text + animating to the on/off colours from
-    _CheckChip's palette. The grid handles the ordinal renumbering."""
+    _CheckChip's palette. The grid handles the ordinal renumbering. A
+    sinner's chip wears their emblem."""
+
+    _ICON = 18
 
     def __init__(self, name: str, parent: QWidget | None = None):
         super().__init__(name, parent)
         self._name = name
         self._rank: int | None = None
+        from .giftart import sinner_icon
+        pm = QPixmap(sinner_icon(name))
+        self._emblem = (pm.scaled(self._ICON, self._ICON,
+                                  Qt.AspectRatioMode.KeepAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation)
+                        if not pm.isNull() else pm)
         self._set(*_CheckChip._off_cols())
 
     def name(self) -> str:
@@ -1573,6 +1490,32 @@ class _OrderChip(_AnimatedChip):
     def _current_colors(self):
         return (_CheckChip._on_cols() if self._rank is not None
                 else _CheckChip._off_cols())
+
+    def sizeHint(self) -> QSize:
+        f = QFont(self.font())
+        f.setWeight(QFont.Weight.DemiBold)
+        fm = QFontMetrics(f)
+        w = fm.horizontalAdvance(self.text()) + 2 * self._HPAD + 2
+        if not self._emblem.isNull():
+            w += self._ICON + Sizing.SPACE_SM
+        return QSize(w, max(self._MIN_H, fm.height() + 2 * self._VPAD))
+
+    def _paint_label(self, p, rect):
+        if self._emblem.isNull():
+            super()._paint_label(p, rect)
+            return
+        p.drawPixmap(rect.left() + self._HPAD,
+                     rect.top() + (rect.height() - self._emblem.height()) // 2,
+                     self._emblem)
+        f = self.font()
+        f.setWeight(QFont.Weight.DemiBold if self._bold
+                    else QFont.Weight.Medium)
+        p.setFont(f)
+        p.setPen(self._fg)
+        p.drawText(rect.adjusted(self._HPAD + self._ICON + Sizing.SPACE_SM,
+                                 0, -self._HPAD, 0),
+                   int(Qt.AlignmentFlag.AlignLeft
+                       | Qt.AlignmentFlag.AlignVCenter), self.text())
 
 
 class ClickOrderGrid(QWidget):
@@ -1657,37 +1600,6 @@ class ClickOrderGrid(QWidget):
         self._order.clear()
 
 
-class ChipList(QWidget):
-    """Horizontal list of pill chips for tag-like selections. Click a
-    chip to toggle inclusion. Used for pack priority/avoid and the
-    keywordless gift list."""
-
-    selection_changed = Signal(list)
-
-    def __init__(self, items, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setObjectName("chipList")
-        self._buttons: dict[str, QPushButton] = {}
-
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(Sizing.SPACE_XS)
-        for label in items:
-            btn = _CheckChip(label, self)
-            btn.toggled.connect(self._notify)
-            row.addWidget(btn)
-            self._buttons[label] = btn
-        row.addStretch(1)
-
-    def _notify(self):
-        self.selection_changed.emit(
-            [label for label, btn in self._buttons.items() if btn.isChecked()]
-        )
-
-    def selected(self) -> list:
-        return [label for label, btn in self._buttons.items() if btn.isChecked()]
-
-
 class _GridChipDelegate(QStyledItemDelegate):
     """Paints a fixed-column OrderedList cell as a rounded chip: a checkbox
     on the left and the label on the right, word-wrapping a long label to a
@@ -1760,18 +1672,21 @@ class _GridChipDelegate(QStyledItemDelegate):
 class OrderedList(QListWidget):
     """Drag-to-reorder list backed by QListWidget's internal move. Drag
     a row up or down to reprioritise. Optionally checkable (for
-    include/exclude, e.g. sinners). Auto-renumbers and sizes to its
-    content so the page scroll - not an internal scrollbar - handles
-    overflow."""
+    include/exclude, e.g. sinners); `icons` maps an item to the image
+    shown before its label. Auto-renumbers and sizes to its content so
+    the page scroll - not an internal scrollbar - handles overflow."""
 
     changed = Signal()
 
     def __init__(self, items, checkable: bool = False, checked=None,
-                 wrap: bool = False, cols: int = 0,
+                 wrap: bool = False, cols: int = 0, icons=None,
                  parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("orderedList")
         self._checkable = checkable
+        self._icons = dict(icons or {})
+        if self._icons:
+            self.setIconSize(QSize(26, 26))
         self._wrap = wrap or bool(cols)
         # Preferred fixed column count (e.g. 6 for the 12 sinners -> a 2x6
         # grid like the in-game roster). 0 means auto (pick from width).
@@ -1827,6 +1742,9 @@ class OrderedList(QListWidget):
         for name in items:
             it = QListWidgetItem()
             it.setData(Qt.ItemDataRole.UserRole, name)
+            icon = self._icons.get(name)
+            if icon:
+                it.setIcon(QIcon(icon))
             if self._checkable:
                 it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 inc = checked is None or name in checked
@@ -1958,28 +1876,52 @@ class OrderedList(QListWidget):
                 for i in range(self.count())
                 if self.item(i).checkState() == Qt.CheckState.Checked]
 
-    def count_included(self) -> int:
-        return len(self.selection())
-
-    def get_state(self) -> tuple:
-        return (self.order(), set(self.selection()))
-
     def set_state(self, order, included):
         self.blockSignals(True)
         self._populate(order, included)
         self.blockSignals(False)
 
 
-class TriChip(_AnimatedChip):
-    """Tri-state pack chip. Clicking cycles neutral -> prioritise ->
-    avoid -> neutral, fading between the colour states."""
+# The card art on a pack tile (the bundled cards are 200 x 368), scaled to
+# the width the grid gives its tiles and shared by every tile showing it.
+PACK_ART_DEFAULT = 150
+_pack_arts: dict = {}
+
+
+def _trim_pack_art(width: int):
+    """Drop the scalings at other widths once the grid has settled on one."""
+    for key in [k for k in _pack_arts if k[1] != width]:
+        del _pack_arts[key]
+
+
+def _pack_art(path: str, width: int):
+    key = (path, width)
+    pm = _pack_arts.get(key)
+    if pm is None:
+        pm = QPixmap(path)
+        if not pm.isNull():
+            pm = pm.scaledToWidth(
+                width, Qt.TransformationMode.SmoothTransformation)
+        _pack_arts[key] = pm
+    return None if pm.isNull() else pm
+
+
+class PackTile(_AnimatedChip):
+    """A pack as a card in a grid: its art, its name underneath and a
+    tri-state tint. Clicking cycles neutral -> prioritise -> avoid ->
+    neutral; a ribbon across the art names the state."""
 
     STATES = ("neutral", "priority", "avoid")
+    _RIBBON = {"priority": "Prioritise", "avoid": "Avoid"}
+    _PAD = 5
+    _GAP = 4
+    _LINES = 2
+    _BAND = 20
     state_changed = Signal(str, str)  # (pack_name, new_state)
 
     @staticmethod
     def _cols(state):
-        # Read fresh from Colors so the chips follow a live theme change.
+        # Read fresh from Colors so the tiles follow a live theme change.
         return {
             "neutral":  (Colors.BG_OVERLAY, Colors.BORDER_SUBTLE,
                          Colors.TEXT_SECONDARY, False),
@@ -1989,11 +1931,74 @@ class TriChip(_AnimatedChip):
                          Colors.ERROR, True),
         }[state]
 
-    def __init__(self, label: str, parent: QWidget | None = None):
+    def __init__(self, label: str, parent: QWidget | None = None,
+                 icon: str = "", width: int = PACK_ART_DEFAULT):
         super().__init__(label, parent)
         self._idx = 0
+        self._path = icon
+        self._pix = None
+        self._raw = ""
+        self._art_w = int(width)
+        self.rescale(self._art_w)
         self._set(*self._cols("neutral"))
         self.clicked.connect(self._cycle)
+
+    def rescale(self, width: int):
+        """Scale the art to `width`; the grid sets it from its own width."""
+        self._art_w = max(40, int(width))
+        self._pix = _pack_art(self._path, self._art_w) if self._path else None
+        self.updateGeometry()
+        self.update()
+
+    def _art_size(self):
+        if self._pix is not None:
+            return self._pix.width(), self._pix.height()
+        return self._art_w, round(self._art_w * 368 / 200)
+
+    def sizeHint(self) -> QSize:
+        w, h = self._art_size()
+        names = self._LINES * self.fontMetrics().lineSpacing()
+        return QSize(w + 2 * self._PAD,
+                     self._PAD + h + self._GAP + names + self._PAD)
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        self._paint_frame(p)
+        w, h = self._art_size()
+        x, y = (self.width() - w) // 2, self._PAD
+        if self._pix is not None:
+            p.drawPixmap(x, y, self._pix)
+        else:
+            p.fillRect(x, y, w, h, QColor(Colors.BG_PRESSED))
+        state = self.STATES[self._idx]
+        if state != "neutral":
+            band = QRect(x, y + h - self._BAND, w, self._BAND)
+            fill = QColor(self._bd)
+            fill.setAlpha(232)
+            p.fillRect(band, fill)
+            f = self.font()
+            f.setWeight(QFont.Weight.Bold)
+            p.setFont(f)
+            p.setPen(QColor("#0d0d0e" if state == "priority" else "#ffffff"))
+            p.drawText(band, Qt.AlignmentFlag.AlignCenter, self._RIBBON[state])
+        top = y + h + self._GAP
+        name = QRect(self._PAD, top, self.width() - 2 * self._PAD,
+                     self.height() - top - self._PAD)
+        p.setClipRect(name)
+        f = self.font()
+        f.setWeight(QFont.Weight.DemiBold if self._bold
+                    else QFont.Weight.Medium)
+        p.setFont(f)
+        p.setPen(self._fg)
+        p.drawText(name, Qt.AlignmentFlag.AlignHCenter
+                   | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
+                   self.text())
+        p.end()
 
     def _cycle(self):
         self._idx = (self._idx + 1) % len(self.STATES)
@@ -2018,6 +2023,10 @@ class TriChip(_AnimatedChip):
 # cannot tell "Workshopand" from a real word. These are spelled out rather than
 # guessed at; everything else humanize_pack derives correctly.
 _PACK_LABELS = {
+    "FlatbrokeGamblers": "Flat-broke Gamblers",
+    "HellsChicken": "Hell's Chicken",
+    "NagelundHammer": "Nagel und Hammer",
+    "FaithErosion": "Faith & Erosion",
     "Line4Sec3": "Line4 - Section 3",
     "Line4Sec4": "Line4 - Section 4",
     "NestWorkshopandTechnology": "Nest Workshop and Technology",
@@ -2044,31 +2053,6 @@ _PACK_LABELS = {
 }
 
 
-def tag_chip_qss(accent: str, locked: bool = False) -> str:
-    """Removable/selectable tag chip. These are built with per-widget
-    stylesheets, which the global sheet cannot reach, so they have to pick
-    their own shape for the active skin: voxel gets a square block with a
-    colour-coded left edge (the same idiom as #sectionLabel), legacy keeps
-    the original outlined pill."""
-    from .skins import is_voxel
-    hover = ("" if locked else
-             f"QPushButton:hover{{background:{accent};"
-             f"color:{Colors.BG_BASE};}}")
-    if is_voxel():
-        return (
-            f"QPushButton{{background:{Colors.BG_OVERLAY};"
-            f"color:{Colors.TEXT_PRIMARY};"
-            f"border:1px solid {Colors.BORDER_SUBTLE};"
-            f"border-left:3px solid {accent};"
-            f"border-radius:0px;padding:3px 9px;}}" + hover
-        )
-    return (
-        f"QPushButton{{background:{Colors.BG_OVERLAY};"
-        f"color:{Colors.TEXT_PRIMARY};border:1px solid {accent};"
-        f"border-radius:{Sizing.RADIUS_PILL}px;padding:3px 9px;}}" + hover
-    )
-
-
 def humanize_pack(name: str) -> str:
     """CamelCase pack key -> spaced label. 'TheForgotten' ->
     'The Forgotten', 'toClaimTheirBones' -> 'To Claim Their Bones'."""
@@ -2080,60 +2064,19 @@ def humanize_pack(name: str) -> str:
     return s[:1].upper() + s[1:] if s else s
 
 
-class CycleChip(_AnimatedChip):
-    """Chip that cycles through an ordered list of states on click,
-    fading on/off. The label shows '<name>' on state[0], else
-    '<name> <suffix>'. Used for grace tiers (Off / I / II / III)."""
+class StackPage(QWidget):
+    """A stacked page that stops counting once hidden: a stacked layout's
+    height-for-width is its tallest page's, whatever the size policies."""
 
-    state_changed = Signal(str, int)  # (name, state_index)
-
-    @staticmethod
-    def _off_cols():
-        return (Colors.BG_OVERLAY, Colors.BORDER_SUBTLE,
-                Colors.TEXT_SECONDARY, False)
-
-    @staticmethod
-    def _on_cols():
-        return (Colors.BG_HOVER, Colors.TEXT_TERTIARY, Colors.TEXT_PRIMARY, True)
-
-    def __init__(self, name: str, states, parent: QWidget | None = None):
-        super().__init__(name, parent)
-        self._name = name
-        self._states = list(states)  # e.g. ["", "I", "II", "III"]
-        self._idx = 0
-        self._set(*self._off_cols())
-        self.clicked.connect(self._cycle)
-
-    def _label(self) -> str:
-        suffix = self._states[self._idx]
-        return f"{self._name}  {suffix}".rstrip() if suffix else self._name
-
-    def _cycle(self):
-        self._idx = (self._idx + 1) % len(self._states)
-        self.setText(self._label())
-        self.updateGeometry()
-        self._go(*(self._on_cols() if self._idx > 0 else self._off_cols()))
-        self.state_changed.emit(self._name, self._idx)
-
-    def _current_colors(self):
-        return self._on_cols() if self._idx > 0 else self._off_cols()
-
-    def state(self) -> int:
-        return self._idx
-
-    def set_state(self, idx: int):
-        if 0 <= idx < len(self._states):
-            self._idx = idx
-            self.setText(self._label())
-            self.updateGeometry()
-            self._set(*(self._on_cols() if idx > 0 else self._off_cols()))
+    def heightForWidth(self, width):
+        return -1 if self.isHidden() else super().heightForWidth(width)
 
 
 class FloorPacks(QWidget):
     """Per-floor pack selector with a Global layer. A tab row switches
     between a "Global" tab and one tab per floor; each floor only lists the
-    packs that can actually appear there. Each pack is a TriChip (neutral /
-    prioritise / avoid).
+    packs that can actually appear there. Each pack is a PackTile (neutral /
+    prioritise / avoid) in a wrapping grid.
 
     The Global tab is a living default: a Global choice applies to every
     floor the pack can appear on, while an explicit (non-neutral) choice on a
@@ -2148,15 +2091,17 @@ class FloorPacks(QWidget):
     `global_state()` -> {raw_pack_key: 'priority'|'avoid'}          (Global)."""
 
     changed = Signal()
+    PER_ROW = 6         # tiles to a row, whatever the width
 
     def __init__(self, floor_data: dict, banned=(),
                  parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("floorPacks")
-        # chips: {floor: {raw_pack_key: TriChip}}; Global chips are tracked
+        self._art_w = PACK_ART_DEFAULT
+        # chips: {floor: {raw_pack_key: PackTile}}; Global chips are tracked
         # separately so the per-floor state() stays floor-only.
-        self._chips: dict[int, dict[str, TriChip]] = {}
-        self._global_chips: dict[str, TriChip] = {}
+        self._chips: dict[int, dict[str, PackTile]] = {}
+        self._global_chips: dict[str, PackTile] = {}
 
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
@@ -2176,23 +2121,59 @@ class FloorPacks(QWidget):
         tab_scroll.setWidget(self._tabs)
         tab_scroll.setFixedHeight(46)
         col.addWidget(tab_scroll)
-
-        self._legend = QLabel("", self)
-        self._legend.setObjectName("inlineHint")
-        self._legend.setWordWrap(True)
-        col.addWidget(self._legend)
+        self._tab_scroll = tab_scroll
 
         self._search = QLineEdit(self)
         self._search.setObjectName("textField")
-        self._search.setPlaceholderText("Filter packs on this floor…")
+        self._search.setPlaceholderText("Filter packs…")
         self._search.setMaximumWidth(320)
         self._search.textChanged.connect(self._apply_filter)
         col.addWidget(self._search)
 
         self._stack = QStackedWidget(self)
+        self._stack.controller = self._tabs
         col.addWidget(self._stack)
 
         self.set_data(floor_data, banned)
+
+    def set_tabs_visible(self, on: bool):
+        """Hide the tab row when a floor bar outside drives show_floor()."""
+        self._tab_scroll.setVisible(bool(on))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_tiles(event.size().width())
+
+    def _fit_tiles(self, width=None):
+        """Size the tiles so a row holds PER_ROW of them: the art is what
+        is left of a sixth of the width once the gaps and the tiles' own
+        padding are out, to a multiple of four so a window being dragged
+        does not rescale every card at each pixel."""
+        width = self.width() if width is None else int(width)
+        page = self._stack.widget(0)
+        if width <= 0 or page is None:
+            return
+        gap = page.layout().spacing()
+        tile_w = (width - 2 - (self.PER_ROW - 1) * gap) // self.PER_ROW
+        art_w = max(40, tile_w - 2 * PackTile._PAD)
+        art_w -= art_w % 4
+        if art_w == self._art_w:
+            return
+        self._art_w = art_w
+        for chips in [self._global_chips] + list(self._chips.values()):
+            for tile in chips.values():
+                tile.rescale(art_w)
+        _trim_pack_art(art_w)
+
+    def show_floor(self, floor=None):
+        """Show the Global page (None) or one floor's page."""
+        label = "Global" if floor is None else "F%d" % int(floor)
+        btn = self._tabs._buttons.get(label)
+        if btn is None:
+            return
+        btn.setChecked(True)
+        self._tabs._current = label
+        self._on_tab(label)
 
     def _current_chips(self) -> dict:
         """Chips shown on the active tab. Stack index 0 is the Global tab;
@@ -2210,22 +2191,12 @@ class FloorPacks(QWidget):
         for chip in self._current_chips().values():
             chip.setVisible(q in chip.text().lower() if q else True)
 
-    def _update_legend(self, is_global: bool):
-        if is_global:
-            self._legend.setText(
-                "Global preferences apply to every floor. Set a pack on a "
-                "specific floor tab to override it there. Click to cycle: "
-                "neutral  >  prioritise  >  avoid")
-        else:
-            self._legend.setText(
-                "Click a pack to cycle: neutral  >  prioritise  >  avoid. "
-                "Packs left neutral inherit the Global preference.")
-
     def set_data(self, floor_data: dict, banned=(), banned_by_floor=None):
         """Rebuild the Global + floor tabs and chips from a new dataset.
         Preserves prior non-neutral selections (floor and Global) for packs
         that still exist. `banned_by_floor` gives a floor its own banned
         list (its difficulty's), else `banned` applies to every floor."""
+        from .giftart import pack_icon
         prior = self.state() if self._chips else {}
         prior_global = self.global_state() if self._global_chips else {}
         banned_set = set(banned)
@@ -2253,11 +2224,12 @@ class FloorPacks(QWidget):
                 if pack not in seen:
                     seen.add(pack)
                     union.append(pack)
-        global_page = QWidget(self._stack)
-        gflow = FlowLayout(global_page, spacing=Sizing.SPACE_XS)
+        global_page = StackPage(self._stack)
+        gflow = FlowLayout(global_page, spacing=Sizing.SPACE_SM)
         self._global_chips = {}
         for pack in union:
-            chip = TriChip(humanize_pack(pack), global_page)
+            chip = PackTile(humanize_pack(pack), global_page,
+                            icon=pack_icon(pack), width=self._art_w)
             chip._raw = pack
             if pack in prior_global:
                 chip.set_state(prior_global[pack])
@@ -2269,11 +2241,12 @@ class FloorPacks(QWidget):
         # Floor pages (stack indices 1..N).
         self._chips = {}
         for floor in self._floor_order:
-            page = QWidget(self._stack)
-            flow = FlowLayout(page, spacing=Sizing.SPACE_XS)
+            page = StackPage(self._stack)
+            flow = FlowLayout(page, spacing=Sizing.SPACE_SM)
             self._chips[floor] = {}
             for pack in floor_data[floor]:
-                chip = TriChip(humanize_pack(pack), page)
+                chip = PackTile(humanize_pack(pack), page, icon=pack_icon(pack),
+                                width=self._art_w)
                 chip._raw = pack  # stash the original key for state()
                 # Restore prior selection, else default banned -> avoid.
                 if floor in prior and pack in prior[floor]:
@@ -2286,22 +2259,29 @@ class FloorPacks(QWidget):
             self._stack.addWidget(page)
 
         # Land on the Global tab.
-        self._stack.setCurrentIndex(0)
-        self._update_legend(is_global=True)
+        self._show_index(0)
 
     def _on_tab(self, label: str):
         # "Global" (no floor number) is the first tab at stack index 0.
         digits = "".join(ch for ch in label if ch.isdigit())
         if not digits:
-            self._stack.setCurrentIndex(0)
-            self._update_legend(is_global=True)
+            self._show_index(0)
             self._apply_filter()
             return
         floor = int(digits)
         if floor in self._floor_order:
-            self._stack.setCurrentIndex(1 + self._floor_order.index(floor))
-            self._update_legend(is_global=False)
+            self._show_index(1 + self._floor_order.index(floor))
             self._apply_filter()
+
+    def _show_index(self, idx: int):
+        """Only the shown page counts for the stack's height: the Global
+        page lists every pack and would pad each floor to its height."""
+        for i in range(self._stack.count()):
+            pol = (QSizePolicy.Policy.Preferred if i == idx
+                   else QSizePolicy.Policy.Ignored)
+            self._stack.widget(i).setSizePolicy(pol, pol)
+        self._stack.setCurrentIndex(idx)
+        self._stack.updateGeometry()
 
     def state(self) -> dict:
         # Per-floor picks only; the Global layer is returned by global_state().
@@ -2319,6 +2299,27 @@ class FloorPacks(QWidget):
         return {pack: chip.state()
                 for pack, chip in self._global_chips.items()
                 if chip.state() != "neutral"}
+
+    def reset(self):
+        """Every pick back to neutral, floor and Global, so a loaded setup
+        starts from nothing rather than over the last one's picks."""
+        for chips in [self._global_chips] + list(self._chips.values()):
+            for chip in chips.values():
+                if chip.state() != "neutral":
+                    chip.set_state("neutral")
+
+    def offered(self, saved: dict) -> dict:
+        """The part of a saved state() dict this picker can show: a pack a
+        floor's pool does not hold is saved, but never on a tile."""
+        out = {}
+        for floor_key, packs in (saved or {}).items():
+            try:
+                chips = self._chips.get(int(floor_key), {})
+            except (TypeError, ValueError):
+                continue
+            if isinstance(packs, dict):
+                out[floor_key] = {p: st for p, st in packs.items() if p in chips}
+        return out
 
     def apply_global_state(self, saved: dict):
         """Restore the Global layer from a saved global_state() dict."""

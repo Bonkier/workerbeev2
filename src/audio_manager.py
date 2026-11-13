@@ -2,16 +2,7 @@ import os
 import time
 import logging
 import threading
-import subprocess
-import sys
 
-try:
-    import shared_vars
-except ImportError:
-    # v1 sets up a runtime `shared_vars` namespace; the v2 UI does not.
-    # Audio only reads `disable_audio` from it (via getattr with a
-    # default), so a missing module just means "audio enabled".
-    shared_vars = None
 
 logger = logging.getLogger("audio_manager")
 
@@ -32,11 +23,6 @@ class AudioManager:
     def initialize(self, base_path):
         if self.initialized:
             return
-        
-        if getattr(shared_vars, 'disable_audio', False):
-            logger.info("Audio is disabled by user setting.")
-            self.initialized = False
-            return
 
         global AUDIO_AVAILABLE, pygame
         if not AUDIO_AVAILABLE:
@@ -47,19 +33,6 @@ class AudioManager:
                 pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=2048)
                 pygame.init()
                 AUDIO_AVAILABLE = True
-            except ImportError:
-                try:
-                    logger.info("Pygame not found. Attempting to install...")
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", "pygame"])
-                    import pygame as pg
-                    pygame = pg
-                    pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=2048)
-                    pygame.init()
-                    AUDIO_AVAILABLE = True
-                    logger.info("Pygame installed and initialized successfully.")
-                except Exception as e:
-                    AUDIO_AVAILABLE = False
-                    logger.warning(f"Failed to install/initialize pygame: {e}")
             except Exception as e:
                 AUDIO_AVAILABLE = False
                 logger.error(f"Failed to initialize audio: {e}")
@@ -97,9 +70,6 @@ class AudioManager:
             logger.error(f"Error loading sound {path}: {e}")
 
     def play_sound(self, name, volume, force=False):
-        if getattr(shared_vars, 'disable_audio', False):
-            return
-
         if not AUDIO_AVAILABLE or not self.initialized or not pygame:
             return
 

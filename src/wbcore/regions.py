@@ -74,10 +74,4 @@ def as_region(value: _RegionLike) -> Region:
     raise TypeError(f"Unsupported region type: {type(value).__name__}")
 
 
-def reset_cache() -> None:
-    """Drop the cached REGIONS dict. Tests use this to force a rebuild."""
-    global _REGIONS_CACHE
-    _REGIONS_CACHE = None
-
-
-__all__ = ["REGIONS", "as_region", "reset_cache"]
+__all__ = ["REGIONS", "as_region"]

@@ -19,12 +19,6 @@ def _config_dir() -> str:
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config")
 
 
-def _bundled_config_path(filename: str):
-    """Read-only bundled defaults for first run; None outside a frozen build."""
-    mei = getattr(sys, "_MEIPASS", None)
-    return os.path.join(mei, "config", filename) if mei else None
-
-
 _CONFIG_DIR = _config_dir()
 _CONFIG_PATH = os.path.join(_CONFIG_DIR, "v2_ui.json")
 _log.info("v2 settings dir: %s", _CONFIG_DIR)
@@ -47,10 +41,6 @@ def _read_json_dict(path):
 
 def load_settings() -> dict[str, Any]:
     data = _read_json_dict(_CONFIG_PATH)
-    if data is not None:
-        return data
-    # First run: fall back to bundled defaults.
-    data = _read_json_dict(_bundled_config_path("v2_ui.json"))
     return data if data is not None else {}
 
 
@@ -80,20 +70,6 @@ def save_section(name: str, data: dict[str, Any]) -> None:
     save_settings({name: data})
 
 
-def get_splash_size(default_w: int, default_h: int) -> tuple[int, int]:
-    """Persisted splash size, or the supplied defaults."""
-    s = load_settings()
-    try:
-        return int(s.get("splash_width", default_w)), \
-            int(s.get("splash_height", default_h))
-    except (TypeError, ValueError):
-        return default_w, default_h
-
-
-def set_splash_size(w: int, h: int) -> None:
-    save_settings({"splash_width": int(w), "splash_height": int(h)})
-
-
 def replace_all_settings(data: dict[str, Any]) -> None:
     """Overwrite the active settings file. Pages must re-read afterwards."""
     if not isinstance(data, dict):
@@ -116,9 +92,6 @@ _EXPORT_TAG = "workerbee_config_v2"   # single-file export format marker
 
 def _load_configs() -> dict[str, Any]:
     data = _read_json_dict(_CONFIGS_PATH)
-    if data is not None:
-        return data
-    data = _read_json_dict(_bundled_config_path("v2_configs.json"))
     return data if data is not None else {}
 
 

@@ -67,7 +67,7 @@ def _norm(s: str) -> str:
 
 def _resolve(index: dict, display: str) -> str:
     """Exact normalised hit, else a unique entry whose name ENDS with ours
-    ("E-Type Dimensional Dagger" for "Dimensional Dagger")."""
+    (a catalog name that drops a prefix the wiki keeps)."""
     key = _norm(display)
     if key in index:
         return index[key]

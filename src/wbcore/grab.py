@@ -82,7 +82,6 @@ def find_trial(trials_image):
         for c in [1, 1.05]:
             res = LocateRGB.locate_all(PTH[f"trial_{name}"], trials_image, method=cv2.TM_SQDIFF_NORMED, comp=c, conf=0.87, threshold=100)
             if res:
-                print(name)
                 return res
     return []
 
@@ -145,7 +144,6 @@ def get_gift_hp_free(image, owned_x, trials_image, labels_image):
 def get_trial(image, trials_image):
     '''Pick the best mounting trial; return (image, trials_image) with picks blacked out.'''
     res = find_trial(trials_image)
-    print(res)
     if len(res) == 1:
         point = gui.center(res[0])
         win_click(point[0], 600, tsize=(150, 170))
@@ -199,7 +197,6 @@ def grab_EGO():
         return False
     now_click.button("Cancel")
     time.sleep(0.8)
-    print("grab ego check")
     owned_x = [p[0] + p[2] for p in LocateRGB.locate_all(PTH["Owned"], region=REG["Owned"])]
     image = screenshot(region=REG["EGO"])
 
@@ -242,74 +239,9 @@ def get_card(card):
         Action("Confirm.1", ver="connecting")
     ])
 
-def thrill_f3_forfeit():
-    """Forfeit a THRILL run on F3 via the settings cog. The run-failed screen
-    then hands off to main_loop's defeat path + dungeon_fail() for MD rewards.
-    """
-    logging.info("THRILL: F3 reward screen - forfeiting instead of "
-                 "picking a reward card.")
-    # Explicit region tuple: settingcog has no REG entry.
-    if not now_click.button("settingcog", (1700, 0, 220, 130)):
-        logging.warning("THRILL: F3 forfeit - settingcog not found "
-                        "on screen.")
-        return False
-    time.sleep(0.7)
-    # forfeit + ConfirmInvert chained (mirrors move.py's all-dead forfeit).
-    # Enter alone did not confirm the dialog; connection() then waits for the
-    # post-confirm loading animation.
-    try:
-        chain_actions(click, [
-            Action("forfeit"),
-            Action("ConfirmInvert", ver="connecting"),
-        ])
-        connection()
-    except Exception as exc:
-        logging.warning("THRILL: F3 forfeit - confirm sequence "
-                        "failed: %s", exc)
-        return False
-    # Beat past the connection screen so the next main_loop tick sees the
-    # run-failed state and dungeon_fail claims MD rewards.
-    time.sleep(1)
-    return True
-
-
-def saikai_leave_forfeit():
-    """SAIKAI "Go to floor 10" toggle: leave the Infinite MD via the settings cog
-    once the target floor is reached, then let dungeon_fail() claim the accrued
-    MD rewards (it keys off p.SAIKAI_LEAVE_CLAIM). Mirrors the THRILL F3 forfeit,
-    which hands off to the same run-failed -> claim path."""
-    logging.info("SAIKAI: floor %d reached (stop=%d) - leaving to claim rewards.",
-                 p.LVL, getattr(p, "SAIKAI_STOP_FLOOR", 0))
-    p.SAIKAI_LEAVE_CLAIM = True
-    if not now_click.button("settingcog", (1700, 0, 220, 130)):
-        logging.warning("SAIKAI: floor-leave - settingcog not found on screen.")
-        return False
-    time.sleep(0.7)
-    try:
-        chain_actions(click, [
-            Action("forfeit"),
-            Action("ConfirmInvert", ver="connecting"),
-        ])
-        connection()
-    except Exception as exc:
-        logging.warning("SAIKAI: floor-leave - confirm sequence failed: %s", exc)
-        return False
-    time.sleep(1)
-    return True
-
-
 def grab_card():
     '''Pick the reward card per priority; True if one was selected.'''
     if not now.button("encounterreward"): return False
-
-    # THRILL F3 ends the run: forfeit instead of taking a card.
-    if p.RUN_SCRIPT == "thrill" and p.LVL == 3:
-        return thrill_f3_forfeit()
-    # SAIKAI "Go to floor 10": leave the Infinite MD once the target floor is
-    # reached, instead of taking another reward card.
-    _stop = getattr(p, "SAIKAI_STOP_FLOOR", 0)
-    if p.RUN_SCRIPT == "saikai_ryoshu" and _stop and p.LVL >= _stop:
-        return saikai_leave_forfeit()
 
     win_moveTo(1000, 900)
     now_click.button("Cancel") # in case of misclick

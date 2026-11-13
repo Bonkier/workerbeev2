@@ -53,14 +53,6 @@ class Finding:
     suggested_call: str
 
 
-def _color_mode_for_class(name: str) -> str:
-    return {
-        "LocateRGB": "ColorMode.RGB",
-        "LocateGray": "ColorMode.GRAY",
-        "LocateEdges": "ColorMode.EDGES",
-    }.get(name, "ColorMode.RGB")
-
-
 def _suggest_locate_call(class_name: str, method: str) -> str:
     """Legacy Locate*.method() -> new-API suggestion."""
     if method == "check":

@@ -6,7 +6,8 @@ name printed inside them at varying sizes, so they cannot be used as icons
 beside a label. The wiki publishes each pack as "<Name>_Theme_Pack.png", with
 an "_MD5_" variant where the pack was reworked for Mirror Dungeon 5.
 
-Writes ImageAssets/packart/<pack key>.png, keyed by the key the app uses.
+Writes ImageAssets/packart/<pack key>.jpg, 200 px wide, keyed by the key
+the app uses.
 """
 from __future__ import annotations
 
@@ -16,12 +17,16 @@ import sys
 import time
 import urllib.parse
 
+import cv2
+import numpy as np
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fetch_gift_art import WIKI, _get   # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "ImageAssets", "packart")
+WIDTH = 200
 
 # Pack keys whose wiki title differs by more than punctuation.
 ALIASES = {
@@ -86,7 +91,7 @@ def main() -> int:
     got = skipped = 0
     misses = []
     for key in PACKS:
-        dest = os.path.join(OUT, key + ".png")
+        dest = os.path.join(OUT, key + ".jpg")
         if os.path.exists(dest) and os.path.getsize(dest) > 0:
             skipped += 1
             continue
@@ -105,8 +110,13 @@ def main() -> int:
             print(f"  ! {key}: {exc}")
             misses.append((key, label))
             continue
-        with open(dest, "wb") as fh:
-            fh.write(blob)
+        img = cv2.imdecode(np.frombuffer(blob, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            misses.append((key, label))
+            continue
+        h = round(img.shape[0] * WIDTH / img.shape[1])
+        img = cv2.resize(img, (WIDTH, h), interpolation=cv2.INTER_AREA)
+        cv2.imwrite(dest, img, [cv2.IMWRITE_JPEG_QUALITY, 92])
         got += 1
         time.sleep(0.05)
 

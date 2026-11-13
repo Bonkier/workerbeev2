@@ -46,7 +46,7 @@ def test_an_open_gift_menu_is_searched_from_where_it_is(monkeypatch):
     searched = []
     monkeypatch.setattr(B, "gift_search", lambda targets: searched.append(list(targets)) or 1)
     monkeypatch.setattr(p, "RUN_SCRIPT", "saikai_ryoshu")
-    monkeypatch.setattr(p, "GIFT_SEARCH", [])
+    monkeypatch.setattr(p, "GIFT_SEARCH", ["Spiderweb Entangled in Red"])
     tail = _start_from(monkeypatch, "startGift")
     assert len(tail) == 2                                     # leave the menu, wait out loading
     assert searched == [["Spiderweb Entangled in Red"]]

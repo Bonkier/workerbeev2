@@ -28,6 +28,23 @@ ALIASES = {
         "md", "md bot", "md grind", "auto md", "farm md", "bp farm",
         "md farm", "battle pass xp", "mdh", "mdn", "weekly farm",
     ),
+    "mirror_dungeon:basic": (
+        "basic view", "basic mode", "simple view", "simple mode",
+        "easy mode", "ez mode", "presets view", "bios",
+    ),
+    "mirror_dungeon:advanced": (
+        "advanced view", "advanced mode", "expert view", "all settings",
+        "full settings", "every setting",
+    ),
+    "mirror_dungeon:presets": (
+        "preset", "ready made setup", "premade config",
+        "hollow preset", "saikai preset", "recommended setup",
+        "quick setup", "owner configs",
+    ),
+    "mirror_dungeon:your configs": (
+        "my configs", "saved configs", "saved setups", "my setups",
+        "load config", "profiles", "config list",
+    ),
     "mirror_dungeon:start mirror dungeon": (
         "run md", "begin run", "launch md", "play md", "go button", "go md",
         "begin md", "launch bot", "bot not starting",
@@ -40,9 +57,15 @@ ALIASES = {
         "run loadout", "loadout", "starting setup", "md loadout",
         "reward order", "starlight buffs",
     ),
-    "mirror_dungeon:packs": (
+    "mirror_dungeon:floor packs market": (
         "floor themes", "theme packs", "floor choice", "dungeon themes",
         "stage themes", "themes", "theme select", "wrong floor picked",
+        "packs", "shop", "store", "market", "fusion", "crafting",
+        "market fuse", "shop options", "floor settings", "per floor",
+    ),
+    "mirror_dungeon:all floors": (
+        "global", "every floor", "run wide", "global floor settings",
+        "all floor settings", "default floor settings", "whole run",
     ),
     "mirror_dungeon:ego gift search": (
         "wanted gifts", "relics", "artifacts", "item list", "find items",
@@ -50,10 +73,10 @@ ALIASES = {
         "gift gallery", "target gifts", "find gift", "tag gifts",
         "gift priority",
     ),
-    "mirror_dungeon:market fuse": (
-        "shop", "fusion", "store", "crafting", "merge gifts", "combine gifts",
-        "t4 craft", "gift tags", "keep gifts", "sell gifts", "buy priority",
-        "fusion recipes", "shop options", "gift crafting",
+    "mirror_dungeon:market gifts": (
+        "merge gifts", "combine gifts", "t4 craft", "gift tags", "keep gifts",
+        "sell gifts", "buy priority", "fusion recipes", "gift crafting",
+        "market tags", "fuse targets", "market fuse",
     ),
     "mirror_dungeon:market buying": (
         "shop purchases", "store purchases", "shop reroll", "shopping",
@@ -97,11 +120,18 @@ ALIASES = {
         "floor theme order", "avoid themes", "banned themes", "priority list",
         "theme blacklist", "blacklist", "bad floors", "avoid floor",
         "prefer floor", "floor priority", "wrong floor picked",
+        "pack grid", "pack tiles", "pack pictures", "pack art",
     ),
     "mirror_dungeon:starting grace": (
         "starlight", "opening buffs", "starlight buffs", "star buffs",
         "boons", "blessings", "run buffs", "md buffs", "star shower",
-        "start buffs", "pre run bonuses",
+        "start buffs", "pre run bonuses", "sisyphean star", "starter buffs",
+        "grace cost", "enhance all", "select all graces", "grace plus",
+    ),
+    "mirror_dungeon:starting gifts": (
+        "starter gifts", "starter ego gifts", "starting ego gift",
+        "archetype gifts", "archetype screen", "first gift", "opening gift",
+        "keyword gifts", "which starter gift", "starter pick",
     ),
     "mirror_dungeon:card priority": (
         "reward order", "reward preference", "reward cards", "floor rewards",
@@ -148,18 +178,9 @@ ALIASES = {
         "preset strategy", "presets", "scripted", "scripted md",
         "special modes", "challenge mode",
     ),
-    "mirror_dungeon:f3 hard": (
-        "floor 3 switch", "mixed difficulty", "third floor", "switch mid run",
-        "normal then difficult", "half mdh", "normal to hard",
-        "switch after f3", "half normal",
-    ),
     "mirror_dungeon:saikai ryoshu": (
         "hos", "house of spiders", "solo run", "spiderweb", "spider team",
         "ryo", "red eyes", "solo carry", "spider house", "solo strategy",
-    ),
-    "mirror_dungeon:thrill": (
-        "evade ids", "evade squad", "dodge run", "evade run", "evade team",
-        "f3 forfeit", "forfeit run", "rupture run", "wip mode",
     ),
     "mirror_dungeon:go to custom run settings": (
         "scripted squad setup", "custom run teams", "scripted run setup",
@@ -211,38 +232,44 @@ ALIASES = {
         "give up rewards", "partial loot", "lost run loot", "give up payout",
         "wasting modules", "failed run payout",
     ),
-    "mirror_dungeon:shop and ego": (
+    "mirror_dungeon:shop steps": (
         "rest stop", "gift handling", "store options", "rest stop options",
         "gift toggles", "market options", "gift options", "store toggles",
+        "shop and ego", "shop skips", "skip toggles",
     ),
-    "mirror_dungeon:skip rest shop": (
+    "mirror_dungeon:visit the rest shop": (
         "rest stop", "no shopping", "ignore store", "bypass market",
         "ignore market", "store", "market", "rest node", "save time",
-        "faster runs", "leave store", "stuck in store",
+        "faster runs", "leave store", "stuck in store", "skip rest shop",
+        "skip shop", "rest shop",
     ),
-    "mirror_dungeon:skip ego check": (
+    "mirror_dungeon:check owned gifts": (
         "gift review", "owned gifts", "gift inventory", "inventory review",
-        "inventory scan", "stuck on gifts",
+        "inventory scan", "stuck on gifts", "skip ego check", "ego check",
+        "gift check",
     ),
-    "mirror_dungeon:skip ego fusion": (
+    "mirror_dungeon:fuse gifts": (
         "no fusing", "disable fuse", "no combining", "turn off crafting",
         "stop merging gifts", "fuse", "fusing", "t4 gifts", "combine gifts",
-        "gift combining", "tier upgrade", "stop combining",
+        "gift combining", "tier upgrade", "stop combining", "skip ego fusion",
+        "ego fusion",
     ),
-    "mirror_dungeon:skip ego enhancing": (
+    "mirror_dungeon:enhance gifts": (
         "upgrade gifts", "gift upgrade", "no upgrades", "level up gifts",
         "disable upgrading", "upgrading", "plus gifts", "enhancement",
-        "gift plus", "wasting cost",
+        "gift plus", "wasting cost", "skip ego enhancing", "ego enhancing",
+        "uptie", "upties",
     ),
-    "mirror_dungeon:skip ego buying": (
+    "mirror_dungeon:buy gifts": (
         "no purchases", "dont purchase gifts", "save cost", "never purchase",
-        "disable purchasing", "buy gifts", "gift shopping", "purchase gifts",
-        "stop spending",
+        "disable purchasing", "gift shopping", "purchase gifts",
+        "stop spending", "skip ego buying", "ego buying",
     ),
-    "mirror_dungeon:skip sinner healing": (
+    "mirror_dungeon:heal sinners": (
         "restore hp", "hp recovery", "no heal", "heal squad", "disable heal",
         "revive", "heal all", "sanity heal", "low hp", "rest heal",
-        "sinners dying", "recover health",
+        "sinners dying", "recover health", "skip sinner healing",
+        "sinner healing",
     ),
     "mirror_dungeon:wishmaking": (
         "wish", "make a wish", "wish making", "wish gift",
@@ -265,6 +292,11 @@ ALIASES = {
         "upgrade skills", "s3 swap", "replace s1", "skill slots",
         "skill exchange", "s1 s2 s3", "skill upgrade shop",
         "wrong skill replaced",
+    ),
+    "mirror_dungeon:skill swap floors": (
+        "swap floors", "skill swap floors", "floors to swap", "swap on floor",
+        "which floors swap skills", "no swaps on floor",
+        "skill offers per floor",
     ),
     "luxcavation:luxcavation": (
         "lux", "luxcav", "daily farming", "xp and thread", "material farming",
@@ -475,9 +507,7 @@ ALIASES = {
         "deployment order", "lineup", "identities", "pick order",
         "squad order", "characters", "team order", "party members",
         "pick characters", "squad selection", "ids", "who to bring",
-        "yi sang faust", "character selection",
-    ),
-    "settings:sinner swap exclusion": (
+        "yi sang faust", "character selection", "swap exclusion",
         "keep in squad", "never replace", "swap blacklist", "dont swap",
         "locked characters", "protect characters", "locked ids", "never swap",
         "do not swap", "protect ids", "rest bonus exclude", "leave alone",
@@ -489,27 +519,17 @@ ALIASES = {
         "45 sp sinner", "greatly heal",
     ),
     "settings:custom run teams": (
-        "hos squad", "ryoshu squad", "custom run squad", "house of spiders",
-        "evade squad", "scripted run lineup", "hos lineup", "rupture squad",
-        "scripted squads", "scripted run squad",
-    ),
-    "settings:saikai": (
         "hos", "ryoshu", "spider squad", "house of spiders", "hos settings",
-        "hos squad order", "ryoshu run setup",
-    ),
-    "settings:thrill": (
-        "evade lineup", "evade squad order", "evade ids", "evade squad",
-        "rupture squad",
+        "hos squad order", "ryoshu run setup", "hos squad", "ryoshu squad",
+        "hos lineup", "scripted run lineup", "custom run squad",
+        "faust solo", "hollow settings", "le trou", "hollow squad",
+        "fallback squad", "hollow run setup", "miniboss squad",
+        "hollow lineup", "saikai settings", "evade squad", "scripted squads",
     ),
     "settings:team keyword": (
         "poise", "rupture", "squad tag", "bind squad", "squad name",
         "affinity tag", "in game squad", "status", "affinity", "squad label",
         "status effect", "saved squad name", "status type", "affinity name",
-    ),
-    "settings:go to floor 10": (
-        "infinite mirror", "longer run", "infinite dungeon", "ten floors",
-        "extended run", "10f", "saikai 10f", "leave at 10", "keep going",
-        "past floor 5",
     ),
     "settings:choose skill 3 only": (
         "force s3", "s3 only", "s3 spam", "always s3", "third skill",
@@ -553,13 +573,6 @@ ALIASES = {
         "sensitivity", "slow cursor", "cursor speed", "faster cursor",
         "pointer speed", "movement speed", "move faster", "slow movement",
         "cursor too fast", "cursor too slow", "pointer velocity",
-    ),
-    "settings:mouse memory": (
-        "muscle memory", "cursor prediction", "pre move", "pre move cursor",
-        "remember buttons", "predictive cursor", "learn button positions",
-        "predict clicks", "premove cursor", "learned positions",
-        "cursor wanders", "predict buttons", "cursor moves early",
-        "hovers before click",
     ),
     "settings:advanced": (
         "expert options", "power user", "tweaks", "performance", "misc",
@@ -675,12 +688,7 @@ ALIASES = {
     ),
     "settings:application": (
         "app options", "updates", "general app", "program options", "misc",
-        "app settings", "helper text", "general options",
-    ),
-    "settings:show descriptions": (
-        "hints", "tooltips", "gray text", "compact ui", "explanations",
-        "helper text", "hide hints", "dense ui", "less text",
-        "hide helper text",
+        "app settings", "general options",
     ),
     "settings:check for updates on launch": (
         "auto update", "new version", "startup version check",
@@ -709,7 +717,7 @@ ALIASES = {
         "faq", "guide", "manual", "instructions", "tutorial", "documentation",
         "how to", "support", "how to use", "docs",
     ),
-    "help:general usage": (
+    "help:getting started": (
         "basics", "quick start", "getting started", "first time",
         "beginner guide", "how to use", "how to start", "first time setup",
         "tutorial",
@@ -727,10 +735,39 @@ ALIASES = {
         "task queue help", "timer guide", "schedule how to",
         "timed runs guide",
     ),
-    "help:settings and profiles": (
-        "mouse offsets", "config guide", "click offset", "saving setups",
-        "monitor choice help", "presets guide", "saving configs",
-        "offset guide", "monitor guide", "configuration guide",
+    "help:settings": (
+        "config guide", "saving setups", "monitor choice help",
+        "presets guide", "saving configs", "monitor guide",
+        "configuration guide", "settings guide", "settings help",
+        "what does each setting do",
+    ),
+    "help:dashboard": (
+        "dashboard guide", "home screen help", "what the tiles mean",
+    ),
+    "help:custom runs": (
+        "saikai guide", "hollow guide", "custom run help",
+        "ryoshu run", "faust solo", "scripted run", "has not been configured",
+    ),
+    "help:statistics": (
+        "stats guide", "run history help", "csv help", "fastest packs",
+        "how stats work",
+    ),
+    "help:logs": (
+        "log file", "where is the log", "game log", "debug log",
+        "log level", "verbose log",
+    ),
+    "help:keyboard shortcuts": (
+        "hotkey list", "default hotkeys", "what does f9 do", "f9", "f2",
+        "ctrl q", "key list",
+    ),
+    "help:updates": (
+        "how to update", "auto update", "update guide", "update check",
+        "updating",
+    ),
+    "help:where your data lives": (
+        "config location", "appdata", "where are configs", "data folder",
+        "local appdata", "where is my config", "config folder",
+        "debug folder", "install folder",
     ),
     "help:troubleshooting": (
         "not working", "common issues", "fix problems", "wrong resolution",

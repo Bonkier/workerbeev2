@@ -6,9 +6,9 @@ from typing import Any, Optional
 
 import numpy as np
 
-from .input import InputBackend, Mouse
+from .input import Mouse
 from .regionspec import ScreenRect, WindowGeometry
-from .vision import CaptureFn, Finder, TelemetryCallback, TemplateLoader
+from .vision import Finder, TelemetryCallback, TemplateLoader
 from .verifier import Verifier
 
 

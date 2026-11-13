@@ -2,7 +2,6 @@ import ctypes
 from ctypes import wintypes
 import logging
 import time
-import math
 import random
 import threading
 
@@ -200,19 +199,6 @@ def screenshot_gdi(imageFilename=None, region=None, allScreens=False):
 
 user32 = ctypes.windll.user32
 
-def linear(t):
-    return t
-
-def easeInOutQuad(t):
-    return 2*t*t if t < 0.5 else -1 + (4 - 2*t)*t
-
-def easeOutElastic(t):
-    c4 = (2 * math.pi) / 3
-    if t == 0:
-        return 0
-    elif t == 1:
-        return 1
-    return 2**(-10 * t) * math.sin((t * 10 - 0.75) * c4) + 1
 
 def get_screen_size():
     return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
@@ -255,25 +241,6 @@ def get_virtual_screen_bounds():
     width = user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
     height = user32.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
     return x, y, x + width, y + height
-
-
-def clip_region_to_virtual(region):
-    x, y, w, h = region
-    min_x, min_y, max_x, max_y = p.SCREEN
-
-    x2 = max(x, min_x)
-    y2 = max(y, min_y)
-
-    x_end = min(x + w, max_x)
-    y_end = min(y + h, max_y)
-
-    w2 = x_end - x2
-    h2 = y_end - y2
-
-    if w2 <= 0 or h2 <= 0:
-        return None
-
-    return x2, y2, w2, h2
 
 
 def _human_delay(min_delay=0.01, max_delay=0.03):
@@ -324,14 +291,11 @@ def mouseUp(button='left', delay=0.16, jitter=0.05):
 
 
 class WindowError(Exception): pass
-class FailSafeException(Exception): pass
 class ImageNotFoundException(Exception): pass
 class PauseException(Exception):
     def __init__(self, name):
         super().__init__(name)
         self.window = name
-
-FAILSAFE_ENABLED = True
 
 
 def _apply_macro_rhythm(profile=None):
@@ -346,10 +310,6 @@ def _apply_macro_rhythm(profile=None):
         time.sleep(pause)
 
     _fail_safe_check()
-
-def set_failsafe(state=True):
-    global FAILSAFE_ENABLED
-    FAILSAFE_ENABLED = state
 
 
 _held_buttons = set()
@@ -369,9 +329,6 @@ def _release_held():
 
 
 def _fail_safe_check():
-    if not FAILSAFE_ENABLED:
-        return
-
     # Check stop_event every move so Stop is responsive, not deferred
     # to the next focus-loss pause.
     se = getattr(p, "stop_event", None)
@@ -638,4 +595,3 @@ def set_window():
         _advised_window_size = (client_width, client_height)
         p.WARNING(f"Game window ({client_width} x {client_height}) is not 16:9\nIt is recommended to set the game to either\n1920 x 1080 or 1280 x 720")
 
-    print("WINDOW:", p.WINDOW)

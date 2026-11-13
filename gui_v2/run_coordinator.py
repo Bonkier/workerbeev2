@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 
-from PySide6.QtCore import QObject, Signal, Qt
+from PySide6.QtCore import QCoreApplication, QObject, Signal
 
 from .automation_controller import AutomationController
 from .dialogs import show_advisory, show_notice
@@ -22,6 +22,29 @@ from .resolution_help import show_resolution_help
 from .overlay import RunOverlay
 from .run_config import build_md_run, build_lux_run
 from .settings import load_section
+
+_HOOK_HANDLES: list = []
+
+
+def _remember_hook_handle():
+    """Keep the handle of the hotkey library's hook. The library registers
+    its removal with the wrong argument, so the hook would outlive the
+    interpreter and the next key pressed would bring the process down."""
+    try:
+        from keyboard import _winkeyboard as wk
+    except Exception:
+        return
+    real = wk.SetWindowsHookEx
+    if getattr(real, "_workerbee", False):
+        return
+
+    def remembered(*args):
+        handle = real(*args)
+        _HOOK_HANDLES.append(handle)
+        return handle
+
+    remembered._workerbee = True
+    wk.SetWindowsHookEx = remembered
 
 # Global hotkeys are read from the user's saved Shortcuts (Settings) at
 # startup; see _install_hotkeys. Requires the `keyboard` package; without it,
@@ -112,6 +135,9 @@ class RunCoordinator(QObject):
         self._hk_stop.connect(self._stop)
         self._hk_pause.connect(self._toggle_pause)
         self._install_hotkeys()
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._shutdown_hotkeys)
         self._prewarm_audio()
 
         # Run overlay (HUD + debug visualizers).
@@ -131,7 +157,6 @@ class RunCoordinator(QObject):
         'app_settings'), not the per-run MD/Lux pages."""
         app = load_section("app_settings") or {}
         settings["mouse_speed"] = int(app.get("mouse_speed", 100) or 100)
-        settings["mouse_memory"] = bool(app.get("mouse_memory", True))
         settings["dxgi_capture"] = bool(app.get("dxgi_capture", True))
         # The capture path is chosen before the worker's first capture.
         from wbcore.utils import params as p
@@ -146,13 +171,13 @@ class RunCoordinator(QObject):
             (app.get("advanced") or {}).get("debug_matches", False))
 
     def _md_state(self) -> dict:
-        """MD page state with the SAIKAI/THRILL team config (now edited in the
+        """MD page state with the SAIKAI/Hollow team config (edited in the
         Settings tab) merged in, so run_config sees it where it expects."""
         md = self._md.state()
         if self._settings is not None and hasattr(self._settings,
-                                                   "saikai_thrill_config"):
+                                                   "custom_teams_config"):
             try:
-                md.update(self._settings.saikai_thrill_config())
+                md.update(self._settings.custom_teams_config())
             except Exception:
                 pass
         return md
@@ -163,7 +188,8 @@ class RunCoordinator(QObject):
         try:
             sinners = self._settings.sinner_selection() if self._settings else {}
             excl = self._settings.sinner_exclusion() if self._settings else {}
-            count, teams, settings, hard = build_md_run(self._md_state(), sinners, excl)
+            md = self._md_state()
+            count, teams, settings, hard = build_md_run(md, sinners, excl)
         except ValueError as exc:
             self._on_warning(str(exc))
             return
@@ -171,6 +197,10 @@ class RunCoordinator(QObject):
             self._on_warning(f"Could not build run: {exc}")
             return
         self._inject_global_settings(settings)
+        # The custom run's name goes on the run record; a standard run is
+        # known by its team.
+        self._run_label = (str(md.get("custom_strategy") or "")
+                           if md.get("custom_run") else "")
         logging.info("Mirror Dungeon run requested (%s run(s), %s)",
                      count, "hard" if hard else "normal")
         self._controller.start_run(teams=teams, settings=settings, hard=hard,
@@ -187,6 +217,7 @@ class RunCoordinator(QObject):
             self._on_warning(f"Could not build Lux run: {exc}")
             return
         self._inject_global_settings(settings)
+        self._run_label = ""
         logging.info("Luxcavation %s run requested", mode)
         self._controller.start_run(teams=teams, settings=settings, hard=hard,
                                    count=0, count_exp=ce, count_thd=ct)
@@ -227,7 +258,7 @@ class RunCoordinator(QObject):
         first. Pressing the hotkey again, or Stop, cancels it."""
         if self._controller.is_running() or self._countdown_timer.isActive():
             return
-        if kind == "md" and not self._hollow_fallback_ok():
+        if kind == "md" and not self._custom_run_ok():
             return
         summary = self._pending_summary(kind) if kind else None
         if kind and summary is None:
@@ -267,6 +298,50 @@ class RunCoordinator(QObject):
             return None
         return summary
 
+    def _custom_run_ok(self) -> bool:
+        """Before a custom run arms: a SAIKAI or Hollow card never touched
+        is asked about once (a Yes is remembered), then a Hollow run set up
+        without a fallback squad is asked about every time. True to go on."""
+        answer = self._custom_team_prompt()
+        if answer == "no":
+            return False
+        if answer == "yes":
+            return True                 # the defaults cover the fallback squad
+        return self._hollow_fallback_ok()
+
+    def _custom_team_prompt(self):
+        """None when the run's card is set up (or no custom run is picked),
+        else the user's "yes" or "no" to starting without it."""
+        try:
+            md = self._md_state()
+        except Exception:
+            return None
+        from .run_config import HOLLOW_LABEL, SAIKAI_LABEL
+        if not md.get("custom_run"):
+            return None
+        run = {SAIKAI_LABEL: "SAIKAI", HOLLOW_LABEL: "Hollow"}.get(
+            md.get("custom_strategy"))
+        configured = getattr(self._settings, "custom_team_configured", None)
+        if run is None or not callable(configured) or configured(run):
+            return None
+        title = run.upper()
+        from .dialogs import ask_choice
+        choice = ask_choice(
+            self._ui,
+            "%s has not been configured. Default settings will be used.\n\n"
+            "Continue anyway?" % title,
+            title=title, primary="Yes", secondary="No")
+        if choice == "primary":
+            ack = getattr(self._settings, "acknowledge_custom_team", None)
+            if callable(ack):
+                ack(run)
+            return "yes"
+        if choice == "secondary":
+            reveal = getattr(self._ui, "_reveal_team_settings", None)
+            if callable(reveal):
+                reveal(run)
+        return "no"
+
     def _hollow_fallback_ok(self) -> bool:
         """Hollow fields its fallback squad on the miniboss node; a run set
         up without one is asked about first. True to go on."""
@@ -291,7 +366,7 @@ class RunCoordinator(QObject):
         if choice == "primary":
             return True
         if choice == "secondary":
-            reveal = getattr(self._ui, "_reveal_stk_settings", None)
+            reveal = getattr(self._ui, "_reveal_team_settings", None)
             if callable(reveal):
                 reveal("Hollow")
         return False
@@ -493,7 +568,6 @@ class RunCoordinator(QObject):
             p.MOUSE_SPEED = int(settings.get("mouse_speed", 100) or 100)
             p.MACRO_PROFILE = str(settings.get("macro_profile", "SAFE")).upper()
             p.MACRO_RHYTHM = bool(settings.get("rhythm", True))
-            p.MOUSE_MEMORY = bool(settings.get("mouse_memory", True))
             p.NETZACH = True       # gate the convert flow on
         except Exception:
             pass
@@ -668,35 +742,23 @@ class RunCoordinator(QObject):
         if kind == "gifts":
             # End-of-run gift inventory (floor-5 fuse shelf scan); folded
             # into the next run_result's stats record + Discord embed.
+            from . import stats
             items = event.get("items") or []
-            self._cur_gifts = [
-                {"name": str(g.get("name", "")), "uptied": bool(g.get("uptied"))}
-                for g in items if isinstance(g, dict)
-            ]
-            return
-        if kind == "restart":
-            # A run was aborted partway (e.g. THRILL F1 forfeit). Stash
-            # the elapsed time so it shows up as a "Restart - MM:SS"
-            # entry on the NEXT completed run's floor breakdown. Also
-            # clears the current floors buffer because those floor picks
-            # belong to the aborted attempt, not the next one.
-            restarts = getattr(self, "_pending_restarts", None)
-            if restarts is None:
-                restarts = self._pending_restarts = []
-            restarts.append({
-                "floor": 0,
-                "pack": "Restart",
-                "duration": float(event.get("duration", 0) or 0),
-            })
-            self._cur_floors = []
+            self._cur_gifts = []
+            for g in items:
+                if isinstance(g, dict):
+                    level = stats.gift_level(g)
+                    self._cur_gifts.append({"name": str(g.get("name", "")),
+                                            "level": level, "uptied": level > 0})
             return
         if kind != "run_result":
             return
+        from . import stats
         completed = bool(event.get("completed"))
         run_gifts = getattr(self, "_cur_gifts", None) or []
         self._cur_gifts = []
+        label = getattr(self, "_run_label", "") or ""
         try:
-            from . import stats
             stats.record_run(
                 completed=completed,
                 duration=float(event.get("duration", 0) or 0),
@@ -704,6 +766,7 @@ class RunCoordinator(QObject):
                 mode=str(event.get("mode", "mirror")),
                 floors=self._finalize_floors(),
                 gifts=run_gifts,
+                run=label,
             )
         except Exception:
             pass
@@ -717,13 +780,12 @@ class RunCoordinator(QObject):
         self._run_start_ts = time.time()
         self._refresh_stats()
         mins, secs = divmod(int(float(event.get("duration", 0) or 0)), 60)
-        desc = f"{event.get('team') or 'Team'} - {mins}:{secs:02d}"
+        team = str(event.get("team") or "").title()
+        who = f"{label} ({team})" if label and team else label or team or "Team"
+        desc = f"{who} - {mins}:{secs:02d}"
         if run_gifts:
-            names = ", ".join(
-                g["name"] + (" [+]" if g["uptied"] else "") for g in run_gifts)
-            uptied = sum(1 for g in run_gifts if g["uptied"])
-            desc += (f"\nGifts ({len(run_gifts)}, {uptied} uptied): "
-                     f"{names[:600]}")
+            names = ", ".join(g["name"] + stats.gift_badge(g) for g in run_gifts)
+            desc += f"\nGifts ({stats.gift_counts(run_gifts)}): {names[:600]}"
         self._discord_notify(
             "Run completed" if completed else "Run failed",
             desc,
@@ -733,16 +795,11 @@ class RunCoordinator(QObject):
     def _finalize_floors(self) -> list:
         """Turn the buffered per-floor pack picks into [{floor, pack,
         duration}] (each floor's duration = gap to the next pick, or to now
-        for the last) and clear the buffer for the next run. Pending
-        Restart entries from aborted earlier attempts (THRILL F1 forfeit)
-        are prepended in order so the next completed run's floor list
-        reads e.g. 'Restart - 5:32 / F1 - FlatbrokeGamblers - 6:32 / ...'."""
+        for the last) and clear the buffer for the next run."""
         buf = getattr(self, "_cur_floors", None) or []
         self._cur_floors = []
-        restarts = getattr(self, "_pending_restarts", None) or []
-        self._pending_restarts = []
         end = time.time()
-        out = list(restarts)
+        out = []
         for i, f in enumerate(buf):
             nxt = buf[i + 1]["ts"] if i + 1 < len(buf) else end
             out.append({"floor": f["floor"], "pack": f["pack"],
@@ -919,8 +976,7 @@ class RunCoordinator(QObject):
         captured from the in-flight telemetry stream (phase, floor,
         action, run iteration) so Discord reports something useful even
         before the first run finishes - which was the case for any
-        session shorter than a single Thrill (~13 min) or Mirror Dungeon
-        (~30+ min) run.
+        session shorter than a single Mirror Dungeon (~30+ min) run.
         """
         running = self._controller.is_running()
         out = {"Status": "Running" if running else "Idle"}
@@ -1018,7 +1074,7 @@ class RunCoordinator(QObject):
         try:
             self._audio_manager().play_sound(name, volume / 100.0, force=True)
         except Exception as exc:
-            print(f"alert sound failed: {exc}")
+            logging.warning("alert sound failed: %s", exc)
 
     # --- hotkeys ----------------------------------------------------
     def _toggle_pause(self):
@@ -1048,6 +1104,8 @@ class RunCoordinator(QObject):
         defaults = {"start_md": "Ctrl+Q", "start_exp": "Ctrl+E",
                     "start_thread": "Ctrl+R", "pause": "F9", "stop": "F2"}
         saved = (load_section("app_settings") or {}).get("shortcuts") or {}
+        if sys.platform == "win32":
+            _remember_hook_handle()
         try:
             keyboard.unhook_all()
         except Exception:
@@ -1062,3 +1120,31 @@ class RunCoordinator(QObject):
                 logging.info("Hotkey registered: %s -> %s", combo, action)
             except Exception as exc:
                 logging.warning("Hotkey %r (%s) failed: %s", combo, action, exc)
+
+    def _shutdown_hotkeys(self):
+        """Take the global hotkeys down before the interpreter goes: the
+        hook the library leaves behind ended the packaged build with
+        0xC000041D on every close."""
+        try:
+            import keyboard
+        except Exception:
+            return
+        listener = getattr(keyboard, "_listener", None)
+        if not getattr(listener, "listening", False):
+            return
+        try:
+            keyboard.unhook_all()
+        except Exception:
+            pass
+        if sys.platform != "win32":
+            return
+        try:
+            from keyboard import _winkeyboard as wk
+            # The listener thread stays blocked in its wait, hook-less,
+            # for the OS to reap: waking it would make the library's
+            # GetMessage write through the null buffer it passes.
+            for handle in _HOOK_HANDLES:
+                wk.UnhookWindowsHookEx(handle)
+            _HOOK_HANDLES.clear()
+        except Exception:
+            pass

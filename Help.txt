@@ -1,34 +1,156 @@
-General Usage:
-Select the tab for the activity you want to automate (Mirror Dungeon, Exp, Threads).
-Configure your team and settings, then click Start.
-Use the Dashboard for quick access to common tasks.
-Press F2 to stop all running automations immediately.
+Getting started:
+WorkerBee plays Limbus Company for you: Mirror Dungeon runs, EXP and Thread
+Luxcavations, and a scheduler that chains them. It reads the game from the
+screen and clicks through the Logitech input driver, so the game has to stay
+visible on the monitor you picked.
+- Game window: 16:9, windowed or borderless. 1920x1080 is the reference and
+  1280x720 works. Any other shape brings up the wrong-resolution notice with
+  the steps to fix it.
+- Input: install Logitech G HUB (the version named on the Input backend card)
+  and press Check connection under Settings. Without the driver WorkerBee
+  cannot click.
+- Monitor: pick the screen the game is on under Settings > Display.
+- Start: set up a run on the Mirror Dungeon page and press Start, or Ctrl+Q
+  anywhere in WorkerBee. F9 pauses and resumes, F2 stops everything.
+- Find anything: Ctrl+K opens the feature search in the title bar. Type what
+  you want in your own words and the matching setting lights up.
+
+Dashboard:
+The landing page. The hero line sums up your record. The tiles count total
+runs, dungeons cleared, success rate, average run and total run time. Recent
+activity lists the newest runs and View all opens Statistics. The page
+refreshes itself after every run; Refresh rereads the record by hand.
 
 Mirror Dungeon:
-Automates Mirror Dungeon runs.
-- Select your team in the Settings tab.
-- 'Hard Mode': Toggles hard mode dungeon logic.
-- 'Claim Rewards on Defeat': If enabled, claims rewards even if the run is lost.
-- 'Skip Rest Shop': Skips interaction with the shop to save time.
+Two views, switched at the top of the page.
+- Basic: pick a preset card, read the run sheet behind it (difficulty, team
+  keyword, graces, gift and pack searches, market plan) and press Start. The
+  plate beside the title names the preset or saved config in use, or Custom
+  once you change anything.
+- Advanced: every control, on four tabs. General holds the run count, team
+  rotation, difficulty, custom run, behaviour and skill replacement. Build
+  holds the starting gifts and graces, with the starlight each grace costs on
+  its card. Floor Packs/Market holds, per floor, the packs to take, Pack
+  Search with the pack's card, the Hard switch, the shop steps, the skill
+  swap switch and the market gifts with their Keep, Sell and Fuse tags. EGO
+  Gift Search holds the gifts to hunt.
+- Difficulty: Normal and Hard are five floors. Click a floor on the strip to
+  start Normal and flip to Hard from there; every floor after the flip is Hard
+  too. Extreme is still work in progress.
+- Team rotation: teams take turns across runs. A team is a name and the
+  keywords its sinners are picked by.
+- Behaviour: what the run does on the way (bonus charges, enkephalin to
+  modules, skip dialogue, winrate picks, max-energy swaps, wishmaking, pack
+  refreshes), on a defeat (retries, restart, claim rewards) and when the queue
+  runs out (close Limbus, log out of Windows).
+- Skill replacement: per sinner, which skill slots are swapped, in what order
+  and how often. The floor strip under it picks the floors whose shops take
+  the offers; all five lit means every shop.
+- Configs: save the whole page under a name, load it back, import and export
+  files to share. Presets are built in and never change.
+
+Custom runs:
+Custom run on the General tab replaces the difficulty with a scripted
+strategy.
+- SAIKAI [Ryoshu]: the Ryoshu run. It needs the HoS team. Set the sinner
+  order, the swap exclusion, the team keyword and whether only Skill 3 is
+  picked under Settings > Custom run teams.
+- Hollow: Faust alone with the Hollow E.G.O (Le Trou). Set the sinner to heal,
+  the fallback sinners that field the miniboss and the team keyword under
+  Settings > Custom run teams.
+- A run whose card you never touched asks once before it starts: "[run] has
+  not been configured. Default settings will be used." Yes keeps going with
+  the defaults and the question is not asked again.
 
 Luxcavation:
-Automates EXP and Thread Luxcavations.
-- EXP: Select the stage and number of runs.
-- Threads: Select difficulty and number of runs.
-- Ensure you have enough Enkephalin modules.
+EXP and Thread Luxcavations, from the Luxcavation page or the scheduler.
+- EXP: stages 1 to 10, default 6. Thread: difficulties 20 to 60, default 40.
+- Rotation: each mode has its own team rotation, picked by keyword like Mirror
+  Dungeon's.
+- Ctrl+E starts EXP, Ctrl+R starts Thread.
 
 Scheduler:
-Allows scheduling tasks to run automatically at specific times.
-- Add tasks with time (HH:MM), type, and run count.
-- Ensure the application is left open for the scheduler to work.
+Queue tasks to run back to back: Mirror Dungeon, EXP Luxcavation, Thread
+Luxcavation, Wait (for a set time, five minutes unless you change it) and
+Convert Enkephalin. A run task uses its page's current setup. Start the
+scheduler and it works down the list; F2 stops it like any run.
 
-Settings & Profiles:
-- Profiles: Save and load different configurations for different teams or activities.
-- Mouse Offsets: Adjust X/Y offsets if the bot clicks slightly off-target.
-- Display: Select the monitor where the game is running.
+Statistics:
+Every run is recorded with its outcome, team, duration, the pack taken on
+each floor and the gifts it ended with.
+- Runs: the history, newest first. A row opens to its floors, packs and
+  gifts.
+- Overall stats: the headline tiles and, per floor, the packs you clear
+  fastest on average.
+- Export CSV writes the history to a file. Clear stats starts the record over.
+
+Logs:
+The live log of what WorkerBee sees and does. The level filter starts at
+DEBUG, so every detection line shows; INFO and above is the short version. The
+same lines go to game.log next to your configs (see Where your data lives),
+which is the file to send with a bug report.
+
+Settings:
+- Input backend: the Logitech bridge, Check connection and its findings, with
+  a report you can copy.
+- Display: the monitor the game is on.
+- Appearance: the pixel skin or the legacy v2 look, theme presets, and your
+  own accent, background and text colours.
+- Configs: load, save, import, export and delete Mirror Dungeon configs.
+- Sinners: for each team type, the order sinners are picked in and the ones
+  never swapped out.
+- Custom run teams: the SAIKAI and Hollow setups described under Custom runs.
+- Humanized input: how the cursor moves (Safe, Fast, Chaotic), rhythm pauses
+  and mouse speed. Capture through DXGI reads the screen the way the display
+  shows it; off, WorkerBee reads the desktop copy, which Windows 10 stops
+  refreshing for a game that covers the whole screen.
+- Advanced: skip EGO battles, the good PC timing profile, debug image matches
+  (a green-box report of every match goes to the debug folder), grayscale
+  matching, reconnecting when the game drops online, UI animations.
+- Run overlay: the HUD, vision boxes and path drawn over the game during a
+  run, and their opacity.
+- Keyboard shortcuts: rebind any of the five keys.
+- Integrations: a Discord bot token and channel for run reports, and how often
+  they go out.
+- Application: the update check on launch, and a reset of every setting.
+
+Keyboard shortcuts:
+The defaults. All but the search are changeable under Settings > Keyboard
+shortcuts.
+- Ctrl+Q: start Mirror Dungeon.
+- Ctrl+E: start EXP Luxcavation.
+- Ctrl+R: start Thread Luxcavation.
+- F9: pause or resume the current run.
+- F2: stop everything.
+- Ctrl+K: search features.
+
+Updates:
+WorkerBee checks GitHub on launch (Settings > Application turns that off) and
+the About card below has Update now. An update downloads the new version,
+replaces the install folder and restarts. Your configs, stats and log live
+outside the install folder and survive every update.
 
 Troubleshooting:
-- If clicks are offset, try adjusting X/Y offsets in Settings.
-- Ensure the game resolution matches your monitor or is set to 1920x1080.
-- Run the application as Administrator if input is not registering.
-- Check the Logs tab for detailed error messages.
+- Clicks land off target or nothing is found: the game window has to be 16:9
+  and on the monitor picked under Settings > Display. Follow the
+  wrong-resolution notice when it appears.
+- No supported input driver found: install the Logitech G HUB version named
+  on the Input backend card, reboot, and press Check connection again.
+  Logicool-branded installs are accepted too.
+- Blank or stale captures on Windows 10: keep Capture through DXGI on under
+  Settings > Humanized input. Night light is harmless; it never tints a
+  capture.
+- A run stalls on one screen: pause with F9 and read the last lines on the
+  Logs page. Switch on Debug image matches under Settings > Advanced, let it
+  stall again, and send the green-box report from the debug folder with your
+  bug report.
+- Still stuck: Join Discord below and post game.log.
+
+Where your data lives:
+Everything of yours sits in %LOCALAPPDATA%\WorkerBee, outside the install
+folder.
+- config: your settings, saved configs and the run record.
+- game.log: the log, the same lines as the Logs page.
+- debug: green-box match reports while Debug image matches is on.
+The updater rebuilds the install folder from scratch, so keep nothing of your
+own in it.

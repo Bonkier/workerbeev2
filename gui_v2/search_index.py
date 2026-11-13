@@ -49,6 +49,9 @@ def _valid(widget) -> bool:
 def _stack_controller(page: QWidget, stack: QStackedWidget):
     """The tab strip or segmented control that drives `stack`, if any: the
     one with a button per page that sits nearest to it."""
+    explicit = getattr(stack, "controller", None)
+    if explicit is not None:
+        return explicit
     count = stack.count()
     best, best_depth = None, -1
     lineage = []
@@ -105,7 +108,7 @@ def _description(card: Card) -> str:
     """The explanatory text printed inside a panel."""
     parts = []
     for label in card.findChildren(QLabel):
-        if label.objectName() in ("settingTitle", "settingSubtitle"):
+        if label.objectName() == "settingTitle":
             continue
         text = label.text()
         if label.wordWrap() and len(text) > 30 and "<" not in text[:1]:
@@ -153,7 +156,17 @@ def collect(ui) -> list:
                 w = w.parentWidget()
             return False
 
+        def skipped(w):
+            # A part of the page repeated per floor is not a feature twice.
+            while w is not None and w is not page:
+                if getattr(w, "search_skip", False):
+                    return True
+                w = w.parentWidget()
+            return False
+
         for w in page.findChildren(QWidget):
+            if skipped(w):
+                continue
             if isinstance(w, IconlessTabBar):
                 if inside_card(w):
                     continue        # a panel's own sub-tabs (F1, F2, ...)
@@ -172,8 +185,7 @@ def collect(ui) -> list:
             elif isinstance(w, SettingRow):
                 title = getattr(w, "title_text", "")
                 add(page_key, "setting", title, title, w,
-                    _crumbs(w, page, page_label, controllers),
-                    getattr(w, "subtitle_text", ""))
+                    _crumbs(w, page, page_label, controllers))
             elif isinstance(w, Segmented):
                 crumbs = _crumbs(w, page, page_label, controllers)
                 for text, btn in w._buttons.items():

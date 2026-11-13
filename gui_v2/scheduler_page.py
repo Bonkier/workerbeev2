@@ -24,14 +24,9 @@ from PySide6.QtWidgets import (
     QSpinBox, QStackedWidget, QTimeEdit, QVBoxLayout, QWidget,
 )
 
-from .copy import (
-    SCHEDULER_CONVERT_TASK_HINT,
-    SCHEDULER_EMPTY_BODY,
-    SCHEDULER_EMPTY_TITLE,
-    SCHEDULER_PAGE_HINT,
-)
+from .copy import SCHEDULER_EMPTY_BODY, SCHEDULER_EMPTY_TITLE
 from .settings import load_section, save_section
-from .theme import Colors, Sizing
+from .theme import Sizing
 from .widgets import (
     Card, LinkButton, PageHeader, PrimaryButton, Toggle,
 )
@@ -142,9 +137,6 @@ class _TaskRow(QFrame):
         if kind == "convert":
             return "convert spare enkephalin to modules"
         return ""
-
-    def refresh_desc(self):
-        self._desc_label.setText(self._describe(self.task))
 
     def _on_enable(self, on: bool):
         self.task["enabled"] = bool(on)
@@ -264,9 +256,6 @@ class SchedulerPage(QWidget):
         header.add_action(self._stop_btn)
         outer.addWidget(header)
 
-        outer.addWidget(QLabel(
-            SCHEDULER_PAGE_HINT, self, objectName="inlineHint"))
-
         outer.addWidget(self._build_add_card())
         # Natural height + a trailing spacer: stretching the list card just
         # put a 530px void inside a bordered panel.
@@ -383,9 +372,6 @@ class SchedulerPage(QWidget):
         conv_row = QHBoxLayout(conv_page)
         conv_row.setContentsMargins(0, 0, 0, 0)
         conv_row.setSpacing(Sizing.SPACE_MD)
-        conv_row.addWidget(QLabel(
-            SCHEDULER_CONVERT_TASK_HINT,
-            conv_page, objectName="inlineHint"))
         conv_row.addStretch(1)
         self._inputs.addWidget(conv_page)
 

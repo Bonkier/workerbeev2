@@ -41,8 +41,6 @@ _EXP_BY_WEEKDAY = (
     ("Slash", "Pierce", "Blunt"),    # Sunday
 )
 
-# Stages below this are open every day regardless of damage type.
-EXP_ALWAYS_OPEN_UPTO = 6
 
 _RESET_SHIFT = _dt.timedelta(hours=3)
 

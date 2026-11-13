@@ -24,7 +24,6 @@ def _pipeline():
     from ..callsite import build_call_sites
     from ..detection import ColorMode
     from ..input import Mouse
-    from ..input.click_memory import MEMORY
     from ..pipeline import BackendAdapter
     from ..regionspec import WindowGeometry
     from ..verifier import Verifier
@@ -50,13 +49,9 @@ def _pipeline():
     finder_gray = _finder(ColorMode.GRAY)
     finder_edges = _finder(ColorMode.EDGES)
     mouse = Mouse(window=window, backend=adapter)
-    # Click muscle-memory: enabled per the user toggle (default on). It only
-    # pre-moves toward tightly-clustered learned spots and never changes the
-    # click target, so leaving it on is safe.
-    MEMORY.configure(enabled=bool(getattr(p, "MOUSE_MEMORY", True)))
-    verifier_rgb = Verifier(finder=finder_rgb, mouse=mouse, memory=MEMORY)
-    verifier_gray = Verifier(finder=finder_gray, mouse=mouse, memory=MEMORY)
-    verifier_edges = Verifier(finder=finder_edges, mouse=mouse, memory=MEMORY)
+    verifier_rgb = Verifier(finder=finder_rgb, mouse=mouse)
+    verifier_gray = Verifier(finder=finder_gray, mouse=mouse)
+    verifier_edges = Verifier(finder=finder_edges, mouse=mouse)
     bundle_gray = build_call_sites(finder_gray, mouse, verifier_gray)
     bundle_rgb = build_call_sites(finder_rgb, mouse, verifier_rgb)
 
@@ -168,9 +163,8 @@ def _shim_check(color_mode, template, image, region, conf, click, wait, error, *
         # One-shot finder override so method= actually switches algorithm.
         finder = _select_finder(color_mode, method=method)
         from ..verifier import Verifier
-        from ..input.click_memory import MEMORY
         verifier = Verifier(finder=finder, mouse=_pipeline().mouse,
-                            sleep=verifier.sleep, memory=MEMORY)
+                            sleep=verifier.sleep)
 
     if click:
         if isinstance(click, tuple) and len(click) == 2:
@@ -543,17 +537,8 @@ def win_dragTo(*args, **kwargs):
         kwargs["tsize"] = tuple(int(size * comp) for size in kwargs["tsize"])
     gui.dragTo(x, y, **kwargs)
 
-def countdown(seconds):  # max 99
-    for i in range(seconds, 0, -1):
-        progress = (seconds - i) / seconds
-        bar_length = 20
-        bar = "[" + "#" * int(bar_length * progress) + "-" * (bar_length - int(bar_length * progress)) + "]"
-        
-        print(f"Starting in: {i:2} {bar}", end="\r")
-        time.sleep(1)
-    
-    print(" " * (len(f"Starting in: {seconds:2} [--------------------]")), end="\r")
-    print("Grinding Time!")
+def countdown(seconds):
+    time.sleep(seconds)
 
 def pause(other_win=None):
     # Honor a pending stop up front, else clear()/wait() below would block
@@ -566,7 +551,6 @@ def pause(other_win=None):
                 pass
         raise StopExecution
 
-    print(f"Switched to window: {other_win}")
     logging.info(f"Execution paused")
     if hasattr(gui, "restore_mouse_settings"):
         try:
@@ -616,7 +600,7 @@ def wait_while_condition(condition, action=None, interval=0.5, timer=20):
 
 def _pinned(pins, pack, floor):
     """True when `pack` is pinned to `floor`. A pin is one floor or several:
-    the Packs tab lets the same pack be set on more than one floor, and a
+    the Floor Packs/Market tab lets the same pack be set on more than one floor, and a
     single-floor pin silently dropped all but the last."""
     fl = pins.get(pack)
     if isinstance(fl, (list, tuple, set, frozenset)):
@@ -1038,7 +1022,6 @@ def create_mask(image, target_hsv, tolerance):
 def is_grayscale(img, threshold=20):
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     saturation = hsv[:, :, 1]
-    print(f"Average saturation: {saturation.mean():.2f}")
     return saturation.mean() < threshold
 
 
@@ -1213,19 +1196,6 @@ class LocatePreset:
         params.update(overrides)
         return LocatePreset(cl=self.cl, **params)
 
-    def try_find(self, *args, **overrides):
-        if   len(args) == 1: key, region_key = args[0], args[0]
-        elif len(args) == 2: key, region_key = args
-        else: raise ValueError("Invalid arguments")
-        path = PTH[key.split('.')[0]]
-        region = REG[region_key] if isinstance(region_key, str) else region_key
-
-        params = dict(list(self.params.items())[:7])
-        params.update(overrides)
-        params["region"] = region
-        result = self.cl.try_locate(path, **params)
-        return gui.center(result)
-    
     def button(self, *args, ver=False, retries=3, **overrides):
         if   len(args) == 1: key, region_key = args[0], args[0]
         elif len(args) == 2: key, region_key = args
@@ -1278,7 +1248,6 @@ class LocatePreset:
                 if not verified:
                     if i == retries:
                         raise RuntimeError(f"Verification failed after {retries} retries.")
-                    print(f"Verifier failed (attempt {i}), reclicking...")
                     if len(args) == 0:
                         win_click(x, y)
                         result = True
@@ -1305,7 +1274,6 @@ now_click = click(wait=False)
 loc_rgb = LocatePreset(cl=LocateRGB)
 
 click_rgb = loc_rgb(click=True)
-try_rgb   = loc_rgb(error=True)
 now_rgb   = loc_rgb(wait=False)
 
 
@@ -1316,34 +1284,16 @@ def tap_center(name, region=(0, 0, 1920, 1080), tsize=(34, 16), wait=4.0,
     `conf` overrides the matcher's default floor (detailed gift art needs it)."""
     if name not in PTH:
         return False
-    from ..input.click_memory import MEMORY
-    mem = MEMORY if MEMORY.enabled else None
-    started = time.time()
     box = None
     _kw = {} if conf is None else {"conf": conf}
-    for i in range(max(1, int(wait * 5))):
+    for _ in range(max(1, int(wait * 5))):
         box = cl.locate(PTH[name], region=region, **_kw)
         if box:
             break
-        if i == 0 and mem is not None:
-            # Anticipatory pre-move toward the learned spot while we keep
-            # polling; the real match below is still what gets clicked.
-            point = mem.predict(name)
-            if point is not None:
-                try:
-                    win_moveTo(*point)
-                except Exception:
-                    pass
         time.sleep(0.2)
     if not box:
         return False
-    center = gui.center(box)
-    win_click(*center, tsize=tsize)
-    if mem is not None:
-        try:
-            mem.record(name, center, time.time() - started)
-        except Exception:
-            pass
+    win_click(*gui.center(box), tsize=tsize)
     return True
 
 
@@ -1369,9 +1319,6 @@ def connection():
     
 
 class BaseAction:
-    def should_execute(self, next_action=None) -> bool:
-        raise NotImplementedError
-
     def execute(self, preset: LocatePreset, ver=None):
         raise NotImplementedError
 
@@ -1383,9 +1330,6 @@ class Action(BaseAction):
         self.click = click
         self.ver = ver
         self.retries = retries
-
-    def should_execute(self, _=None):
-        return True
 
     def execute(self, preset: LocatePreset, ver=None):
         args = (self.key,) if self.region is None else (self.key, self.region)
@@ -1399,9 +1343,6 @@ class ClickAction(BaseAction):
     def __init__(self, click: tuple, ver: tuple | str = None):
         self.click = click
         self.ver = ver
-
-    def should_execute(self, _=None):
-        return True
 
     def execute(self, preset: LocatePreset, ver=None):
         return preset.button(click=self.click, ver=self.ver or ver)

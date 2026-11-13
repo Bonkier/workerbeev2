@@ -135,16 +135,13 @@ def next_step(nodes, extra_connections):
             elif c + 1 == a:
                 adj.setdefault((c,d), []).append((a,b))
 
-    # THRILL: Focused nodes drag the run - inflate weight to last-resort.
     # HOLLOW: a focused fight cannot be won with win rate, and risky fights
     # are more than Faust alone should take on.
     pri = priority
-    script = getattr(p, "RUN_SCRIPT", "")
-    if script in ("thrill", "hollow"):
+    if getattr(p, "RUN_SCRIPT", "") == "hollow":
         pri = dict(priority)
         pri["Focused"] = 9999
-        if script == "hollow":
-            pri["Risky"] = 9999
+        pri["Risky"] = 9999
 
     def dfs(i, j):
         base = pri[nodes[i][j]]
@@ -210,11 +207,9 @@ def move():
     else:
         time.sleep(0.2)
     
-    print("move check")
     # run fail detection
     dead = LocateRGB.locate_all(PTH["0"], region=REG["alldead"], conf=0.9, threshold=40)
     p.DEAD = len(dead)
-    print(f"{p.DEAD} dead sinners")
     # HOLLOW fields Faust alone most of the time: her own death ends the
     # run, a fallback sinner lost in a miniboss does not.
     squad = len(p.SELECTED)
@@ -235,7 +230,6 @@ def move():
     if now.button("victory") or not now.button("Move"): return False
 
     if not now_rgb.button("Danteh"):
-        print("Case 0: Bus is out of view")
         gui.press("d")
         gui.press("a")
 
@@ -252,18 +246,15 @@ def move():
             return False
     
     regions = directions(is_aligned=False)
-    print(f"Visible directions: {list(regions.keys())}")
 
     adjust = 0
     if len(regions) == 0:
-        print("Case 2: No directions are visible")
         if input_with_fallback("space", lambda: win_click(705, 411), enter) or move_fallback():
             logging.info("Entering unknown node")
             _hollow_squad("")
             return True
         return False
     elif len(regions) == 1:
-        print("Case 3: No node search, only one direction")
         region_idx = next(iter(regions.keys()))
         region = regions[region_idx]
         _loc = LocatePreset(image=screenshot(region=region), v_comp=v_list[region_idx], conf=0.8, wait=False)
@@ -276,10 +267,8 @@ def move():
             return True
         return False
     elif all(k in regions for k in (0, 2)):
-        print("Case 4: No major adjustment needed for node search")
         position()
     else:
-        print("Case 5: Adjusting position for node search")
         inter_connect = get_connections(region=(1140, 230, 610, 370))
         adjust = check_connections(inter_connect)
         position(shift=adjust)
@@ -290,7 +279,6 @@ def move():
         regions = {key: (634, 80 + key * 310, 282, 275) for key in keys}
     
     inter_connect = get_connections()
-    print(inter_connect)
     nodes = [[None, None, None] for _ in range(3)]
 
     for depth in range(3):
@@ -323,7 +311,6 @@ def move():
             if depth != 0: nodes = nodes[:depth]
             break
     if any(nodes[0]):
-        print(nodes)
         id, name = next_step(nodes, inter_connect)
         if not id is None:
             key_name = keys_map.get(int(id-adjust), "d")

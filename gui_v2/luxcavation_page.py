@@ -12,7 +12,7 @@ from .settings import load_section, save_section
 from .theme import Colors, Sizing
 from .widgets import (
     AnimatedStack, Card, GhostButton, PageHeader, PrimaryButton, Segmented,
-    _title_label, show_placeholder_notice,
+    _title_label,
 )
 
 _SECTION = "lux"
@@ -261,7 +261,6 @@ class LuxcavationPage(QWidget):
         self._exp_stage.setCurrentText(_EXP_STAGE_DEFAULT)
         self._exp_team = _combo(list(_LUX_AFFINITIES), card)
         self._exp_start = PrimaryButton("Start EXP", card)
-        self._exp_start.clicked.connect(self._on_lux_start)
         self._exp_start.clicked.connect(self._count_exp_use)
         self._exp_start.clicked.connect(self.start_exp_requested.emit)
         self._tab_stack.addWidget(self._mode_tab(
@@ -273,7 +272,6 @@ class LuxcavationPage(QWidget):
         self._thd_diff.setCurrentText(_THD_DIFFICULTY_DEFAULT)
         self._thd_team = _combo(list(_LUX_AFFINITIES), card)
         self._thd_start = PrimaryButton("Start Thread", card)
-        self._thd_start.clicked.connect(self._on_lux_start)
         self._thd_start.clicked.connect(self.start_thread_requested.emit)
         self._tab_stack.addWidget(self._mode_tab(
             "Thread", self._thd_runs, "Difficulty", self._thd_diff,
@@ -446,19 +444,3 @@ class LuxcavationPage(QWidget):
             self._exp_start.setEnabled(True)
             self._thd_start.setEnabled(True)
             self._stop_btn.setEnabled(False)
-
-    def _on_lux_start(self):
-        """No-op hook so the start signal still has a slot to connect to."""
-        return
-
-    def exp_runs(self) -> int:
-        return self._exp_runs.value()
-
-    def exp_stage(self) -> int:
-        return int(self._exp_stage.currentText())
-
-    def thread_runs(self) -> int:
-        return self._thd_runs.value()
-
-    def thread_difficulty(self) -> int:
-        return int(self._thd_diff.currentText())

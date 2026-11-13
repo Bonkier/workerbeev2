@@ -14,10 +14,8 @@ import cv2
 import numpy as np
 import pytest
 
-from src.wbcore.detection import ColorMode, Match
 from src.wbcore.regionspec import Region, ScreenRect, WindowGeometry
 from src.wbcore.vision import (
-    CaptureFn,
     Finder,
     TemplateLoader,
     capture,

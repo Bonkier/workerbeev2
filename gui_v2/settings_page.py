@@ -14,8 +14,8 @@ import logging
 import os
 import sys
 
-from PySide6.QtCore import QThread, Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QSize, QThread, Qt, QTimer, Signal
+from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QColorDialog, QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -28,7 +28,7 @@ from .lghub_help import (
 from .settings import load_section, save_section
 from .theme import Colors, Sizing
 from .widgets import (
-    Card, ClickOrderGrid, GhostButton, KeyCaptureButton, OrderedList,
+    Card, ClickOrderGrid, GhostButton, KeyCaptureButton,
     PageHeader, Segmented, SettingRow, Toggle,
 )
 
@@ -65,7 +65,7 @@ _TEAM_TYPES = (
 _HOLLOW_HEAL_NAMES = tuple(n for n in _SINNER_NAMES if n != "Faust")
 _HOLLOW_HEAL_DEFAULT = "Yi Sang"
 _HOLLOW_EXCLUDE_DEFAULT = ["Faust"]
-# Statuses with a Mirror Dungeon team-select icon (the SAIKAI/THRILL keyword).
+# Statuses with a Mirror Dungeon team-select icon (a custom run's keyword).
 _STK_STATUSES = (
     "Burn", "Bleed", "Tremor", "Rupture", "Sinking", "Poise", "Charge",
 )
@@ -98,7 +98,7 @@ def _play_test_sound(volume_0_to_100: int):
             mgr.initialize(base)
         mgr.play_sound("on", volume_0_to_100 / 100.0, force=True)
     except Exception as exc:
-        print(f"audio test failed: {exc}")
+        logging.warning("audio test failed: %s", exc)
 
 
 def _combo(items, parent=None):
@@ -106,6 +106,16 @@ def _combo(items, parent=None):
     box.setObjectName("combo")
     box.addItems(items)
     box.setCursor(Qt.CursorShape.PointingHandCursor)
+    return box
+
+
+def _sinner_combo(names, parent=None):
+    """A combo of sinners, each wearing their emblem."""
+    from .giftart import sinner_icon
+    box = _combo([], parent)
+    for name in names:
+        box.addItem(QIcon(sinner_icon(name)), name)
+    box.setIconSize(QSize(18, 18))
     return box
 
 
@@ -143,8 +153,8 @@ class SettingsPage(QWidget):
         outer.addWidget(self._build_appearance())
         outer.addWidget(self._build_profiles())
         outer.addWidget(self._build_sinners())
-        outer.addWidget(self._build_sinner_exclusion())
-        outer.addWidget(self._build_saikai_thrill())
+        self._init_custom_teams()
+        outer.addWidget(self._build_custom_teams())
         outer.addWidget(self._build_humanization())
         outer.addWidget(self._build_advanced())
         outer.addWidget(self._build_overlay())
@@ -165,9 +175,7 @@ class SettingsPage(QWidget):
             names = ["Primary monitor"]
         self._monitor = _combo(names, section)
         section.body.addWidget(SettingRow(
-            "Game monitor",
-            "Which display the Limbus window is on.",
-            self._monitor, parent=section,
+            "Game monitor", self._monitor, parent=section,
         ))
         return section
 
@@ -175,19 +183,13 @@ class SettingsPage(QWidget):
     def _build_appearance(self) -> QWidget:
         from . import themes
         section = Card("APPEARANCE", self)
-        section.body.addWidget(self._wrap_hint(
-            "Pick a colour theme, or customise the accent and background "
-            "with the colour picker. Changes apply instantly."))
 
         from . import skins
         self._legacy_ui = Toggle(default=(skins.current_skin() == skins.LEGACY),
                                  parent=section)
         self._legacy_ui.toggled.connect(self._on_legacy_ui)
         section.body.addWidget(SettingRow(
-            "Legacy v2 UI",
-            "Off: the v2.4 voxel look (blocky panels, animated voxel bee). "
-            "On: the original v2 interface. Applies instantly.",
-            self._legacy_ui, parent=section,
+            "Legacy v2 UI", self._legacy_ui, parent=section,
         ))
 
         cur = themes.current_theme()
@@ -198,36 +200,28 @@ class SettingsPage(QWidget):
         # Connect AFTER setting the initial value so it doesn't re-fire.
         self._theme_combo.currentTextChanged.connect(self._on_theme_preset)
         section.body.addWidget(SettingRow(
-            "Theme", "Built-in colour schemes.",
-            self._theme_combo, parent=section,
+            "Theme", self._theme_combo, parent=section,
         ))
 
         self._accent_swatch = self._make_swatch(cur["accent"], self._pick_accent)
         section.body.addWidget(SettingRow(
-            "Accent colour",
-            "The brand highlight: buttons, selection, links, the overlay bee.",
-            self._accent_swatch, parent=section,
+            "Accent colour", self._accent_swatch, parent=section,
         ))
 
         self._bg_swatch = self._make_swatch(cur["bg"], self._pick_background)
         section.body.addWidget(SettingRow(
-            "Background",
-            "Base window colour; cards and borders are derived from it.",
-            self._bg_swatch, parent=section,
+            "Background", self._bg_swatch, parent=section,
         ))
 
         self._text_swatch = self._make_swatch(cur["text"], self._pick_text)
         section.body.addWidget(SettingRow(
-            "Text colour",
-            "Primary text colour; dimmer labels are derived from it.",
-            self._text_swatch, parent=section,
+            "Text colour", self._text_swatch, parent=section,
         ))
 
         reset = GhostButton("Reset theme", section)
         reset.clicked.connect(self._reset_theme)
         section.body.addWidget(SettingRow(
-            "Reset theme", "Back to the default yellow-on-dark scheme.",
-            reset, parent=section,
+            "Reset theme", reset, parent=section,
         ))
         return section
 
@@ -320,49 +314,33 @@ class SettingsPage(QWidget):
         section = Card("ADVANCED", self)
         self._advanced = {}
         rows = [
-            ("skip_ego_battle", "Skip EGO in battle",
-             "Never spend an EGO during clashes (faster, riskier)."),
-            ("good_pc", "Good PC mode",
-             "Trim transition waits - only if your PC keeps up."),
-            ("debug_matches", "Debug image matches",
-             "Log every image match's confidence vs its threshold, misses "
-             "included. Verbose - turn on to diagnose detection, then off."),
-            ("grayscale", "Grayscale speed-boost",
-             "Match in grayscale for a small speed gain."),
-            ("reconnect_online", "Reconnect only when online",
-             "Wait for internet before retrying a dropped connection."),
-            ("animations", "Enable UI animations",
-             "Page crossfades and the splash morph."),
+            ("skip_ego_battle", "Skip EGO in battle"),
+            ("good_pc", "Good PC mode"),
+            ("debug_matches", "Debug image matches"),
+            ("grayscale", "Grayscale speed-boost"),
+            ("reconnect_online", "Reconnect only when online"),
+            ("animations", "Enable UI animations"),
         ]
-        for key, title, subtitle in rows:
+        for key, title in rows:
             default = key in ("reconnect_online", "animations")
             tog = Toggle(default=default, parent=section)
             self._advanced[key] = tog
-            section.body.addWidget(SettingRow(title, subtitle, tog, parent=section))
+            section.body.addWidget(SettingRow(title, tog, parent=section))
         return section
 
     # --- Run overlay + debug visualizers --------------------------
     def _build_overlay(self) -> QWidget:
         section = Card("RUN OVERLAY", self)
-        section.body.addWidget(self._wrap_hint(
-            "A translucent, click-through overlay drawn over the game "
-            "during a run. It is not interactive and hides itself whenever "
-            "WorkerBee is the focused window."))
         self._overlay_toggles = {}
         rows = [
-            ("hud", "Show run overlay",
-             "Current phase, run counter, cursor target, path-tracer "
-             "state, and the last few actions."),
-            ("vision", "Debug: show what the macro sees",
-             "Box and label every template the bot locates on screen."),
-            ("path", "Debug: show mouse target + path",
-             "Mark where the cursor is heading and the path it will "
-             "trace; clears when the bot picks its next target."),
+            ("hud", "Show run overlay"),
+            ("vision", "Debug: show what the macro sees"),
+            ("path", "Debug: show mouse target + path"),
         ]
-        for key, title, subtitle in rows:
+        for key, title in rows:
             tog = Toggle(default=(key == "hud"), parent=section)
             self._overlay_toggles[key] = tog
-            section.body.addWidget(SettingRow(title, subtitle, tog, parent=section))
+            section.body.addWidget(SettingRow(title, tog, parent=section))
 
         op_cluster = QWidget(section)
         opc = QHBoxLayout(op_cluster)
@@ -382,10 +360,7 @@ class SettingsPage(QWidget):
             lambda v: self._overlay_opacity_lbl.setText(f"{v}%"))
         self._overlay_opacity.valueChanged.connect(self._save_state)
         section.body.addWidget(SettingRow(
-            "Overlay background",
-            "How solid the overlay panel is over the game. Lower lets more "
-            "of the game through; the text stays fully opaque either way.",
-            op_cluster, parent=section,
+            "Overlay background", op_cluster, parent=section,
         ))
         return section
 
@@ -403,10 +378,6 @@ class SettingsPage(QWidget):
         self._probe_thread = None
         self._probe = None
         section = Card("INPUT BACKEND", self)
-        section.body.addWidget(self._wrap_hint(
-            "WorkerBee routes input through Logitech G Hub (v2021.11.1775). "
-            "LGHub must be running and must NOT auto-update to a newer "
-            "version."))
 
         row = QHBoxLayout()
         row.setSpacing(Sizing.SPACE_MD)
@@ -428,11 +399,6 @@ class SettingsPage(QWidget):
         self._lghub_findings = FindingsView(self)
         section.body.addWidget(self._lghub_findings)
         return section
-
-    def _wrap_hint(self, text: str) -> QLabel:
-        lbl = QLabel(text, self, objectName="inlineHint")
-        lbl.setWordWrap(True)
-        return lbl
 
     def _check_lghub(self):
         if self._probe_thread is not None:
@@ -489,23 +455,16 @@ class SettingsPage(QWidget):
     # --- Keyboard shortcuts ---------------------------------------
     def _build_shortcuts(self) -> QWidget:
         section = Card("KEYBOARD SHORTCUTS", self)
-        section.body.addWidget(self._wrap_hint(
-            "Click a binding, then press the key combo. Esc cancels, "
-            "Backspace clears."))
         self._shortcuts = {}
         for key, label, default in _SHORTCUTS:
             btn = KeyCaptureButton(default, parent=section)
             self._shortcuts[key] = btn
-            section.body.addWidget(SettingRow(label, "", btn, parent=section))
+            section.body.addWidget(SettingRow(label, btn, parent=section))
         return section
 
     # --- Per-team sinner assignment -------------------------------
     def _build_sinners(self) -> QWidget:
         section = Card("SINNERS", self)
-        section.body.addWidget(self._wrap_hint(
-            "Sinner selection and order, per team. Click sinners in the "
-            "order you want the bot to pick them; click again to remove "
-            "(everything after shifts up)."))
 
         # Independent {order, exclude} state per team type. Default: a
         # full default order (every sinner picked) and the first 7 as the
@@ -531,29 +490,27 @@ class SettingsPage(QWidget):
         section.body.addLayout(picker)
 
         # 12 sinners as a 2x6 grid, like the in-game roster screen.
+        section.body.addWidget(QLabel("Pick order", self,
+                                      objectName="subSectionLabel"))
         self._sinner_order = ClickOrderGrid(
             list(_SINNER_NAMES), rows=2, cols=6, parent=section,
         )
         self._sinner_order.changed.connect(self._on_sinner_changed)
         section.body.addWidget(self._sinner_order)
 
-        state = self._sinner_states[self._sinner_team]
-        self._sinner_order.set_order(state["order"])
-        self._update_sinner_count()
-        return section
-
-    def _build_sinner_exclusion(self) -> QWidget:
-        section = Card("SINNER SWAP EXCLUSION", self)
-        section.body.addWidget(self._wrap_hint(
-            "Sinners to leave alone during max-energy swaps. Click in "
-            "the order you want them excluded."))
+        section.body.addSpacing(Sizing.SPACE_MD)
+        section.body.addWidget(QLabel("Swap exclusion", self,
+                                      objectName="subSectionLabel"))
         self._sinner_exclude = ClickOrderGrid(
             list(_SINNER_NAMES), rows=2, cols=6, parent=section,
         )
         self._sinner_exclude.changed.connect(self._on_sinner_changed)
         section.body.addWidget(self._sinner_exclude)
+
         state = self._sinner_states[self._sinner_team]
+        self._sinner_order.set_order(state["order"])
         self._sinner_exclude.set_order(state["exclude"])
+        self._update_sinner_count()
         return section
 
     def _on_sinner_team(self, team: str):
@@ -597,124 +554,108 @@ class SettingsPage(QWidget):
         return {team: list(state["exclude"])
                 for team, state in self._sinner_states.items()}
 
-    # --- SAIKAI / THRILL teams -----------------------------------
-    def _build_saikai_thrill(self) -> QWidget:
-        section = Card("CUSTOM RUN TEAMS", self)
-        # Kept so the shell's "Go to custom run settings" button can scroll
-        # this card into view after switching to the Settings tab.
-        self._stk_card = section
-        section.body.addWidget(self._wrap_hint(
-            "Sinner pick order and team keyword for the SAIKAI, Thrill and "
-            "Hollow scripted runs. Choose a run, set its order, and the "
-            "keyword the team is saved under in-game."))
-        self._stk_loading = True
-        self._stk_states = {
+    # --- Custom run teams: one card, a run at a time -----------------
+    def _init_custom_teams(self):
+        self._team_loading = False
+        self._team_run = "SAIKAI"
+        self._team_states = {
             "SAIKAI": {"order": [], "exclude": [], "keyword": "Poise",
-                       "floor10": False, "s3_only": False},
-            "Thrill": {"order": [], "exclude": [], "keyword": "Rupture"},
+                       "s3_only": False, "configured": False},
             "Hollow": {"order": [], "exclude": list(_HOLLOW_EXCLUDE_DEFAULT),
                        "keyword": "Poise", "heal": _HOLLOW_HEAL_DEFAULT,
-                       "exclude_set": False},
+                       "exclude_set": False, "configured": False},
         }
-        self._stk_run = "SAIKAI"
+        self._team_card = None
+        self._team_widgets = {}
+
+    def _build_custom_teams(self) -> QWidget:
+        """One card for both scripted runs; the shell's "Go to custom run
+        settings" button scrolls it into view with the run selected."""
+        section = Card("CUSTOM RUN TEAMS", self)
+        self._team_card = section
+        w = self._team_widgets
+        self._team_loading = True
 
         row = QHBoxLayout()
         row.setSpacing(Sizing.SPACE_SM)
         row.addWidget(QLabel("Run", self, objectName="settingTitle"))
-        self._stk_seg = Segmented(["SAIKAI", "Thrill", "Hollow"],
-                                  default="SAIKAI", parent=section)
-        self._stk_seg.selection_changed.connect(self._on_stk_run)
-        self._stk_seg.set_locked("Thrill", "W.I.P")
-        self._stk_seg.locked_clicked.connect(self._on_locked_stk)
-        row.addWidget(self._stk_seg)
+        w["run"] = Segmented(["SAIKAI", "Hollow"], default="SAIKAI",
+                             parent=section)
+        w["run"].selection_changed.connect(self._on_team_run)
+        row.addWidget(w["run"])
         row.addStretch(1)
         section.body.addLayout(row)
 
-        self._stk_keyword = _combo(list(_STK_STATUSES), section)
-        self._stk_keyword.currentTextChanged.connect(self._on_stk_changed)
+        w["keyword"] = _combo(list(_STK_STATUSES), section)
+        w["keyword"].currentTextChanged.connect(self._on_team_changed)
         section.body.addWidget(SettingRow(
-            "Team keyword", "What keyword is this team binded to?",
-            self._stk_keyword, parent=section))
+            "Team keyword", w["keyword"], parent=section))
 
-        self._stk_floor10 = Toggle(default=False, parent=section)
-        self._stk_floor10.toggled.connect(self._on_stk_changed)
-        self._stk_floor10_row = SettingRow(
-            "Go to floor 10",
-            "SAIKAI only: run the Infinite Mirror Dungeon and leave after "
-            "floor 10 (claiming rewards) instead of ending at floor 5.",
-            self._stk_floor10, parent=section)
-        section.body.addWidget(self._stk_floor10_row)
+        w["s3_only"] = Toggle(default=False, parent=section)
+        w["s3_only"].toggled.connect(self._on_team_changed)
+        w["s3_only_row"] = SettingRow(
+            "Choose Skill 3 only", w["s3_only"], parent=section)
+        section.body.addWidget(w["s3_only_row"])
 
-        self._stk_s3_only = Toggle(default=False, parent=section)
-        self._stk_s3_only.toggled.connect(self._on_stk_changed)
-        self._stk_s3_only_row = SettingRow(
-            "Choose Skill 3 only",
-            "SAIKAI only: keep forcing Skill 3 picks (evading her other "
-            "slots) for the WHOLE run. Off (default): force Skill 3 while "
-            "her House of Spiders allies are still up so they get cut down, "
-            "then plain winrate once she is solo.",
-            self._stk_s3_only, parent=section)
-        section.body.addWidget(self._stk_s3_only_row)
+        w["heal"] = _sinner_combo(list(_HOLLOW_HEAL_NAMES), section)
+        w["heal"].currentTextChanged.connect(self._on_team_changed)
+        w["heal_row"] = SettingRow(
+            "Sinner to heal", w["heal"], parent=section)
+        section.body.addWidget(w["heal_row"])
 
-        self._stk_heal = _combo(list(_HOLLOW_HEAL_NAMES), section)
-        self._stk_heal.currentTextChanged.connect(self._on_stk_changed)
-        self._stk_heal_row = SettingRow(
-            "Sinner to heal",
-            "Hollow only: who the floor 1 shop heals to 45 SP for the skill "
-            "checks (they never fight, so it keeps). Faust herself is healed "
-            "on floors 4 and 5.", self._stk_heal, parent=section)
-        section.body.addWidget(self._stk_heal_row)
+        w["order_label"] = QLabel("Sinner order", self,
+                                  objectName="subSectionLabel")
+        section.body.addWidget(w["order_label"])
+        w["order"] = ClickOrderGrid(list(_SINNER_NAMES), rows=2, cols=6,
+                                    max_picks=12, parent=section)
+        w["order"].changed.connect(self._on_team_changed)
+        section.body.addWidget(w["order"])
 
-        self._stk_order_label = QLabel("Sinner order", self,
-                                       objectName="subSectionLabel")
-        section.body.addWidget(self._stk_order_label)
-        self._stk_order = ClickOrderGrid(list(_SINNER_NAMES), rows=2, cols=6,
-                                         max_picks=12, parent=section)
-        self._stk_order.changed.connect(self._on_stk_changed)
-        section.body.addWidget(self._stk_order)
+        section.body.addWidget(QLabel("Swap exclusion", self,
+                                      objectName="subSectionLabel"))
+        w["exclude"] = ClickOrderGrid(list(_SINNER_NAMES), rows=2, cols=6,
+                                      max_picks=12, parent=section)
+        w["exclude"].changed.connect(self._on_team_changed)
+        section.body.addWidget(w["exclude"])
 
-        self._stk_exclude_box = QWidget(section)
-        exclude_col = QVBoxLayout(self._stk_exclude_box)
-        exclude_col.setContentsMargins(0, 0, 0, 0)
-        exclude_col.setSpacing(Sizing.SPACE_SM)
-        exclude_col.addWidget(QLabel("Swap exclusion", self,
-                                     objectName="subSectionLabel"))
-        exclude_col.addWidget(self._wrap_hint(
-            "Sinners to keep out of the max-energy swap (only acts when "
-            "Behaviour > Swap for max energy is on)."))
-        self._stk_exclude = ClickOrderGrid(list(_SINNER_NAMES), rows=2, cols=6,
-                                           max_picks=12, parent=section)
-        self._stk_exclude.changed.connect(self._on_stk_changed)
-        exclude_col.addWidget(self._stk_exclude)
-        section.body.addWidget(self._stk_exclude_box)
-
-        self._stk_apply("SAIKAI")
-        self._stk_loading = False
+        self._team_apply("SAIKAI")
+        self._team_loading = False
         return section
 
-    def _stk_sync(self):
-        st = self._stk_states[self._stk_run]
-        st["order"] = self._stk_order.order()
-        st["exclude"] = self._stk_exclude.order()
-        st["keyword"] = self._stk_keyword.currentText()
-        if self._stk_run == "SAIKAI":
-            st["floor10"] = self._stk_floor10.isChecked()
-            st["s3_only"] = self._stk_s3_only.isChecked()
-        elif self._stk_run == "Hollow":
-            st["heal"] = self._stk_heal.currentText()
-            st["exclude_set"] = True
+    def show_team(self, run):
+        """Put a run's team on the card (the shell's reveal does this)."""
+        if run in self._team_states and self._team_widgets:
+            self._team_widgets["run"].set_selected(run)
+            self._on_team_run(run)
 
-    def _stk_apply(self, run):
-        prev = self._stk_loading
-        self._stk_loading = True
+    def _on_team_run(self, run):
+        if run not in self._team_states or run == self._team_run:
+            return
+        self._team_sync()
+        self._team_run = run
+        self._team_apply(run)
+
+    def _team_sync(self):
+        st, w = self._team_states[self._team_run], self._team_widgets
+        st["order"] = w["order"].order()
+        st["exclude"] = w["exclude"].order()
+        st["keyword"] = w["keyword"].currentText()
+        if self._team_run == "Hollow":
+            st["heal"] = w["heal"].currentText()
+            st["exclude_set"] = True
+        else:
+            st["s3_only"] = w["s3_only"].isChecked()
+
+    def _team_apply(self, run):
+        prev = self._team_loading
+        self._team_loading = True
         try:
-            st = self._stk_states[run]
-            saikai = (run == "SAIKAI")
-            hollow = (run == "Hollow")
+            st, w = self._team_states[run], self._team_widgets
+            hollow = run == "Hollow"
             if hollow:
                 # Faust is the run; she cannot also be her own fallback.
                 st["order"] = [n for n in st["order"] if n != "Faust"]
-            faust = self._stk_order._chips.get("Faust")
+            faust = w["order"]._chips.get("Faust")
             if faust is not None:
                 faust.setEnabled(not hollow)
                 faust.setToolTip("Faust is the run; she cannot be her own "
@@ -725,102 +666,99 @@ class SettingsPage(QWidget):
                     faust.setGraphicsEffect(dim)
                 else:
                     faust.setGraphicsEffect(None)
-            self._stk_order.set_order(st["order"])
-            self._stk_exclude.set_order(st["exclude"])
+            w["order"].set_order(st["order"])
+            w["exclude"].set_order(st["exclude"])
             if st["keyword"] in _STK_STATUSES:
-                self._stk_keyword.setCurrentText(st["keyword"])
-            self._stk_floor10_row.setVisible(saikai)
-            self._stk_s3_only_row.setVisible(saikai)
-            self._stk_heal_row.setVisible(hollow)
-            self._stk_order_label.setText(
-                "Fallback sinners" if hollow else "Sinner order")
+                w["keyword"].setCurrentText(st["keyword"])
+            w["s3_only_row"].setVisible(not hollow)
+            w["heal_row"].setVisible(hollow)
+            w["order_label"].setText("Fallback sinners" if hollow
+                                     else "Sinner order")
             if hollow:
-                heal = st.get("heal")
-                if heal in _HOLLOW_HEAL_NAMES:
-                    self._stk_heal.setCurrentText(heal)
-            if saikai:
-                self._stk_floor10.setChecked(bool(st.get("floor10")))
-                self._stk_s3_only.setChecked(bool(st.get("s3_only")))
+                if st.get("heal") in _HOLLOW_HEAL_NAMES:
+                    w["heal"].setCurrentText(st["heal"])
+            else:
+                w["s3_only"].setChecked(bool(st.get("s3_only")))
         finally:
-            self._stk_loading = prev
+            self._team_loading = prev
 
-    def _on_stk_run(self, run):
-        self._stk_sync()
-        self._stk_run = run
-        self._stk_apply(run)
-
-    def _on_stk_changed(self, *_):
-        if getattr(self, "_stk_loading", False):
+    def _on_team_changed(self, *_):
+        if getattr(self, "_team_loading", False):
             return
-        self._stk_sync()
+        self._team_sync()
+        self._team_states[self._team_run]["configured"] = True
         self._save_state()
 
-    def _on_locked_stk(self, _label: str):
-        from .dialogs import show_notice
-        show_notice(self, "Thrill runs are still being built, so they are "
-                    "switched off for now.", title="W.I.P")
+    def custom_team_configured(self, run) -> bool:
+        """Whether the run's card was ever set up: something changed on it,
+        an order saved (a preset's too), or the user chose to go on without."""
+        return bool(self._team_states.get(run, {}).get("configured"))
 
-    def saikai_thrill_config(self) -> dict:
-        """Flat md_state keys for run_config; merged in by the coordinator."""
-        self._stk_sync()
-        s = self._stk_states["SAIKAI"]
-        t = self._stk_states["Thrill"]
-        h = self._stk_states["Hollow"]
+    def acknowledge_custom_team(self, run):
+        """The user chose to run with the card untouched: not asked again."""
+        if run in self._team_states:
+            self._team_states[run]["configured"] = True
+            self._save_state()
+
+    def custom_teams_config(self) -> dict:
+        """Flat md_state keys for run_config; merged in by the coordinator.
+        An order left empty is the default one, the owner's."""
+        if self._team_widgets:
+            self._team_sync()
+        s, h = self._team_effective("SAIKAI"), self._team_effective("Hollow")
         return {
             "saikai_order": list(s["order"]),
             "saikai_exclude": list(s["exclude"]),
             "saikai_status": s["keyword"],
-            "saikai_floor10": bool(s.get("floor10")),
             "saikai_s3_only": bool(s.get("s3_only")),
-            "thrill_order": list(t["order"]),
-            "thrill_exclude": list(t["exclude"]),
-            "thrill_status": t["keyword"],
             "hollow_order": [n for n in h["order"] if n != "Faust"],
             "hollow_exclude": list(h["exclude"]),
             "hollow_status": h["keyword"],
             "hollow_heal": h.get("heal") or _HOLLOW_HEAL_DEFAULT,
         }
 
-    def _restore_stk(self, stk):
-        if not isinstance(stk, dict):
-            stk = self._migrate_stk_from_mirror()
-        for run, st in (stk or {}).items():
-            if run not in self._stk_states or not isinstance(st, dict):
+    def _team_effective(self, run) -> dict:
+        from .presets import default_team
+        st = dict(self._team_states[run])
+        if not st.get("order"):
+            st["order"] = list(default_team(run).get("order") or [])
+        return st
+
+    def _restore_teams(self, teams):
+        if not isinstance(teams, dict):
+            teams = self._migrate_teams_from_mirror()
+        for run, st in (teams or {}).items():
+            if run not in self._team_states or not isinstance(st, dict):
                 continue
+            cur = self._team_states[run]
             kw = st.get("keyword")
-            self._stk_states[run].update({
-                "order": [n for n in (st.get("order") or [])
-                          if n in _SINNER_NAMES],
+            order = [n for n in (st.get("order") or []) if n in _SINNER_NAMES]
+            cur.update({
+                "order": order,
                 "exclude": [n for n in (st.get("exclude") or [])
                             if n in _SINNER_NAMES],
-                "keyword": (kw if kw in _STK_STATUSES
-                            else self._stk_states[run]["keyword"]),
+                "keyword": kw if kw in _STK_STATUSES else cur["keyword"],
+                "configured": (bool(st["configured"]) if "configured" in st
+                               else bool(order)),
             })
             if run == "SAIKAI":
-                self._stk_states["SAIKAI"]["floor10"] = bool(
-                    st.get("floor10"))
-                self._stk_states["SAIKAI"]["s3_only"] = bool(
-                    st.get("s3_only"))
-            if run == "Hollow":
+                cur["s3_only"] = bool(st.get("s3_only"))
+            else:
                 heal = st.get("heal")
-                self._stk_states["Hollow"]["heal"] = (
-                    heal if heal in _HOLLOW_HEAL_NAMES
-                    else _HOLLOW_HEAL_DEFAULT)
-                self._stk_states["Hollow"]["order"] = [
-                    n for n in self._stk_states["Hollow"]["order"]
-                    if n != "Faust"]
+                cur["heal"] = (heal if heal in _HOLLOW_HEAL_NAMES
+                               else _HOLLOW_HEAL_DEFAULT)
+                cur["order"] = [n for n in order if n != "Faust"]
                 if st.get("exclude_set"):
-                    self._stk_states["Hollow"]["exclude_set"] = True
+                    cur["exclude_set"] = True
                 else:
                     # Saved while the grid was hidden for Hollow (before
                     # v2.5.2e): that empty list was never a choice.
-                    self._stk_states["Hollow"]["exclude"] = list(
-                        _HOLLOW_EXCLUDE_DEFAULT)
-        if hasattr(self, "_stk_apply"):
-            self._stk_apply(self._stk_run)
+                    cur["exclude"] = list(_HOLLOW_EXCLUDE_DEFAULT)
+        if getattr(self, "_team_widgets", None):
+            self._team_apply(self._team_run)
 
-    def _migrate_stk_from_mirror(self) -> dict:
-        """One-time: read SAIKAI/THRILL config from the MD page's old 'mirror'
+    def _migrate_teams_from_mirror(self) -> dict:
+        """One-time: read the SAIKAI config from the MD page's old 'mirror'
         section so existing setups carry over after the move to Settings."""
         try:
             m = load_section("mirror") or {}
@@ -828,18 +766,11 @@ class SettingsPage(QWidget):
             return {}
         if not m:
             return {}
-        return {
-            "SAIKAI": {
-                "order": m.get("saikai_order") or [],
-                "exclude": m.get("saikai_exclude") or [],
-                "keyword": m.get("saikai_status") or "Poise",
-            },
-            "Thrill": {
-                "order": m.get("thrill_order") or [],
-                "exclude": m.get("thrill_exclude") or [],
-                "keyword": m.get("thrill_status") or "Rupture",
-            },
-        }
+        return {"SAIKAI": {
+            "order": m.get("saikai_order") or [],
+            "exclude": m.get("saikai_exclude") or [],
+            "keyword": m.get("saikai_status") or "Poise",
+        }}
 
     # --- Persistence ---------------------------------------------
     def _connect_persistence(self):
@@ -848,8 +779,6 @@ class SettingsPage(QWidget):
         self._rhythm.toggled.connect(self._save_state)
         self._audio_alerts.toggled.connect(self._save_state)
         self._volume.valueChanged.connect(self._save_state)
-        self._show_descriptions.toggled.connect(self._save_state)
-        self._show_descriptions.toggled.connect(self._on_descriptions_toggled)
         for tog in self._advanced.values():
             tog.toggled.connect(self._save_state)
         for tog in self._overlay_toggles.values():
@@ -874,28 +803,17 @@ class SettingsPage(QWidget):
             "macro_profile": self._macro_profile.selected(),
             "rhythm": self._rhythm.isChecked(),
             "mouse_speed": self._mouse_speed.value(),
-            "mouse_memory": self._mouse_memory.isChecked(),
             "dxgi_capture": self._dxgi_capture.isChecked(),
             "audio_alerts": self._audio_alerts.isChecked(),
             "volume": self._volume.value(),
-            "show_descriptions": self._show_descriptions.isChecked(),
             "advanced": {k: t.isChecked() for k, t in self._advanced.items()},
             "overlay": {k: t.isChecked()
                         for k, t in self._overlay_toggles.items()},
             "overlay_opacity": self._overlay_opacity.value(),
             "shortcuts": {k: b.binding() for k, b in self._shortcuts.items()},
             "sinners": sinners,
-            "saikai_thrill": {k: v for k, v in self._stk_states.items()},
+            "custom_teams": {k: dict(v) for k, v in self._team_states.items()},
         })
-
-    def _on_descriptions_toggled(self, on: bool):
-        """Live-apply the description visibility when the user flips it. The
-        startup / config-load apply (in MainUI) covers the initial state, so
-        skip the partial apply while restoring saved settings."""
-        if self._loading:
-            return
-        from . import help_text
-        help_text.apply(bool(on))
 
     def _restore_state(self):
         s = load_section(_SECTION)
@@ -911,17 +829,12 @@ class SettingsPage(QWidget):
                     self._rhythm.setChecked(bool(s["rhythm"]))
                 if isinstance(s.get("mouse_speed"), int):
                     self._mouse_speed.setValue(s["mouse_speed"])
-                if "mouse_memory" in s:
-                    self._mouse_memory.setChecked(bool(s["mouse_memory"]))
                 if "dxgi_capture" in s:
                     self._dxgi_capture.setChecked(bool(s["dxgi_capture"]))
                 if "audio_alerts" in s:
                     self._audio_alerts.setChecked(bool(s["audio_alerts"]))
                 if isinstance(s.get("volume"), int):
                     self._volume.setValue(s["volume"])
-                if "show_descriptions" in s:
-                    self._show_descriptions.setChecked(
-                        bool(s["show_descriptions"]))
                 for k, v in (s.get("advanced") or {}).items():
                     if k in self._advanced:
                         self._advanced[k].setChecked(bool(v))
@@ -973,10 +886,12 @@ class SettingsPage(QWidget):
                 pass
             finally:
                 self._loading = False
-        # SAIKAI/THRILL: restored unconditionally so the one-time migration
+        # SAIKAI/Hollow: restored unconditionally so the one-time migration
         # from the old "mirror" section runs even when app_settings is empty
-        # (SAIKAI set in the MD page, but no app settings saved yet).
-        self._restore_stk((s or {}).get("saikai_thrill"))
+        # (SAIKAI set in the MD page, but no app settings saved yet). Saves
+        # before v2.6.0 kept the teams under "saikai_thrill".
+        s = s or {}
+        self._restore_teams(s.get("custom_teams", s.get("saikai_thrill")))
         # Always re-sync the appearance + config controls (covers a config
         # load that swapped the whole settings file under us).
         if hasattr(self, "_sync_theme_controls"):
@@ -994,12 +909,8 @@ class SettingsPage(QWidget):
     config_loaded = Signal()
 
     def _build_profiles(self) -> QWidget:
-        from .copy import (
-            SETTINGS_CONFIG_COMBO_PLACEHOLDER,
-            SETTINGS_CONFIGS_HINT,
-        )
+        from .copy import SETTINGS_CONFIG_COMBO_PLACEHOLDER
         section = Card("CONFIGS", self)
-        section.body.addWidget(self._wrap_hint(SETTINGS_CONFIGS_HINT))
 
         row = QHBoxLayout()
         row.setSpacing(Sizing.SPACE_SM)
@@ -1123,18 +1034,11 @@ class SettingsPage(QWidget):
             ["Safe", "Fast", "Chaotic"], default="Safe", parent=section,
         )
         section.body.addWidget(SettingRow(
-            "Movement profile",
-            "Safe is the most human-like timing; Chaotic adds the most "
-            "variance. Fast trims pauses for speed.",
-            self._macro_profile,
-            parent=section,
+            "Movement profile", self._macro_profile, parent=section,
         ))
         self._rhythm = Toggle(default=True, parent=section)
         section.body.addWidget(SettingRow(
-            "Rhythm pauses",
-            "Occasional natural pauses and micro-drift between actions.",
-            self._rhythm,
-            parent=section,
+            "Rhythm pauses", self._rhythm, parent=section,
         ))
 
         # Mouse speed: scales how fast the cursor moves (100% = default). A
@@ -1156,30 +1060,12 @@ class SettingsPage(QWidget):
         self._mouse_speed.valueChanged.connect(self._on_mouse_speed_changed)
         self._mouse_speed.sliderReleased.connect(self._on_mouse_speed_released)
         section.body.addWidget(SettingRow(
-            "Mouse speed",
-            "How fast the cursor moves. 100% is the default human-like speed; "
-            "higher is faster, but above 200% looks less human.",
-            ms_cluster, parent=section,
-        ))
-        self._mouse_memory = Toggle(default=True, parent=section)
-        self._mouse_memory.toggled.connect(self._save_state)
-        section.body.addWidget(SettingRow(
-            "Mouse memory",
-            "Learns where buttons usually appear and pre-moves the cursor there "
-            "while waiting, like muscle memory. Speeds up runs and looks more "
-            "human; the click always lands on the real button.",
-            self._mouse_memory,
-            parent=section,
+            "Mouse speed", ms_cluster, parent=section,
         ))
         self._dxgi_capture = Toggle(default=True, parent=section)
         self._dxgi_capture.toggled.connect(self._save_state)
         section.body.addWidget(SettingRow(
-            "Capture through DXGI",
-            "Read the screen the way the display shows it. Off, WorkerBee reads "
-            "the desktop compositor's copy, which Windows 10 stops refreshing "
-            "for a game that covers the whole screen.",
-            self._dxgi_capture,
-            parent=section,
+            "Capture through DXGI", self._dxgi_capture, parent=section,
         ))
         return section
 
@@ -1208,19 +1094,10 @@ class SettingsPage(QWidget):
         # Discord bot: the single Discord integration. It posts run summaries
         # and screenshots to a channel AND adds buttons to start/stop runs
         # from Discord, so a separate webhook would be redundant.
-        section.body.addWidget(self._wrap_hint(
-            "Discord bot: posts run summaries and screenshots to a channel, "
-            "and adds buttons to start or stop runs right from Discord. "
-            "Create a bot in the Discord Developer Portal, invite it to your "
-            "server, then paste its token and the channel ID below."))
-
         self._discord_enable = Toggle(default=bool(cfg.get("enabled")),
                                       parent=section)
         section.body.addWidget(SettingRow(
-            "Discord bot",
-            "Posts run summaries + screenshots, and adds remote start/stop "
-            "buttons. Needs a bot token and channel ID.",
-            self._discord_enable, parent=section,
+            "Discord bot", self._discord_enable, parent=section,
         ))
 
         self._discord_token = QLineEdit(cfg.get("token", ""), section)
@@ -1260,10 +1137,7 @@ class SettingsPage(QWidget):
         section.body.addSpacing(Sizing.SPACE_SM)
         self._audio_alerts = Toggle(default=True, parent=section)
         section.body.addWidget(SettingRow(
-            "Audio alerts",
-            "Play a sound when a run finishes or fails.",
-            self._audio_alerts,
-            parent=section,
+            "Audio alerts", self._audio_alerts, parent=section,
         ))
 
         # Volume slider + Test button as one control cluster.
@@ -1283,8 +1157,7 @@ class SettingsPage(QWidget):
         )
         vc.addWidget(test_btn)
         section.body.addWidget(SettingRow(
-            "Alert volume", "Preview the alert sound at this level.",
-            vol_cluster, parent=section,
+            "Alert volume", vol_cluster, parent=section,
         ))
         return section
 
@@ -1391,7 +1264,7 @@ class SettingsPage(QWidget):
             if token and channel:
                 self._apply_discord(token)
         except Exception as exc:
-            print(f"Discord autostart skipped: {exc}")
+            logging.warning("Discord autostart skipped: %s", exc)
 
     def _apply_discord(self, token: str):
         """Best-effort start/stop the bot. The bot instance is held at
@@ -1440,32 +1313,17 @@ class SettingsPage(QWidget):
     # --- Application ----------------------------------------------
     def _build_application(self) -> QWidget:
         section = Card("APPLICATION", self)
-        self._show_descriptions = Toggle(default=True, parent=section)
-        section.body.addWidget(SettingRow(
-            "Show descriptions",
-            "Show the gray helper text under settings and features. Turn off "
-            "for a denser, text-light UI.",
-            self._show_descriptions,
-            parent=section,
-        ))
         section.body.addWidget(SettingRow(
             "Check for updates on launch",
-            "Looks at GitHub releases when the splash opens.",
-            Toggle(default=True, parent=section),
-            parent=section,
+            Toggle(default=True, parent=section), parent=section,
         ))
         section.body.addWidget(SettingRow(
             "Don't ask about updates",
-            "Skip the update prompt even when one is available.",
-            Toggle(default=False, parent=section),
-            parent=section,
+            Toggle(default=False, parent=section), parent=section,
         ))
         reset = GhostButton("Reset to defaults", section)
         reset.setProperty("danger", "true")
         section.body.addWidget(SettingRow(
-            "Reset settings",
-            "Restore every setting to its default value.",
-            reset,
-            parent=section,
+            "Reset settings", reset, parent=section,
         ))
         return section

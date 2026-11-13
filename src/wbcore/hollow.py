@@ -14,9 +14,13 @@ a corroded reading holds for its floor only and the overclock loop starts
 over on the next. The floor 1 shop upties Torn Bandolier before anything
 else. Shops heal first after that (a chosen sinner once on floor 1, since
 they never fight and the 45 SP keeps for the skill checks; Faust herself on
-floors 4 and 5) and then follow the Market/Fuse tab's plan, except that
+floors 4 and 5, a second time while her badge does not read 45 SP) and
+then follow the floor plan of the market tags, except that
 Clear Mirror, Calm Water and Artistic Sense are not uptied before the
-floor 3 shop. The starter gift is Torn Bandolier from the Pierce list;
+floor 3 shop. Every shop uses its free shelf refresh; cost is spent on
+further ones for the Poise Rock on any floor and for the rest of the plan
+from floor 4. The starter gift is Torn Bandolier from the Pierce list
+(unless BUILD > Starting gifts picks another, which then skips its uptie);
 Grand Welcome and Sharp Needle & Thread come from the E.G.O Gift Search,
 and Grand Welcome stays out of the fuel pool until the floor 3 shop.
 
@@ -38,7 +42,6 @@ FAUST = "FAUST"
 STARTING_GIFT = "Torn Bandolier"
 STARTING_KEYWORD = "PIERCE"              # the starter screen keyword it is under
 FIRST_UPTIE = (STARTING_GIFT, 2)         # floor 1 shop, before the heal and the plan
-SEARCH_GIFTS = ("Grand Welcome", "Sharp Needle & Thread")
 # Upties the owner wants left alone until this floor's shop.
 ENHANCE_FROM_FLOOR = {"Clear Mirror, Calm Water": 3, "Artistic Sense": 3}
 # The market works the Poise gifts before the rest (the Sinking ones wait).
@@ -46,7 +49,9 @@ MARKET_KEYWORD_FIRST = "poise"
 # The market plan (owner's summary, 2026-10-07, priority of 2026-10-08):
 # the gifts kept out of the fuel pool per floor (floor 3 stands for every
 # later one), the fuse targets and the upties (from the floor 3 shop, see
-# ENHANCE_FROM_FLOOR).
+# ENHANCE_FROM_FLOOR). Grand Welcome is fuel from floor 3; a gift of the
+# plan never is (floor 2 once left Clear Mirror and Artistic Sense out,
+# and one already crafted was fused away again).
 _CONCEIT = "Fragment of Conceit"
 _DECAY = "Fragment of Decay"
 _WELCOME = "Grand Welcome"
@@ -55,16 +60,25 @@ _MIRROR = "Clear Mirror, Calm Water"
 _SENSE = "Artistic Sense"
 MARKET_PROTECTED = {
     1: (_CONCEIT, _DECAY, _WELCOME, STARTING_GIFT, _THREAD, _MIRROR, _SENSE),
-    2: (_CONCEIT, _DECAY, _WELCOME, STARTING_GIFT, _THREAD),
+    2: (_CONCEIT, _DECAY, _WELCOME, STARTING_GIFT, _THREAD, _MIRROR, _SENSE),
     3: (_CONCEIT, _DECAY, STARTING_GIFT, _THREAD, _MIRROR, _SENSE),
 }
-# The two the run must get, in this order, with fuel bought for them; the
-# others only from what the pool allows once those are done.
-MARKET_MUST = (_CONCEIT, _DECAY)
-MARKET_OTHERS = (_MIRROR, _SENSE)
+# The guide sheet's ranking, Poise Rock > Clear Mirror > Sinking Rock >
+# Artistic Sense: the first two are crafted first, in this order, then the
+# others; fuel is bought for all four.
+MARKET_MUST = (_CONCEIT, _MIRROR)
+MARKET_OTHERS = (_DECAY, _SENSE)
 MARKET_ENHANCE_TWICE = (_MIRROR, _SENSE)
 ENHANCE_ALL_BY_FLOOR = 4          # upties wait for every craft until this floor
-SELL_FROM_FLOOR = 4               # unprotected gifts go for uptie cost from this shop
+SELL_FROM_FLOOR = 4               # gifts are sold for cost from this shop: tier 1s
+                                  # when it is short, the unprotected with every craft done
+# Shelf refreshes the cost is spent on (owner, 2026-11-12): the Poise
+# Rock's fuel on every floor, so that the run has it, and the rest of the
+# plan from floor 4, with more cost and more gifts in hand. The free
+# refresh is used on every floor. Tier 1 gifts are sold for that cost by
+# the same rule.
+MARKET_REFRESH_FLOOR = 4
+MARKET_ROCK_FLOOR = 1
 
 # --- geometry (FHD) ----------------------------------------------------
 _PORTRAIT_Y = 990                 # the sinner badge under the chain bar
@@ -94,10 +108,6 @@ _SHOP_CONFIRM = (1705, 967)       # Select, then Leave, same place
 _HEAL_BUTTON_REGION = (1500, 900, 400, 140)   # Select, Leave or Return
 _SP_BADGE_BOX = (-2, 20, 50, 36)   # SP number box, relative to a portrait
 
-# Starter-gift screen: the chosen keyword's three gifts, one per row.
-_STARTER_ROWS_Y = (395, 549, 703)
-_STARTER_ROWS_REGION = (1150, 320, 240, 470)
-_STARTER_ART_SCALES = (1.0, 1.2, 1.35, 1.5, 0.85)
 _HOLD_PARK = (960, 160)           # harmless place to hold the mouse down
 _X_BIAS = 4                       # the cursor lands a touch left of the mark
 _PLATES = ("hollow_letrou", "hollow_boucher")   # the card's two names
@@ -160,40 +170,20 @@ def starting_team() -> dict:
 
 
 def starting_gift_row():
-    """Which row of the keyword's starter gifts shows Torn Bandolier,
-    found by its art at a few sizes so a reorder in the game cannot pick
-    the wrong gift. None when the art is not on screen."""
-    from . import gift_catalog
+    """Which row of the Pierce starter gifts shows Torn Bandolier, found by
+    its art (the rows reorder in game now and then). None when the art is
+    not on screen."""
+    from . import starter_gifts
     templates = [PTH["bandolier"]] if "bandolier" in PTH else []
-    info = gift_catalog.gift_info(STARTING_GIFT)
-    if info:
-        templates.append(info["path"])
-    # The list is still drawing in when the keyword click returns: look
-    # for a short while before giving up.
-    for _ in range(10):
-        for tpl in templates:
-            for scale in _STARTER_ART_SCALES:
-                try:
-                    box = LocateRGB.locate(tpl, region=_STARTER_ROWS_REGION,
-                                           conf=0.8, comp=scale)
-                except Exception as exc:
-                    logging.debug("HOLLOW: starter art @%.2f failed: %s",
-                                  scale, exc)
-                    continue
-                if box:
-                    cy = box[1] + box[3] / 2
-                    row = min(range(len(_STARTER_ROWS_Y)),
-                              key=lambda i: abs(_STARTER_ROWS_Y[i] - cy))
-                    logging.info("HOLLOW: %s is starter row %d (art at %.2f).",
-                                 STARTING_GIFT, row + 1, scale)
-                    return row
-        time.sleep(0.15)
-    usual = starting_team()["checks"][5] + 1
-    logging.warning("HOLLOW: %s not seen among the %s starter gifts; taking "
-                    "row %d, that keyword's usual pick, which is probably "
-                    "not it. Check the gift on the first shop screen.",
-                    STARTING_GIFT, STARTING_KEYWORD.title(), usual)
-    return None
+    row = starter_gifts.find_row(STARTING_GIFT, templates)
+    if row is None:
+        usual = starting_team()["checks"][5] + 1
+        logging.warning("HOLLOW: %s not seen among the %s starter gifts; "
+                        "taking row %d, that keyword's usual pick, which is "
+                        "probably not it. Check the gift on the first shop "
+                        "screen.", STARTING_GIFT, STARTING_KEYWORD.title(),
+                        usual)
+    return row
 
 
 def enhance_allowed(name: str) -> bool:
@@ -202,39 +192,71 @@ def enhance_allowed(name: str) -> bool:
     return floor >= ENHANCE_FROM_FLOOR.get(name, 1)
 
 
-def all_crafted(crafted) -> bool:
-    """Whether every gift of the plan is owned."""
-    return all(n in (crafted or ()) for n in MARKET_MUST + MARKET_OTHERS)
+def paid_refreshes(name: str, floor=None) -> bool:
+    """Whether the shop may pay for shelf refreshes (and sell tier 1 gifts
+    for the cost) while this craft's fuel is short."""
+    floor = int(floor or getattr(p, "LVL", 1) or 1)
+    if floor >= MARKET_REFRESH_FLOOR:
+        return True
+    return name == MARKET_MUST[0] and floor >= MARKET_ROCK_FLOOR
 
 
-def enhance_ready(crafted, floor=None) -> bool:
-    """Whether the upties may start: every gift of the plan crafted, or
-    floor 4 reached with some still missing."""
+def all_crafted(crafted, targets=None) -> bool:
+    """Whether every fuse target of the plan is owned."""
+    names = MARKET_MUST + MARKET_OTHERS if targets is None else targets
+    return all(n in (crafted or ()) for n in names)
+
+
+def enhance_ready(crafted, floor=None, targets=None) -> bool:
+    """Whether the upties may start: every fuse target of the plan crafted,
+    or floor 4 reached with some still missing."""
     floor = int(floor or getattr(p, "LVL", 1) or 1)
     if floor >= ENHANCE_ALL_BY_FLOOR:
         return True
-    return all_crafted(crafted)
+    return all_crafted(crafted, targets)
 
 
-def sell_ready(crafted, floor=None) -> bool:
+def sell_ready(crafted, floor=None, targets=None) -> bool:
     """Whether the shop may sell the gifts the plan does not protect for
-    the upties' cost: the floor 4 shop on, every gift of the plan crafted."""
+    the upties' cost: the floor 4 shop on, every fuse target crafted."""
     floor = int(floor or getattr(p, "LVL", 1) or 1)
-    return floor >= SELL_FROM_FLOOR and all_crafted(crafted)
+    return floor >= SELL_FROM_FLOOR and all_crafted(crafted, targets)
 
 
-def market_plan(floor=None, crafted=()) -> dict:
+def market_plan(floor=None, crafted=(), tags=None) -> dict:
     """The shop plan for a floor: protected gifts, the fuse targets still
     owed (the must-gets first, in their order, then the others) and the
-    upties allowed on that floor."""
+    upties allowed on that floor, in the targets' order. `tags` are the
+    run's market tags for the floor, the sheet's plan as the preset writes
+    it or whatever the user made of it; without them the sheet's plan
+    stands."""
     floor = int(floor or getattr(p, "LVL", 1) or 1)
     key = min(max(floor, 1), 3)
     crafted = set(crafted or ())
-    fuse = [n for n in MARKET_MUST + MARKET_OTHERS if n not in crafted]
-    enhance2 = [n for n in MARKET_ENHANCE_TWICE
-                if floor >= ENHANCE_FROM_FLOOR.get(n, 1)]
-    return {"protected": list(MARKET_PROTECTED[key]), "fuse": fuse,
-            "must": list(MARKET_MUST), "enhance2": enhance2}
+    if tags is None:
+        protected = list(MARKET_PROTECTED[key])
+        targets = list(MARKET_MUST + MARKET_OTHERS)
+        once, twice = [], list(MARKET_ENHANCE_TWICE)
+    else:
+        protected = [n for n in (tags.get("keep_fuse") or []) if n]
+        wanted = [n for n in (tags.get("fuse") or []) if n]
+        targets = [n for n in MARKET_MUST + MARKET_OTHERS if n in wanted]
+        targets += [n for n in wanted if n not in targets]
+        # The starting gift's uptie is the first shop's own step.
+        once = [n for n in (tags.get("enhance1") or [])
+                if n and n != STARTING_GIFT]
+        twice = [n for n in (tags.get("enhance2") or [])
+                 if n and n != STARTING_GIFT]
+    # Saved tags come back alphabetical; the plan's ranking decides which
+    # uptie the cost goes to first.
+    rank = {n: i for i, n in enumerate(targets)}
+    once.sort(key=lambda n: rank.get(n, len(rank)))
+    twice.sort(key=lambda n: rank.get(n, len(rank)))
+    return {"protected": protected, "targets": targets,
+            "fuse": [n for n in targets if n not in crafted],
+            "must": [n for n in MARKET_MUST if n in targets],
+            "enhance1": [n for n in once if floor >= ENHANCE_FROM_FLOOR.get(n, 1)],
+            "enhance2": [n for n in twice if floor >= ENHANCE_FROM_FLOOR.get(n, 1)]}
 
 
 def market_order(names, keyword_of) -> list:
@@ -817,14 +839,6 @@ def _enemy_slots():
     return found
 
 
-def _wait_still():
-    try:
-        from .battle import _thrill_wait_for_still
-        _thrill_wait_for_still()
-    except Exception:
-        time.sleep(1.2)
-
-
 def _boss_row(slots) -> list:
     """The enemy slots that make up the main body's row: the largest group
     at one height (the Skin Prophet's two candles sit lower, on their own,
@@ -1028,6 +1042,11 @@ def focused_turn():
 
 # --- shop ----------------------------------------------------------------
 
+# Heals of Faust per floor 4 or 5 shop: one gives 45 SP and she can come in
+# below 0, so she is healed again while her badge does not read 45.
+FAUST_HEALS = 2
+
+
 def _heal_target_index():
     """Roster position of the sinner to heal on this floor, or None for no
     heal: Faust on floors 4 and 5, the chosen sinner on floor 1 only."""
@@ -1121,9 +1140,9 @@ def _leave_heal_menu() -> bool:
 
 def shop_visit() -> bool:
     """The heal part of the shop for this run: read Faust's SP, heal one
-    sinner when the floor calls for it, and come back to the shop screen
-    for the market plan. The heal is judged by the cost dropping. True
-    when handled."""
+    sinner when the floor calls for it (Faust a second time while her
+    badge does not read 45 SP), and come back to the shop screen for the
+    market plan. True when handled."""
     faust = ROSTER.index(FAUST)
     floor = int(getattr(p, "LVL", 1) or 1)
     if "hollow_sp_corroded" in PTH:
@@ -1140,19 +1159,36 @@ def shop_visit() -> bool:
         return True
     from .shop import balance
     try:
-        before = balance()
+        funds = balance()
     except RuntimeError:
         logging.warning("HOLLOW: could not read the cost; no heal this shop.")
         return True
-    if before < 100:
-        logging.info("HOLLOW: under 100 cost, no heal this shop.")
-        return True
+    for done in range(FAUST_HEALS if target == faust else 1):
+        owed, funds = _heal(target, floor, funds, again=done > 0)
+        if not owed:
+            break
+    return True
+
+
+def _heal(target: int, floor: int, funds: int, again: bool = False):
+    """One heal of the sinner at roster position `target`, with `funds`
+    cost in hand; `again` for a second one in the same shop. The heal is
+    judged by the cost dropping. Returns (owed, funds): whether another
+    heal may still be owed (this one was bought, the badge does not read
+    45 SP and the shop screen is back), and the cost left, reckoned at
+    100 a heal since the screen is still settling when the next one
+    starts."""
+    faust = ROSTER.index(FAUST)
+    if funds < 100:
+        logging.info("HOLLOW: under 100 cost, no %sheal this shop.",
+                     "second " if again else "")
+        return False, funds
     if "hollow_sp45" in PTH and _sp_badge(target, "hollow_sp45", conf=0.9):
-        logging.info("HOLLOW: %s already reads 45 SP; no heal needed.",
-                     ROSTER[target])
+        logging.info("HOLLOW: %s already reads 45 SP; no %sheal needed.",
+                     ROSTER[target], "second " if again else "")
         if target == faust:
             p.HOLLOW_CORRODED = False
-        return True
+        return False, funds
     ClickAction(_SHOP_HEAL_BUTTON, ver="return").execute(click)
     time.sleep(0.4)
     # The type list still has Return and shows every badge; the sinner
@@ -1164,8 +1200,9 @@ def shop_visit() -> bool:
         if target == faust:
             p.HOLLOW_CORRODED = False
         _leave_heal_menu()
-        return True
-    logging.info("HOLLOW: healing %s (floor %d).", ROSTER[target], floor)
+        return False, funds
+    logging.info("HOLLOW: healing %s%s (floor %d).", ROSTER[target],
+                 " once more, not at 45 SP yet" if again else "", floor)
     win_click(*_SHOP_HEAL_SINGLE, tsize=(60, 20))
     time.sleep(0.8)
     if not _heal_row_lit(target):
@@ -1176,7 +1213,7 @@ def shop_visit() -> bool:
         if target == faust:
             p.HOLLOW_CORRODED = False
         _leave_heal_menu()
-        return True
+        return False, funds
     win_click(_SHOP_PORTRAIT_X[target], _SHOP_PORTRAIT_Y, tsize=(20, 20))
     wait_while_condition(lambda: not _heal_button("hollow_heal_select"),
                          interval=0.2, timer=2.5)
@@ -1184,7 +1221,7 @@ def shop_visit() -> bool:
         logging.warning("HOLLOW: Select did not come up for %s; leaving the "
                         "heal screen.", ROSTER[target])
         _leave_heal_menu()
-        return True
+        return False, funds
     # One Select. Clicking that spot again would press Leave on the result
     # screen and then the shop's own Leave.
     win_click(*_SHOP_CONFIRM, tsize=(80, 20))
@@ -1203,16 +1240,17 @@ def shop_visit() -> bool:
             confirmed = _sp_badge(faust, "hollow_sp45", conf=0.9)
             logging.info("HOLLOW: Faust's badge %s 45 SP after the heal.",
                          "reads" if confirmed else "does not read")
-    _leave_heal_menu()
+    back = bool(_leave_heal_menu())
     if confirmed:
-        return True
+        return False, funds - 100
+    from .shop import balance
     try:
         after = balance()
     except RuntimeError:
         after = None
-    if after is not None and after < before:
-        logging.info("HOLLOW: the heal went through (cost %d to %d).", before, after)
-    else:
-        logging.warning("HOLLOW: the heal may not have gone through (cost %s, "
-                        "was %d).", after, before)
-    return True
+    if after is not None and after < funds:
+        logging.info("HOLLOW: the heal went through (cost %d to %d).", funds, after)
+        return back, funds - 100
+    logging.warning("HOLLOW: the heal may not have gone through (cost %s, "
+                    "was %d).", after, funds)
+    return back, funds

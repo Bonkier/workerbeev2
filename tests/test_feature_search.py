@@ -90,7 +90,7 @@ def test_a_request_in_a_sentence_still_finds_the_feature():
     assert "md:close limbus when finished" in _ids(r.guesses)[:2]
 
 
-def test_words_spelled_out_in_the_description_are_found():
+def test_words_spelled_out_in_the_aliases_are_found():
     r = _index().search("alt f4")
     assert "md:close limbus when finished" in _ids(r.direct + r.guesses)
 
@@ -187,7 +187,8 @@ def test_every_page_and_setting_is_listed(window):
     for key, label in _NAV_ITEMS:
         assert "%s:%s" % (key, E.normalise(label)) in ids
     for fid in ("settings:mouse speed", "settings:keyboard shortcuts",
-                "mirror_dungeon:skill replacement", "mirror_dungeon:packs",
+                "mirror_dungeon:skill replacement",
+                "mirror_dungeon:floor packs market",
                 "mirror_dungeon:hard", "stats:export csv",
                 "luxcavation:thread rotation", "help:troubleshooting"):
         assert fid in ids
@@ -223,8 +224,26 @@ def test_a_result_in_another_tab_opens_that_page_and_tab(window):
     _settle()
     md = ui.page("mirror_dungeon")
     assert ui._stack.currentWidget() is ui._wrappers["mirror_dungeon"]
-    assert md._tabbar.selected() == "Packs"
-    assert md._tab_stack.currentIndex() == list(md._TABS).index("Packs")
+    assert md._tabbar.selected() == "Floor Packs/Market"
+    assert md._tab_stack.currentIndex() == list(md._TABS).index("Floor Packs/Market")
+    # The one PACK SEARCH panel the index names is floor 1's.
+    assert md._floor_bar.selected() == "Floor 1" and md._market_floor == 1
+
+
+def test_a_result_in_the_tabs_leaves_the_basic_view(window):
+    _host, ui, _box, search = window
+    md = ui.page("mirror_dungeon")
+    ui.navigate_to("mirror_dungeon")
+    md._view._buttons["Basic"].click()
+    assert md._view_stack.currentIndex() == 0 and not md._tabbar.isVisibleTo(md)
+    presets = _feature(search, "mirror_dungeon:presets")
+    assert presets.crumbs == ("Mirror Dungeon", "Basic")
+    behaviour = _feature(search, "mirror_dungeon:behaviour")
+    assert behaviour.crumbs == ("Mirror Dungeon", "Advanced", "General")
+    search.go(behaviour)
+    _settle()
+    assert md._view.selected() == "Advanced" and md._tabbar.isVisibleTo(md)
+    assert md._tabbar.selected() == "General"
 
 
 def test_a_result_in_a_folded_panel_unfolds_it(window):
@@ -402,7 +421,7 @@ def test_the_pack_search_card_is_the_one_feature_of_that_name(window):
     assert "mirror_dungeon:pack search#setting" not in feats     # the Behaviour toggle is gone
     assert "mirror_dungeon:packs#group" not in feats
     # The same list whichever tab was looked at last.
-    ui.page("mirror_dungeon")._tabbar._buttons["Packs"].click()
+    ui.page("mirror_dungeon")._tabbar._buttons["Floor Packs/Market"].click()
     _settle()
     again = [f.id for f in search_index.collect(ui)]
     ui.page("mirror_dungeon")._tabbar._buttons["General"].click()

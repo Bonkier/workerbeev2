@@ -13,9 +13,9 @@ root and `src/` to sys.path).
 Asset / data shipping:
 - ImageAssets/   -> _MEIPASS/ImageAssets/   (PTH templates, app icon)
 - audio/         -> _MEIPASS/audio/
-- version       \\
-- version.json  /  paths.py reads either (we ship both so legacy
-                   _MEIPASS layouts and the new one both work)
+- version.json  -> _MEIPASS/version.json   (what the app reads)
+- version       -> _MEIPASS/version        (the same text, kept for anything
+                   that still looks for the plain file)
 - bridge.dll    -> _MEIPASS/bridge/         (alongside bridge.py)
 - Help.txt      -> _MEIPASS/Help.txt
 """
@@ -23,9 +23,8 @@ Asset / data shipping:
 import os
 import shutil
 
-# Make sure a `version` (no-extension) file exists alongside
-# `version.json` so paths.py finds it under _MEIPASS even on builds
-# that ship only one of the two.
+# The plain `version` file is a copy of `version.json`, made here when it
+# is missing.
 _root = os.path.dirname(os.path.abspath(SPEC))
 _version_json = os.path.join(_root, "version.json")
 _version_plain = os.path.join(_root, "version")
@@ -87,7 +86,6 @@ hiddenimports = [
     # Our own packages.
     "wbcore",
     # Only imported lazily (inside functions), so name them explicitly.
-    "wbcore.input.click_memory",
     "wbcore.utils.datadir",
     "wbcore.market_catalog",
     "wbcore.gift_catalog",

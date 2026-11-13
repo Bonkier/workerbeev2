@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The October season: on by date, titles only, darker and red, and gone
-again in November. Plus Thrill, which is locked as W.I.P all year."""
+again in November."""
 
 import datetime
 
@@ -176,39 +176,7 @@ def test_the_overlay_bee_and_wordmark_paint_in_season(evil):
     assert len(ov._BAT_ROWS[0]) == len(ov._BEE_ROWS[0])
 
 
-# --- Thrill is locked, in and out of season ----------------------------
-
-@pytest.fixture
-def md_page(monkeypatch):
-    import gui_v2.settings as st
-    import gui_v2.mirror_dungeon_page as M
-    monkeypatch.setattr(st, "save_section", lambda *a, **k: None)
-    monkeypatch.setattr(M, "save_section", lambda *a, **k: None)
-    page = M.MirrorDungeonPage()
-    page._loading = True
-    return page
-
-
-def test_clicking_thrill_selects_nothing_and_says_wip(md_page, monkeypatch):
-    from gui_v2 import dialogs
-    shown = []
-    monkeypatch.setattr(dialogs, "show_notice",
-                        lambda parent, text, title="": shown.append(title))
-    seg = md_page._custom_strategy
-    before = seg.selected()
-    assert before != "Thrill"
-    seg._buttons["Thrill"].click()
-    assert seg.selected() == before
-    assert shown == ["W.I.P"]
-
-
-def test_thrill_cannot_be_selected_by_a_saved_config(md_page):
-    seg = md_page._custom_strategy
-    seg.set_selected("Thrill")
-    assert seg.selected() != "Thrill"
-    md_page._custom_run.setChecked(True)
-    assert md_page.state()["custom_strategy"] != "Thrill"
-
+# --- A locked segment ----------------------------------------------------
 
 def test_a_locked_segment_never_holds_the_selection():
     from gui_v2.widgets import Segmented

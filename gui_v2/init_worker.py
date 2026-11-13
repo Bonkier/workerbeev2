@@ -2,7 +2,6 @@
 """Splash-screen init worker + update workers. Update workers run
 gui_v2.updater on a QThread and reshape progress callbacks into signals."""
 
-import os
 import time
 import traceback
 
@@ -131,11 +130,6 @@ class UpdateApplyWorker(QObject):
             tb = traceback.format_exc()
             self.finished.emit(
                 False, f"{type(exc).__name__}: {exc}\n{tb}")
-
-
-# Back-compat alias for older imports of UpdateWorker.
-class UpdateWorker(UpdateApplyWorker):
-    pass
 
 
 class InitThread(QThread):

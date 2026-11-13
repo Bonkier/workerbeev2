@@ -66,12 +66,42 @@ def _save(data: dict) -> None:
         pass
 
 
+def gift_level(g: dict) -> int:
+    """How far a recorded gift was enhanced: 0, 1 (+) or 2 (++). Records
+    from before the level was read carry only the uptied flag."""
+    try:
+        level = int(g.get("level", 0) or 0)
+    except (TypeError, ValueError):
+        level = 0
+    return level or int(bool(g.get("uptied")))
+
+
+def gift_badge(g: dict, sep: str = " ") -> str:
+    """The " [+]", " [++]" or "" that follows a gift's name."""
+    level = gift_level(g)
+    return "%s[%s]" % (sep, "+" * level) if level else ""
+
+
+def gift_counts(gifts: list) -> str:
+    """The haul as "12, 3 uptied, 2 enhanced": how many gifts, and how
+    many of them wear a + and a ++."""
+    once = sum(1 for g in gifts if gift_level(g) == 1)
+    twice = sum(1 for g in gifts if gift_level(g) >= 2)
+    parts = [str(len(gifts))]
+    if once:
+        parts.append("%d uptied" % once)
+    if twice:
+        parts.append("%d enhanced" % twice)
+    return ", ".join(parts)
+
+
 def record_run(completed: bool, duration: float = 0.0, team: str = "",
                mode: str = "mirror", floors: list | None = None,
-               gifts: list | None = None) -> None:
+               gifts: list | None = None, run: str = "") -> None:
     """Append one finished-run record. `floors` is an optional list of
     {floor, pack, duration} dicts giving per-floor pack timing; `gifts` an
-    optional [{name, uptied}] inventory from the end-of-run fuse-shelf scan."""
+    optional [{name, level}] inventory from the end-of-run fuse-shelf scan;
+    `run` the custom run's name, empty for a standard run."""
     data = _load()
     runs = data["runs"]
     runs.append({
@@ -79,6 +109,7 @@ def record_run(completed: bool, duration: float = 0.0, team: str = "",
         "completed": bool(completed),
         "duration": max(0.0, float(duration or 0.0)),
         "team": str(team or ""),
+        "run": str(run or ""),
         "mode": str(mode or "mirror"),
         "floors": [
             {"floor": int(f.get("floor", 0) or 0),
@@ -87,7 +118,8 @@ def record_run(completed: bool, duration: float = 0.0, team: str = "",
             for f in (floors or []) if isinstance(f, dict)
         ],
         "gifts": [
-            {"name": str(g.get("name", "")), "uptied": bool(g.get("uptied"))}
+            {"name": str(g.get("name", "")), "level": gift_level(g),
+             "uptied": gift_level(g) > 0}
             for g in (gifts or []) if isinstance(g, dict)
         ],
     })

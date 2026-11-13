@@ -8,11 +8,9 @@ verify the adapter routes correctly.
 """
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any, Optional
 
 import numpy as np
-import pytest
 
 from src.wbcore.input import InputBackend
 from src.wbcore.pipeline import BackendAdapter, build_pipeline
@@ -21,7 +19,7 @@ from src.wbcore.regionspec import (
     ScreenRect,
     WindowGeometry,
 )
-from src.wbcore.vision import CaptureFn, Finder, TemplateLoader
+from src.wbcore.vision import Finder, TemplateLoader
 from src.wbcore.verifier import Verifier
 from src.wbcore.input import Mouse
 

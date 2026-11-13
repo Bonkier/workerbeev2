@@ -6,7 +6,6 @@ against synthetic frames and fake backends. No display, no game window.
 """
 from __future__ import annotations
 
-from typing import Any, Optional
 
 import numpy as np
 import pytest

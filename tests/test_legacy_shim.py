@@ -13,8 +13,6 @@ pipeline is the engine underneath.
 """
 from __future__ import annotations
 
-import sys
-import types
 from typing import Any, Optional
 
 import numpy as np
@@ -36,7 +34,7 @@ class _FakeGui:
         self.drag_calls: list = []
         self.cursor: tuple[int, int] = (0, 0)
         self.frame: Optional[np.ndarray] = None  # what screenshot returns
-        # `gui.center` is used by legacy LocatePreset.try_find; mirror it.
+        # `gui.center` is used by the legacy LocatePreset; mirror it.
     @staticmethod
     def center(box):
         x, y, w, h = box

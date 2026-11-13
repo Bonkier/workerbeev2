@@ -3,7 +3,6 @@ import threading
 import logging
 import io
 import os
-import time
 import re
 from datetime import datetime, timedelta
 

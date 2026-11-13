@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Hard from a floor: the Packs tab's Hard switches, the floors they lock,
+"""Hard from a floor: the Floor Packs/Market tab's Hard switches, the floors they lock,
 the pack pool each floor lists, what the run builder and the start overlay
 make of it, and the Extreme lock."""
 import pytest
@@ -85,10 +85,6 @@ def test_picking_a_scripted_run_seeds_its_flip_and_leaves_the_switches_free(page
     assert page._hard_from == 3 and page.state()["hard_from_floor"] == 3
     page._seed_flip(RC.SAIKAI_LABEL)
     assert page._hard_from == 4
-    page._seed_flip(RC.THRILL_LABEL)
-    assert page._hard_from is None and all(t.isEnabled() for t in page._hard_rows.values())
-    page._seed_flip("F3 Hard")
-    assert page._hard_from == 3
     page._custom_run.setChecked(False)
 
 
@@ -106,6 +102,23 @@ def test_a_saved_flip_comes_back_and_a_saved_extreme_reads_as_hard(page, monkeyp
     s.update(difficulty="Hard", hard_from_floor=0)             # an older save
     page._restore_state()
     assert page._hard_from == 1 and page._hard_rows[1].isEnabled()
+
+
+def test_a_saved_f3_hard_run_loads_as_the_floor_3_flip(page, monkeypatch):
+    import gui_v2.mirror_dungeon_page as M
+    s = page.state()
+    s.update(difficulty="Hard", hard_from_floor=0, custom_run=True,
+             custom_strategy="F3 Hard")
+    monkeypatch.setattr(M, "load_section", lambda *a, **k: dict(s))
+    page._restore_state()
+    assert not page._custom_run.isChecked()
+    assert page._hard_from == 3 and page.state()["hard_from_floor"] == 3
+    assert page._difficulty.selected() == "Normal"
+    assert page._custom_strategy.selected() in (RC.SAIKAI_LABEL, RC.HOLLOW_LABEL)
+    assert page._hard_rows[3].isChecked() and not page._hard_rows[2].isChecked()
+    s.update(custom_run=False)                                 # only the picker remembered it
+    page._restore_state()
+    assert page._custom_strategy.selected() in (RC.SAIKAI_LABEL, RC.HOLLOW_LABEL)
 
 
 def test_the_builder_flips_at_the_switched_floor():
@@ -163,21 +176,14 @@ def test_the_scripted_runs_follow_the_pages_flip_and_keep_their_own_without_one(
     _c, _t, settings, hard = RC.build_md_run(dict(saikai, hard_from_floor=0), {}, {})
     assert settings["hard_from_floor"] == 99 and hard is False and settings["pack_search"] is True
     assert RC.build_md_run(dict(saikai, hard_from_floor=1), {}, {})[2]["hard_from_floor"] == 1
-    thrill = {"custom_run": True, "custom_strategy": RC.THRILL_LABEL}
-    assert RC.build_md_run(thrill, {}, {})[3] is False
-    _c, _t, settings, hard = RC.build_md_run(dict(thrill, hard_from_floor=2), {}, {})
-    assert settings["hard_from_floor"] == 2 and hard is True
     rows = {k: v for section in RS.md_summary(dict(hollow, hard_from_floor=3)) for k, v in section[1]}
     assert rows["Difficulty"] == "Normal, then Hard from floor 3"
-    rows = {k: v for section in RS.md_summary(dict(saikai, hard_from_floor=0, saikai_floor10=True))
-            for k, v in section[1]}
-    assert rows["Difficulty"] == "Normal on every floor, leaving after floor 10"
 
 
 
 def test_every_run_takes_the_build_tabs_graces_and_falls_back_to_its_own():
     picked = {"Star of the Beginning": 1, "Star Shower": 2}
-    for label in (RC.SAIKAI_LABEL, RC.THRILL_LABEL, RC.HOLLOW_LABEL):
+    for label in (RC.SAIKAI_LABEL, RC.HOLLOW_LABEL):
         md = {"custom_run": True, "custom_strategy": label, "grace": picked}
         buff = RC.build_md_run(md, {}, {})[2]["buff"]
         assert buff[0] == 1 and buff[3] == 2 and sum(1 for v in buff if v) == 2, label

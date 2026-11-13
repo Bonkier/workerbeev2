@@ -19,14 +19,6 @@ def is_full(shift):
 def check_enkephalin(shift=0):
     # If enkephalin is convertible, click through the convert-to-modules dialog.
     logging.debug("check_enkephalin(shift=%d) running", shift)
-    if logging.getLogger().isEnabledFor(logging.DEBUG):
-        # Dev aid: dump the bottom-left enkephalin area to retune the probe.
-        try:
-            cv2.imwrite(os.path.join(BASE_PATH, "enkephalin_debug.png"),
-                        screenshot(region=(0, 880, 1000, 200)))
-            logging.debug("saved enkephalin_debug.png (logical region 0,880,1000,200)")
-        except Exception as exc:
-            logging.debug("enkephalin_debug.png save failed: %s", exc)
     if not is_full(shift=shift):
         logging.debug("enkephalin not detected as convertible -> skip")
         return
@@ -606,7 +598,7 @@ def start_lux():
         if now.button("Lux"):
             Action("Lux", ver="Exp").execute(click)
     except RuntimeError:
-        print("Lux init failed")
+        logging.warning("Lux init failed")
 
 
 def team_setup(teams, index):

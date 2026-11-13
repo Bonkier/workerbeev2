@@ -318,13 +318,6 @@ class Ops:
         else:
             gui.scroll(amount)
 
-    def active_window_title(self) -> str:
-        """Window title of the currently focused OS window. Used by the
-        legacy pause-on-defocus check."""
-        adapter = self.mouse.backend
-        gui = getattr(adapter, "_gui", adapter)
-        return gui.getActiveWindowTitle()
-
     # ---------------------------------------------------------- internals
 
     def _resolve(
