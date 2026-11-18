@@ -433,6 +433,36 @@ def _base_qss() -> str:
         selection-color: {c.TEXT_PRIMARY};
     }}
 
+    /* Popups Qt would otherwise draw from the system palette: on a
+       Windows light scheme they came up white under the light text. */
+    QToolTip {{
+        background-color: {c.BG_OVERLAY};
+        color: {c.TEXT_PRIMARY};
+        border: 1px solid {c.BORDER_STRONG};
+        padding: 4px 6px;
+    }}
+    QMenu {{
+        background-color: {c.BG_OVERLAY};
+        color: {c.TEXT_PRIMARY};
+        border: 1px solid {c.BORDER_STRONG};
+        padding: 4px 0;
+    }}
+    QMenu::item {{
+        background-color: transparent;
+        padding: 5px 22px;
+    }}
+    QMenu::item:selected {{
+        background-color: {c.BG_HOVER};
+    }}
+    QMenu::item:disabled {{
+        color: {c.TEXT_DISABLED};
+    }}
+    QMenu::separator {{
+        height: 1px;
+        background: {c.BORDER_SUBTLE};
+        margin: 4px 0;
+    }}
+
     /* Subtle vertical gradient on the window for depth - just enough
        to lift it off dead-flat black. Page surfaces are transparent so
        the gradient reads through. */

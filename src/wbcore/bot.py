@@ -1203,6 +1203,7 @@ def execute_me(count, count_exp, count_thd, teams, settings, hard, app, warning)
                     p.CUSTOM_ENHANCE_DONE = {}
                     p.CUSTOM_FUSE_DONE = set()
                     p.RUN_HELD = set()
+                    p.PACK_STUCK = {"level": None, "fails": 0}
                     try:
                         set_team(team, teams, keywordless)
                         if p.RUN_SCRIPT == "hollow":

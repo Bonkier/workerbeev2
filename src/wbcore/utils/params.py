@@ -49,6 +49,8 @@ PACK_REFRESHES = 7
 # Pack Search fallback: {floor: pack display name} (see pack_search_catalog)
 # to hunt in the in-game Pack Search window when it is not on offer.
 PACK_SEARCH_FLOORS = {}
+# pack() calls in a row that ended with the floor screen still up.
+PACK_STUCK = {"level": None, "fails": 0}
 HARD = False        # current effective difficulty (may change mid-run)
 EXTREME = False
 # A floor's Hard switch: starts Normal, switches to HARD_TARGET at
@@ -110,6 +112,11 @@ RUN_HELD = set()
 # Shelf refreshes clicked in the current shop visit (the first ones are free
 # with Star of the Beginning, the paid ones cost 15 more each time).
 SHELF_REFRESHES = 0
+# On while a floor plan's own fuse session or sell pass reads the owned
+# shelf (inventory_check): that read protects what the plan keeps, and
+# nothing else, and marks every kept gift it finds.
+CUSTOM_FUSE_ACTIVE = False
+CUSTOM_SELL_ACTIVE = False
 CLAIM_ON_DEFEAT = False
 # Run `shutdown /l` after the run queue finishes (unattended runs).
 LOGOUT_ON_FINISH = False

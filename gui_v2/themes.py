@@ -149,6 +149,28 @@ def apply_saved_theme():
         _apply_background(seasonal.BACKGROUND)
 
 
+def apply_colour_scheme(app=None) -> None:
+    """Tell Qt which colour scheme the theme is, whatever Windows is set
+    to. What the stylesheet does not cover (message boxes, parts of some
+    popups) is drawn from Qt's palette, which follows the system: on a
+    light Windows scheme that was white under the app's light text."""
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QApplication
+    except Exception:
+        return
+    app = app or QApplication.instance()
+    if app is None:
+        return
+    dark = QColor(Colors.BG_BASE).lightness() < 128
+    try:
+        app.styleHints().setColorScheme(
+            Qt.ColorScheme.Dark if dark else Qt.ColorScheme.Light)
+    except AttributeError:
+        pass                            # Qt before 6.8
+
+
 def _restyle_running_app():
     """Rebuild QSS and repaint so both QSS-styled and custom-painted widgets
     pick up the new colours. A plain update() leaves the title-bar strip
@@ -161,6 +183,7 @@ def _restyle_running_app():
     app = QApplication.instance()
     if app is None:
         return
+    apply_colour_scheme(app)
     app.setStyleSheet(build_global_qss())
     style = app.style()
     for top in app.topLevelWidgets():

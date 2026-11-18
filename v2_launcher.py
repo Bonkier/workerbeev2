@@ -5,6 +5,17 @@ import os
 import sys
 
 
+def _quiet_libraries() -> None:
+    """Keep the libraries that log every call out of game.log. With the
+    Logs page on DEBUG the capture library wrote a line per COM release
+    and the Discord client one per websocket frame, thousands a minute,
+    and the size-capped file kept about ninety seconds of a run."""
+    import logging
+    logging.getLogger("comtypes").setLevel(logging.WARNING)
+    logging.getLogger("discord").setLevel(logging.INFO)
+    logging.getLogger("asyncio").setLevel(logging.INFO)
+
+
 def _setup_logging(base: str) -> None:
     """Route logging to game.log in the pipe-separated format the Logs page parses."""
     import logging
@@ -15,6 +26,7 @@ def _setup_logging(base: str) -> None:
     if any(getattr(h, "_workerbee_v2", False) for h in root.handlers):
         return  # idempotent
     root.setLevel(logging.INFO)
+    _quiet_libraries()
 
     class _NoMilliFormatter(logging.Formatter):
         def formatTime(self, record, datefmt=None):
@@ -118,6 +130,11 @@ def main() -> int:
     try:
         from gui_v2.themes import apply_saved_theme
         apply_saved_theme()
+    except Exception:
+        pass
+    try:
+        from gui_v2.themes import apply_colour_scheme
+        apply_colour_scheme(app)
     except Exception:
         pass
     from gui_v2.style import build_global_qss

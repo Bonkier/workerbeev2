@@ -736,6 +736,17 @@ def test_a_keyword_dialog_left_open_is_dealt_with_before_scanning(fuse_menu, mon
     assert log["keywords"] == ["repoise", "repoise"]
 
 
+def test_the_session_flags_its_scans(fuse_menu, monkeypatch):
+    log = fuse_menu
+    seen = []
+    log["pool"] = {1: [], 2: [(1, 1, 0)], 3: [(2, 2, 0)] * 2, 4: []}
+    log["next"] = ["Fragment of Conceit"]
+    monkeypatch.setattr(S, "get_inventory", lambda: (seen.append(p.CUSTOM_FUSE_ACTIVE),
+                                                       log["pool"], log["pool"], {})[1:])
+    S._fuse_session(["Fragment of Conceit"], set())
+    assert seen == [True] and p.CUSTOM_FUSE_ACTIVE is False
+
+
 def test_the_reserve_skips_upties_of_gifts_not_yet_crafted(monkeypatch):
     import wbcore.market_catalog as MC
     cat = {"Clear Mirror, Calm Water": {"tier": 4}, "Artistic Sense": {"tier": 4}}
@@ -978,12 +989,14 @@ TWICE = [(n, 2) for n in FOUR[2:]]
 
 @pytest.fixture
 def sell_pass(monkeypatch):
-    log = {"funds": 150, "sold": [], "order": [], "keep": None, "tiers": None}
+    log = {"funds": 150, "sold": [], "order": [], "keep": None, "active": None,
+           "tiers": None}
 
     def sell(gifts, **k):
         log["sold"].append(dict(gifts))
         log["tiers"] = k.get("tiers")
         log["keep"] = list(p.MARKET_GIFTS.get("keep_sell") or [])
+        log["active"] = p.CUSTOM_SELL_ACTIVE
         log["order"].append("sell")
         log["funds"] = 900
         return True
@@ -993,6 +1006,7 @@ def sell_pass(monkeypatch):
     monkeypatch.setattr(p, "RUN_SCRIPT", "hollow")
     monkeypatch.setattr(p, "MARKET_GIFTS", {})
     monkeypatch.setattr(p, "CUSTOM_ENHANCE_DONE", {})
+    monkeypatch.setattr(p, "CUSTOM_SELL_ACTIVE", False, raising=False)
     monkeypatch.setattr(p, "LVL", 4)
     import wbcore.market_catalog as MC
     monkeypatch.setattr(MC, "load_market_catalog",
@@ -1008,6 +1022,7 @@ def test_the_unprotected_gifts_are_sold_for_the_owed_upties(sell_pass):
     S._hollow_sell(plan, set(FOUR), TWICE)
     assert log["sold"] == [{"upties": 600}]
     assert log["keep"] == ["Torn Bandolier"] + FOUR + ["Grand Welcome"]
+    assert log["active"] is True and p.CUSTOM_SELL_ACTIVE is False
     assert p.MARKET_GIFTS["keep_sell"] == ["Grand Welcome"]      # the tab's own, back
 
 
@@ -1087,4 +1102,4 @@ def test_a_sell_error_leaves_the_tags_and_the_upties_intact(sell_pass, monkeypat
         monkeypatch.setattr(p, flag, False, raising=False)
     S.custom_market()
     assert log["order"] == ["sell", "enhance"]
-    assert "keep_sell" not in p.MARKET_GIFTS
+    assert p.CUSTOM_SELL_ACTIVE is False and "keep_sell" not in p.MARKET_GIFTS

@@ -6,6 +6,9 @@ title bar reads as a different program popping up over it. FramelessDialog
 gives error and notice popups the same edge, title face and close button as
 the window they belong to."""
 
+import logging
+import sys
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
@@ -194,13 +197,39 @@ def show_notice(parent, text: str, title: str = "Something went wrong"):
     NoticeDialog(title, text, parent).exec()
 
 
+def keep_behind_game(dlg, user32=None) -> bool:
+    """Slide a notice shown while the bot is driving the game right under
+    the game window. A window shown without taking focus still lands on
+    top of every other: over the game it hides part of the screen from the
+    bot's reads and takes the clicks meant for it. Only when the game is
+    the window in front; True when the notice was moved."""
+    if user32 is None:
+        if sys.platform != "win32":
+            return False
+        import ctypes
+        user32 = ctypes.windll.user32
+    try:
+        from wbcore.utils import params as p
+        game = user32.FindWindowW(None, p.LIMBUS_NAME)
+        if not game or user32.GetForegroundWindow() != game:
+            return False
+        # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+        return bool(user32.SetWindowPos(int(dlg.winId()), game, 0, 0, 0, 0,
+                                        0x0001 | 0x0002 | 0x0010))
+    except Exception as exc:
+        logging.debug("notice: not placed under the game: %s", exc)
+        return False
+
+
 def show_advisory(parent, text: str, title: str = "Heads up"):
-    """Non-blocking notice that never takes focus: for advice raised while
-    the bot may be driving the game, where a focus change pauses the run."""
+    """Non-blocking notice that never takes focus and never covers the
+    game: for advice raised while the bot may be driving it, where a focus
+    change pauses the run and a window over the game blinds it."""
     dlg = NoticeDialog(title, text, parent)
     dlg.setModal(False)
     dlg.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
     dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
     dlg.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
     dlg.show()
+    keep_behind_game(dlg)
     return dlg

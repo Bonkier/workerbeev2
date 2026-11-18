@@ -15,7 +15,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
-from .dialogs import FramelessDialog, show_advisory
+from .dialogs import FramelessDialog, keep_behind_game, show_advisory
 from .theme import Sizing
 from .widgets import GhostButton, PrimaryButton
 
@@ -325,4 +325,5 @@ def show_resolution_help(parent, message: str, displays=None):
     dlg.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
     _open = dlg
     dlg.show()
+    keep_behind_game(dlg)
     return dlg

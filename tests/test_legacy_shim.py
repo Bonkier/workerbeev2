@@ -281,3 +281,74 @@ def test_pipeline_reset_invalidates_cache(shim_env):
     utils_mod._reset_pipeline_cache()
     pl2 = utils_mod._pipeline()
     assert pl1 is not pl2
+
+
+# ---------- an input error partway through an action ----------------------
+# The driver's errors are RuntimeErrors, and the helpers used to fall back
+# on any RuntimeError: a command refused after the press ran the whole
+# click again, and the game saw two.
+
+class _FailingGui(_FakeGui):
+    """A backend whose first click or drag is refused after `fail_after`:
+    "move" (nothing pressed yet) or "press" (the button is down)."""
+
+    def __init__(self, fail_after):
+        super().__init__()
+        self.fail_after = fail_after
+        self._held_buttons = set()
+        self.releases = []
+        self._failed = False
+
+    def _refuse(self):
+        if self._failed:
+            return
+        self._failed = True
+        if self.fail_after == "press":
+            self._held_buttons.add("left")
+        raise RuntimeError("driver refused a command")
+
+    def click(self, x=None, y=None, **kw):
+        super().click(x, y, **kw)
+        self._refuse()
+
+    def dragTo(self, x, y, **kw):
+        super().dragTo(x, y, **kw)
+        self._refuse()
+
+    def mouseUp(self, button="left", delay=0.16, jitter=0.05):
+        self.releases.append(button)
+        self._held_buttons.discard(button)
+
+
+@pytest.fixture
+def failing(monkeypatch):
+    from src.wbcore.utils import utils as utils_mod
+    from src.wbcore.utils import params as p_mod
+
+    def build(fail_after):
+        utils_mod._reset_pipeline_cache()
+        gui = _FailingGui(fail_after)
+        monkeypatch.setattr(utils_mod, "gui", gui)
+        monkeypatch.setattr(p_mod, "WINDOW", (0, 0, 1920, 1080))
+        return utils_mod, gui
+    yield build
+    utils_mod._reset_pipeline_cache()
+
+
+def test_a_click_refused_after_the_press_is_not_made_again(failing):
+    utils_mod, gui = failing("press")
+    utils_mod.win_click((100, 200))
+    assert len(gui.click_calls) == 1             # it used to be two
+    assert gui.releases == ["left"] and not gui._held_buttons
+
+
+def test_a_click_refused_before_the_press_is_tried_once_more(failing):
+    utils_mod, gui = failing("move")
+    utils_mod.win_click((100, 200))
+    assert len(gui.click_calls) == 2 and gui.releases == []
+
+
+def test_a_drag_refused_after_the_press_is_not_made_again(failing):
+    utils_mod, gui = failing("press")
+    utils_mod.win_dragTo((50, 60))
+    assert len(gui.drag_calls) == 1 and gui.releases == ["left"]

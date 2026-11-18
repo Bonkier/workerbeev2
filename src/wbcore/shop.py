@@ -309,8 +309,8 @@ def inventory_check(reg, h, uptie_det=True, market_mode=None):
     image = amplify(fuse_shelf)
     # A scripted fuse or sell session protects exactly what its floor plan
     # names; the team gifts it leaves out are fuel like any other.
-    custom = (p.RUN_SCRIPT == "hollow" and market_mode in ("fuse", "sell")
-              and getattr(p, "CUSTOM_%s_ACTIVE" % market_mode.upper(), False))
+    session = {"fuse": p.CUSTOM_FUSE_ACTIVE, "sell": p.CUSTOM_SELL_ACTIVE}
+    custom = p.RUN_SCRIPT == "hollow" and bool(session.get(market_mode))
     kept = ((getattr(p, "MARKET_GIFTS", None) or {}).get(
         "keep_%s" % market_mode) or []) if custom else []
 
@@ -2299,6 +2299,7 @@ def _fuse_session(names, done_fuse, buy_allowed=True, sequential=False,
     # `stuck`: where in the sequence the last buying trip stopped short.
     current, trips, stuck = None, 0, len(sequence)
     bought, rescans, landed = [], 0, False
+    p.CUSTOM_FUSE_ACTIVE = True
     short_tier, skipped = 5, []
     try:
         for name in sequence:
@@ -2421,6 +2422,7 @@ def _fuse_session(names, done_fuse, buy_allowed=True, sequential=False,
             logging.info("Custom market: no fuel for a tier %d; %s left for "
                          "the next shop.", short_tier, ", ".join(skipped))
     finally:
+        p.CUSTOM_FUSE_ACTIVE = False
         close_panel()
 
 
@@ -2534,6 +2536,7 @@ def _plan_sale(plan, gifts, tiers=(2, 1, 3, 4), limit=None) -> bool:
     tags = p.MARKET_GIFTS
     saved = tags.get("keep_sell")
     tags["keep_sell"] = list(dict.fromkeys(_plan_kept(plan) + list(saved or [])))
+    p.CUSTOM_SELL_ACTIVE = True
     try:
         if tuple(tiers) == (2, 1, 3, 4) and limit is None:
             return bool(sell(gifts))
@@ -2548,6 +2551,7 @@ def _plan_sale(plan, gifts, tiers=(2, 1, 3, 4), limit=None) -> bool:
             pass
         return False
     finally:
+        p.CUSTOM_SELL_ACTIVE = False
         if saved is None:
             tags.pop("keep_sell", None)
         else:

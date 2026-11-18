@@ -311,3 +311,233 @@ def test_the_window_is_searched_without_hunting_a_refresh_logo(env, monkeypatch)
     assert pack._pack_search_window(1, [(STEM, KEY)], "PackSearch") == KEY
     assert taps == ["packsearch", "packconfirm"]
     assert pack.time.now < 6.0
+
+
+# --- the window that is not there ------------------------------------------
+# One report: the bot hovering over a pack, then clicking a gift under
+# another pack, in a loop. The search window had not opened and the hunt
+# went on over the floor screen.
+
+class _Floor:
+    """The floor screen and a Pack Search button. `opens_on` is the click
+    on it that opens the window, or None if none does."""
+
+    def __init__(self, opens_on=None):
+        self.opens_on = opens_on
+        self.open = False
+        self.taps = 0
+        self.cancel_clicks = 0
+        self.scrolls = 0
+        self.keys = []
+
+    def tap(self, name, *a, **k):
+        if name == "packsearch":
+            self.taps += 1
+            if self.opens_on is not None and self.taps >= self.opens_on:
+                self.open = True
+        return True
+
+    def find(self, name, region=None, **kw):
+        if name == "PackChoice":
+            return None if self.open else _Hit()
+        if not self.open:
+            return None
+        return _Hit() if name in (STEM, "packconfirm") else None
+
+    def click_at(self, point=None, **kw):
+        if point == pack._SAIKAI_PACK_CANCEL:
+            self.cancel_clicks += 1
+            self.open = False
+
+    def scroll(self, *a, **k):
+        self.scrolls += 1
+
+    def press(self, key, **kw):
+        self.keys.append(key)
+        if key == "enter":
+            self.open = False
+
+
+def test_a_window_that_did_not_open_is_not_hunted_in(env, monkeypatch):
+    floor = env(_Floor())
+    monkeypatch.setattr(pack, "tap_center", floor.tap)
+    assert pack._pack_search_window(4, [(STEM, KEY)], "PackSearch") is None
+    assert floor.taps == 2                       # clicked once more, then left
+    assert floor.scrolls == 0 and floor.cancel_clicks == 0
+    assert env.dumps == ["packsearch_closed"]
+
+
+def test_a_second_click_opens_the_window(env, monkeypatch):
+    floor = env(_Floor(opens_on=2))
+    monkeypatch.setattr(pack, "tap_center", floor.tap)
+    monkeypatch.setattr(p, "HARD", False, raising=False)
+    assert pack._pack_search_window(1, [(STEM, KEY)], "PackSearch") == KEY
+    assert floor.taps == 2 and env.dumps == []
+
+
+def test_cancelling_from_the_floor_screen_clicks_nothing(env):
+    floor = env(_Floor())
+    assert pack._cancel_search() is True
+    assert floor.cancel_clicks == 0 and floor.keys == []
+
+
+# --- the other difficulty's list ------------------------------------------------
+
+class _Tabbed(_Screen):
+    """A search window whose tab reads `tab`."""
+
+    def __init__(self, tab, **kw):
+        super().__init__(**kw)
+        self.tab = tab
+
+    def find(self, name, region=None, **kw):
+        if name in ("normalpackUI", "hardpackUI"):
+            return _Hit() if self.open and name == self.tab else None
+        return super().find(name, region, **kw)
+
+
+def _reopening(screen, monkeypatch):
+    def tap(name, *a, **k):
+        if name == "packsearch":
+            screen.open = True
+        return True
+    monkeypatch.setattr(pack, "tap_center", tap)
+
+
+def test_the_other_difficultys_list_is_closed_and_the_floor_switched(env, monkeypatch):
+    screen = env(_Tabbed("normalpackUI", closes_on=1))
+    switched = []
+
+    def set_difficulty(want_hard):
+        assert not screen.open                   # the window was closed first
+        switched.append(want_hard)
+        screen.tab = "hardpackUI"
+    monkeypatch.setattr(pack, "_set_difficulty", set_difficulty)
+    _reopening(screen, monkeypatch)
+    monkeypatch.setattr(p, "HARD", True, raising=False)
+    assert pack._pack_search_window(5, [(STEM, KEY)], "PackSearch") == KEY
+    assert switched == [True] and screen.cancelled
+
+
+def test_a_list_that_stays_wrong_is_cancelled_not_searched(env, monkeypatch):
+    screen = env(_Tabbed("normalpackUI", closes_on=1))
+    monkeypatch.setattr(pack, "_set_difficulty", lambda want_hard: None)
+    _reopening(screen, monkeypatch)
+    monkeypatch.setattr(p, "HARD", True, raising=False)
+    assert pack._pack_search_window(5, [(STEM, KEY)], "PackSearch") is None
+    assert screen.card_clicks == 0 and not screen.open
+
+
+def test_the_right_list_is_searched_at_once(env, monkeypatch):
+    screen = env(_Tabbed("hardpackUI", closes_on=1))
+    monkeypatch.setattr(pack, "_set_difficulty",
+                        lambda want_hard: pytest.fail("the switch was right"))
+    monkeypatch.setattr(p, "HARD", True, raising=False)
+    assert pack._pack_search_window(5, [(STEM, KEY)], "PackSearch") == KEY
+    assert not screen.cancelled
+
+
+# --- the floor's Normal/Hard switch ------------------------------------------------
+
+class _Switch:
+    """The switch at the top right of the floor screen. `double` holds the
+    clicks the game takes twice; `readable` off hides its label and leaves
+    the HARD banner under the title."""
+
+    def __init__(self, hard=False, double=(), readable=True):
+        self.hard = hard
+        self.double = set(double)
+        self.readable = readable
+        self.clicks = 0
+
+    def find(self, name, region=None, **kw):
+        if name == "pillHard":
+            return _Hit() if self.readable and self.hard else None
+        if name == "pillNormal":
+            return _Hit() if self.readable and not self.hard else None
+        if name == "hardDifficulty":
+            return _Hit() if self.hard else None
+        return None
+
+    def click_at(self, point=None, **kw):
+        assert point == pack._PILL_POINT
+        self.clicks += 1
+        if self.clicks not in self.double:
+            self.hard = not self.hard
+
+
+def test_a_switch_that_reads_right_is_left_alone(env):
+    switch = env(_Switch(hard=True))
+    pack._set_difficulty(True)
+    assert switch.clicks == 0
+
+
+@pytest.mark.parametrize("want_hard", [True, False])
+def test_one_click_sets_the_switch(env, want_hard):
+    switch = env(_Switch(hard=not want_hard))
+    pack._set_difficulty(want_hard)
+    assert switch.hard is want_hard and switch.clicks == 1
+
+
+def test_a_click_the_game_took_twice_is_made_again(env):
+    switch = env(_Switch(hard=False, double={1}))
+    pack._set_difficulty(True)
+    assert switch.hard and switch.clicks == 2
+
+
+def test_an_unreadable_switch_goes_by_the_banner_with_one_click(env):
+    switch = env(_Switch(hard=False, readable=False))
+    pack._set_difficulty(True)
+    assert switch.clicks == 1
+    switch = env(_Switch(hard=True, readable=False))
+    pack._set_difficulty(True)
+    assert switch.clicks == 0
+
+
+# --- a pick that did not take ---------------------------------------------------------
+
+def test_a_pick_that_did_not_take_is_not_followed_by_another_search(monkeypatch):
+    calls = {"search": 0, "refresh": 0}
+
+    class Ops:
+        def find(self, name, region=None, **kw):
+            return _Hit() if name == "PackChoice" else None
+
+        def click_at(self, point=None, **kw):
+            if point == pack._FLOOR_BAR_POINT:
+                calls["refresh"] += 1
+
+        def move_to(self, *a, **k):
+            pass
+
+        drag_to = move_to
+
+    def search(level):
+        calls["search"] += 1
+        return False
+
+    monkeypatch.setattr(pack, "ops", Ops())
+    monkeypatch.setattr(pack, "time", _Clock())
+    monkeypatch.setattr(pack, "_read_floor_number", lambda prev: 3)
+    monkeypatch.setattr(pack, "_maybe_switch_difficulty", lambda level: None)
+    monkeypatch.setattr(pack, "_set_difficulty", lambda want_hard: None)
+    monkeypatch.setattr(pack, "_wait_cards_still", lambda *a, **k: True)
+    monkeypatch.setattr(pack, "_configured_search_candidates",
+                        lambda level: [(STEM, KEY)])
+    monkeypatch.setattr(pack, "_configured_pack_search", search)
+    monkeypatch.setattr(pack, "_evaluate_packs",
+                        lambda level, regions, skip, skips, strict=False, only=None:
+                        None if strict else 1)
+    monkeypatch.setattr(pack, "wait_while_condition", lambda *a, **k: False)
+    monkeypatch.setattr(pack, "dump_template_diag", lambda *a, **k: None)
+    monkeypatch.setattr(p, "PACK_STUCK", {"level": None, "fails": 0})
+    monkeypatch.setattr(p, "LVL", 3)
+    monkeypatch.setattr(p, "HARD", False)
+    monkeypatch.setattr(p, "BUFF", [0] * 12)
+    monkeypatch.setattr(p, "PACK_REFRESHES", 7)
+    monkeypatch.setattr(p, "PACK_SEARCH", True)
+    assert pack.pack() is True
+    assert calls == {"search": 1, "refresh": 1}
+    assert pack.pack() is True                   # the floor screen is still up
+    assert calls == {"search": 1, "refresh": 1}  # picked again, nothing else
+    assert p.PACK_STUCK["fails"] == 2

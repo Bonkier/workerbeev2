@@ -38,3 +38,25 @@ def test_each_tab_is_found_and_the_other_is_not(shown):
 def test_the_tabs_are_cut_from_the_same_box():
     sizes = {cv2.imread(PTH[name]).shape for name in TABS}
     assert len(sizes) == 1
+
+
+# The floor screen's Normal/Hard switch: its label is read before and after
+# every click on it.
+PILLS = {"pillNormal": (1283, 53), "pillHard": (1374, 53)}
+PILL = (1230, 28, 265, 84)
+
+
+@pytest.mark.parametrize("shown", sorted(PILLS))
+def test_each_switch_label_is_found_and_the_other_is_not(shown):
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    label = cv2.imread(PTH[shown])
+    x, y = PILLS[shown]
+    h, w = label.shape[:2]
+    frame[y:y + h, x:x + w] = label
+    finder = Finder(window=WindowGeometry.identity(),
+                    backend=lambda r: frame[r.y:r.y + r.h, r.x:r.x + r.w],
+                    color_mode=ColorMode.RGB)
+    other = next(name for name in PILLS if name != shown)
+    hit = finder.find(PTH[shown], region=PILL)
+    assert hit is not None and (hit.x, hit.y) == (x, y)
+    assert finder.find(PTH[other], region=PILL) is None

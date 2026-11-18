@@ -103,42 +103,85 @@ def trial_columns(trials_image):
     return found
 
 
-def get_gift_hp_free(image, owned_x, trials_image, labels_image):
+# A gift card is about 400 px wide, so a pick and a trial label less than
+# half of that apart sit on the same card.
+_SAME_CARD = 190
+# The picks made on the gift screen that is still showing. The screen
+# staying up after the confirm means it wants more gifts than were picked;
+# clicking a picked card again would put the gift back.
+_PICKS = {"at": 0.0, "taken": []}
+_SAME_SCREEN_S = 12.0
+# The last time a gift screen with nothing left to add was saved.
+_LAST_STUCK_DIAG = 0.0
+
+
+def _same_card(x, taken) -> bool:
+    return any(abs(x - t) < _SAME_CARD for t in taken)
+
+
+def _picked_x(before, after):
+    """The x of the card get_gift blacked out of `after`, or None when it
+    picked nothing."""
+    changed = np.flatnonzero(np.any(before != after, axis=tuple(
+        i for i in range(before.ndim) if i != 1)))
+    if not len(changed):
+        return None
+    comp = p.WINDOW[2] / 1920
+    return int((int(changed[0]) + int(changed[-1])) / 2 / comp)
+
+
+def _blank_card(image, x):
+    return rectangle(image, (int(x - 140), 0), (int(x + 140), 110), (0, 0, 0), -1)
+
+
+def _take(image, owned_x, taken):
+    """One usual pick; the card it took is added to `taken`."""
+    before = image.copy()
+    image = get_gift(image, owned_x)
+    x = _picked_x(before, image)
+    if x is not None:
+        taken.append(x)
+    return image
+
+
+def get_gift_hp_free(image, owned_x, trials_image, labels_image, taken=None):
     """The usual gift pick, with the gifts whose trial raises the enemies'
-    Max HP blacked out first, so the priority runs over the others. A
-    column with no readable trial stays in. When every gift on offer has
-    such a trial the pick is the usual one. Returns the image for the
-    next pick."""
+    Max HP left out while another is on offer. A column with no readable
+    trial stays in. `taken` holds the cards already picked on this screen:
+    they are never clicked again, and once only Max HP trials are left the
+    pick is the usual one over those. Returns the image for the next
+    pick."""
+    taken = [] if taken is None else taken
     cols = trial_columns(trials_image)
     labels = LocateRGB.locate_all(PTH["trials"], labels_image,
                                   method=cv2.TM_SQDIFF_NORMED, threshold=100)
     gifts = max(len(labels), len(cols), 1)
-    hp = sorted(x for x, n in cols.items() if n in HP_TRIALS)
-    free = sorted(x for x, n in cols.items() if n not in HP_TRIALS)
-    logging.info("HOLLOW: trials on offer %s; %d gift(s).",
+    left = {x: n for x, n in cols.items() if not _same_card(x, taken)}
+    hp = sorted(x for x, n in left.items() if n in HP_TRIALS)
+    free = sorted(x for x, n in left.items() if n not in HP_TRIALS)
+    logging.info("HOLLOW: trials on offer %s; %d gift(s), %d taken.",
                  ", ".join("%s at x %d" % (cols[x], x) for x in sorted(cols))
-                 or "none read", gifts)
-    if not hp or len(hp) >= gifts:
-        if hp:
-            logging.info("HOLLOW: every trial on offer raises Max HP; the "
-                         "usual pick.")
-        return get_gift(image, owned_x)
-    masked = image.copy()
-    for x in hp:
-        masked = rectangle(masked, (int(x - 140), 0), (int(x + 140), 110),
-                           (0, 0, 0), -1)
-    before = masked.copy()
-    picked = get_gift(masked, owned_x)
-    if free and np.array_equal(picked, before):
-        # Nothing the priority knows among the rest: take the first gift
-        # whose trial leaves Max HP alone.
-        x = free[0]
+                 or "none read", gifts, len(taken))
+    view = image
+    if hp and len(hp) < gifts - len(taken):
+        view = image.copy()
+        for x in hp:
+            view = _blank_card(view, x)
+    elif hp:
+        logging.info("HOLLOW: every trial left raises Max HP; the usual pick.")
+    before = view.copy()
+    x = _picked_x(before, get_gift(view, owned_x))
+    if x is None and left:
+        # Nothing the priority knows: the first gift left whose trial
+        # leaves Max HP alone, else the first one left.
+        x = (free or sorted(left))[0]
         win_click(x, 600, tsize=(150, 170))
         logging.info("HOLLOW: took the gift at x %d for its %s trial.",
                      x, cols[x])
-        picked = rectangle(masked, (int(x - 140), 0), (int(x + 140), 110),
-                           (0, 0, 0), -1)
-    return picked
+    if x is None:
+        return image
+    taken.append(x)
+    return _blank_card(image, x)
 
 
 def get_trial(image, trials_image):
@@ -195,6 +238,11 @@ def grab_EGO():
     if not now.button("EGObin"):
         _maybe_diag_egobin()
         return False
+    resumed = bool(_PICKS["taken"]) and time.time() - _PICKS["at"] < _SAME_SCREEN_S
+    if resumed and wait_while_condition(lambda: now.button("EGObin"), lambda: gui.press("space"), interval=0.5, timer=1.5):
+        # The confirm had only not landed yet.
+        _PICKS.update(at=0.0, taken=[])
+        return True
     now_click.button("Cancel")
     time.sleep(0.8)
     owned_x = [p[0] + p[2] for p in LocateRGB.locate_all(PTH["Owned"], region=REG["Owned"])]
@@ -207,7 +255,7 @@ def grab_EGO():
         # HOLLOW keeps the enemies' Max HP down: the trial row decides
         # which gifts are even considered.
         rows = (screenshot(region=REG["buffs"]), screenshot(region=REG["trials"]))
-    if p.HARD and now.button("trials"): 
+    if p.HARD and now.button("trials"):
         cycle = 2
         if p.EXTREME:
             trials = screenshot(region=REG["buffs"])
@@ -217,18 +265,44 @@ def grab_EGO():
                 cycle = i
                 break
 
+    taken = []
+    if resumed:
+        # Still the screen the last picks were made on, confirmed again
+        # to no effect: it wants more gifts than that, so one more is
+        # taken and the picked ones are left alone.
+        taken = list(_PICKS["taken"])
+        logging.info("gift pick: the screen stayed up after %d pick(s); "
+                     "taking one more.", len(taken))
+        for x in taken:
+            image = _blank_card(image, x)
+        cycle, trials = 1, None
+
     for _ in range(cycle):
         if trials is not None:
             image, trials = get_trial(image, trials)
             time.sleep(0.1)
         if trials is None:
             if rows is not None:
-                image = get_gift_hp_free(image, owned_x, *rows)
+                image = get_gift_hp_free(image, owned_x, *rows, taken=taken)
             else:
-                image = get_gift(image, owned_x)
+                image = _take(image, owned_x, taken)
             time.sleep(0.1)
 
-    wait_while_condition(lambda: now.button("EGObin"), lambda: gui.press("space"), interval=0.5, timer=2)
+    left = wait_while_condition(lambda: now.button("EGObin"), lambda: gui.press("space"), interval=0.5, timer=2)
+    if left:
+        _PICKS.update(at=0.0, taken=[])
+    elif resumed and len(taken) == len(_PICKS["taken"]):
+        # Nothing was left to add and the screen is still up: the picks
+        # start over, and the screen is saved for the report.
+        global _LAST_STUCK_DIAG
+        logging.warning("gift pick: no gift left to add and the screen is "
+                        "still up; starting the picks over.")
+        if time.time() - _LAST_STUCK_DIAG > 60.0:
+            _LAST_STUCK_DIAG = time.time()
+            dump_template_diag("gift_pick_stuck", "EGObin", "trials")
+        _PICKS.update(at=0.0, taken=[])
+    else:
+        _PICKS.update(at=time.time(), taken=taken)
     return True
 
 

@@ -478,6 +478,33 @@ def win_get_position():
         inv_comp = 1920 / p.WINDOW[2]
         return int((x - p.WINDOW[0])*inv_comp), int((y - p.WINDOW[1])*inv_comp)
 
+def _mouse():
+    """The pipeline's mouse, or None before the game window is known."""
+    try:
+        return _pipeline().mouse
+    except RuntimeError:
+        return None
+
+
+def _press_was_sent(exc, what) -> bool:
+    """After the input driver refused a command partway through `what`:
+    True when a button had already gone down. It is released here and the
+    action is not made again, which would be a second click or drag."""
+    held = set(getattr(gui, "_held_buttons", ()) or ())
+    if not held:
+        logging.warning("%s: the input driver failed before the press (%s); "
+                        "trying once more.", what, exc)
+        return False
+    logging.warning("%s: the input driver failed after the press (%s); "
+                    "released, not made again.", what, exc)
+    for button in held:
+        try:
+            gui.mouseUp(button, delay=0)
+        except Exception:
+            pass
+    return True
+
+
 def win_click(*args, **kwargs):
     """FHD-aware click. Accepts no args (click in place), (x, y), or x, y."""
     if len(args) == 0:
@@ -486,12 +513,15 @@ def win_click(*args, **kwargs):
         point = tuple(args[0]) if args[0] is not None else None
     else:
         point = (args[0], args[1])
-    try:
-        _pipeline().mouse.click(point, **kwargs)
-        return
-    except RuntimeError:
-        pass
-    # Pre-pipeline fallback.
+    mouse = _mouse()
+    if mouse is not None:
+        try:
+            mouse.click(point, **kwargs)
+            return
+        except RuntimeError as exc:
+            if _press_was_sent(exc, "click"):
+                return
+    # Before the window is known, or once more after a refused move.
     if point is None:
         x, y = None, None
     else:
@@ -508,11 +538,14 @@ def win_moveTo(*args, **kwargs):
         point = tuple(args[0])
     else:
         point = (args[0], args[1])
-    try:
-        _pipeline().mouse.move_to(point, **kwargs)
-        return
-    except RuntimeError:
-        pass
+    mouse = _mouse()
+    if mouse is not None:
+        try:
+            mouse.move_to(point, **kwargs)
+            return
+        except RuntimeError as exc:
+            logging.warning("move: the input driver failed (%s); trying once "
+                            "more.", exc)
     x, y = point
     comp = p.WINDOW[2] / 1920
     x, y = int(p.WINDOW[0] + x*comp), int(p.WINDOW[1] + y*comp)
@@ -525,11 +558,14 @@ def win_dragTo(*args, **kwargs):
         point = tuple(args[0])
     else:
         point = (args[0], args[1])
-    try:
-        _pipeline().mouse.drag_to(point, **kwargs)
-        return
-    except RuntimeError:
-        pass
+    mouse = _mouse()
+    if mouse is not None:
+        try:
+            mouse.drag_to(point, **kwargs)
+            return
+        except RuntimeError as exc:
+            if _press_was_sent(exc, "drag"):
+                return
     x, y = point
     comp = p.WINDOW[2] / 1920
     x, y = int(p.WINDOW[0] + x*comp), int(p.WINDOW[1] + y*comp)

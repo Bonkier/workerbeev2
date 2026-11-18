@@ -513,6 +513,16 @@ _SEARCH_CONFIRM_TRIES = 3
 _ON_FLOOR = "onfloor"                 # the wanted pack is on the floor bar already
 _AVAILABLE_NOTE = (1400, 40, 360, 110)   # "This Theme Pack is already available."
 _CARD_BAND = (161, 630, 1632, 140)       # the SIFT band across the five cards
+_SEARCH_TAB = (1100, 150, 360, 95)       # the window's NORMAL or HARD tab
+_SEARCH_OPEN_WAIT = 3.0
+_SEARCH_TAB_WAIT = 1.5
+_DIFF = {True: "HARD", False: "NORMAL"}
+# The floor screen's Normal/Hard switch, top right: its label reads on the
+# left for NORMAL and on the right for HARD.
+_PILL = (1230, 28, 265, 84)
+_PILL_POINT = (1349, 64)
+_PILL_TRIES = 3
+_PILL_SETTLE = 0.8
 
 
 def _wait_cards_still(timeout: float = 4.0, tick: float = 0.25) -> bool:
@@ -536,12 +546,79 @@ def _wait_cards_still(timeout: float = 4.0, tick: float = 0.25) -> bool:
 
 
 def _cancel_search() -> bool:
-    """Close the Pack Search window; True when the floor screen is back."""
+    """Close the Pack Search window; True when the floor screen is back.
+    With the floor screen showing there is no window to close, and the
+    spot of its Cancel button is a gift under a pack there."""
+    if _floor_screen_back(0.0):
+        return True
     ops.click_at(_SAIKAI_PACK_CANCEL)
     if _floor_screen_back(2.0):
         return True
     ops.press("esc")
     return _floor_screen_back(2.0)
+
+
+def _search_tab(timeout: float = 0.0) -> Optional[bool]:
+    """The difficulty the open search window lists, by its tab: True for
+    HARD, False for NORMAL, None when no tab is read within `timeout`."""
+    deadline = time.time() + timeout
+    while True:
+        for name, hard in (("hardpackUI", True), ("normalpackUI", False)):
+            if name in PTH and ops.find(name, region=_SEARCH_TAB) is not None:
+                return hard
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.2)
+
+
+def _tab_scores() -> str:
+    """How close each tab template comes in the tab's spot, for the log."""
+    parts = []
+    for name in ("hardpackUI", "normalpackUI"):
+        hit = (ops.find(name, region=_SEARCH_TAB, conf=0.0)
+               if name in PTH else None)
+        score = getattr(hit, "confidence", None)
+        parts.append("%s %s" % (name, "n/a" if score is None else "%.2f" % score))
+    return ", ".join(parts)
+
+
+def _search_window_open(timeout: float = 0.0) -> bool:
+    """The Pack Search window is up: its Confirm button or its tab shows."""
+    deadline = time.time() + timeout
+    while True:
+        if ("packconfirm" in PTH
+                and ops.find("packconfirm", region=(0, 0, 1920, 1080),
+                             mode="gray") is not None):
+            return True
+        if _search_tab() is not None:
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.2)
+
+
+def _open_search_window(tag) -> bool:
+    """Click Pack Search and see its window open. A click that did not
+    land, or one the game took twice, leaves the floor screen up: one more
+    click then. A screen that is neither is not clicked on."""
+    for attempt in (1, 2):
+        # tap_center uses a tight jitter so the click can't slide off a
+        # small button onto the surrounding chrome.
+        if not tap_center("packsearch", tsize=(60, 24),
+                          wait=5 if attempt == 1 else 2):
+            logging.error("%s: Pack Search button not located on screen.", tag)
+            dump_template_diag("packsearch", "packsearch")
+            return False
+        if _search_window_open(_SEARCH_OPEN_WAIT):
+            return True
+        if attempt == 2 or not _floor_screen_back(0.0):
+            break
+        logging.info("%s: the Pack Search window did not open; clicking "
+                     "once more.", tag)
+    logging.warning("%s: the Pack Search window did not open; nothing is "
+                    "searched.", tag)
+    dump_template_diag("packsearch_closed", "packsearch", "packconfirm")
+    return False
 
 
 def _marked_unselectable(hit) -> bool:
@@ -655,30 +732,31 @@ def _pack_search_window(level, candidates, tag):
         tag, level, [key for _stem, key in candidates],
     )
 
-    # 1. Open Pack Search. tap_center uses a tight jitter so the click
-    #    can't slide off a small button onto the surrounding chrome.
-    #    wait=5 (was 3) gives the button's entry animation more time to
-    #    finish on slower machines before we declare it missing.
-    if not tap_center("packsearch", tsize=(60, 24), wait=5):
-        # The template matches a fully-rendered pack screen at ~0.9999,
-        # so a miss here means the button was covered / mid-animation /
-        # off-resolution at poll time. Capture exactly what the bot saw
-        # so the next report has hard evidence instead of a guess.
-        logging.error("%s: Pack Search button not located on screen.", tag)
-        dump_template_diag("packsearch", "packsearch")
+    # 1. Open Pack Search, and see it open.
+    if not _open_search_window(tag):
         return None
-    time.sleep(0.8)
 
-    # 2. The window's tab names the difficulty it lists (NORMAL or HARD).
-    #    Best-effort: a miss is logged, not fatal.
-    banner = "hardpackUI" if state.HARD else "normalpackUI"
-    if banner in PTH and not ops.find(banner, region=(0, 0, 1920, 1080),
-                                       timeout=2):
-        logging.warning(
-            "%s: %s tab not detected; the search window may be "
-            "listing the other difficulty.",
-            tag, banner,
-        )
+    # 2. The window's tab names the difficulty it lists. The other one
+    #    means the floor's switch is wrong: close, set it, open again.
+    want_hard = bool(state.HARD)
+    tab = _search_tab(_SEARCH_TAB_WAIT)
+    if tab is not None and tab != want_hard:
+        logging.warning("%s: the search window lists %s packs on a %s "
+                        "floor; setting the floor's difficulty and opening "
+                        "it again.", tag, _DIFF[tab], _DIFF[want_hard])
+        _cancel_search()
+        _set_difficulty(want_hard)
+        if not _open_search_window(tag):
+            return None
+        tab = _search_tab(_SEARCH_TAB_WAIT)
+        if tab is not None and tab != want_hard:
+            logging.warning("%s: it still lists %s packs; no search on "
+                            "floor %d.", tag, _DIFF[tab], level)
+            _cancel_search()
+            return None
+    if tab is None:
+        logging.warning("%s: the search window's difficulty tab was not "
+                        "read (%s); searching it as it is.", tag, _tab_scores())
     # Let the grid finish drawing before the first look at it.
     time.sleep(1.0)
 
@@ -763,6 +841,38 @@ def _configured_pack_search(level: int) -> bool:
     return True
 
 
+# ------------------------------------------------- the difficulty switch
+
+def _difficulty_shown() -> Optional[bool]:
+    """What the floor screen's Normal/Hard switch reads: True for HARD,
+    False for NORMAL, None when it reads as neither or as both."""
+    hard = "pillHard" in PTH and ops.find("pillHard", region=_PILL) is not None
+    normal = ("pillNormal" in PTH
+              and ops.find("pillNormal", region=_PILL) is not None)
+    return None if hard == normal else hard
+
+
+def _set_difficulty(want_hard: bool) -> None:
+    """Put the floor screen's Normal/Hard switch where the run wants it.
+    The switch is read before and after each click, so a click the game
+    took twice, or not at all, is made again. When the switch cannot be
+    read the HARD banner under the title decides, with one click."""
+    for _ in range(_PILL_TRIES):
+        shown = _difficulty_shown()
+        if shown is None:
+            if bool(ops.find("hardDifficulty")) != want_hard:
+                ops.click_at(_PILL_POINT)
+            return
+        if shown == want_hard:
+            return
+        logging.info("Pack: the floor is set to %s; switching it to %s.",
+                     _DIFF[shown], _DIFF[want_hard])
+        ops.click_at(_PILL_POINT)
+        time.sleep(_PILL_SETTLE)
+    logging.warning("Pack: the difficulty switch still does not read %s.",
+                    _DIFF[want_hard])
+
+
 # ---------------------------------------------------- main entry point
 
 def pack() -> bool:
@@ -775,6 +885,9 @@ def pack() -> bool:
 
     state.LVL = _read_floor_number(state.LVL)
     _maybe_switch_difficulty(state.LVL)
+    stuck = state.PACK_STUCK
+    if stuck["level"] != state.LVL:
+        stuck.update(level=state.LVL, fails=0)
 
     if state.LVL in _LONG_TRANSITION_LEVELS:
         # F5 -> F6 / F10 -> F11 plays a longer transition animation; if
@@ -782,22 +895,10 @@ def pack() -> bool:
         # and the count comes back wrong.
         time.sleep(_LONG_TRANSITION_DELAY)
 
-    # Hard / Normal toggle on the pack-pick screen. Up to F5 the UI
-    # exposes a "Hard" pill at (1349, 64): if the run's effective
-    # difficulty doesn't match the pill's current visual state, click
-    # to flip it. The `at=` kwarg used to ride on the old `now.button`
-    # call as a fallback-click coordinate; the new ops.find rejects it
-    # (it would cascade into loader.load() and TypeError), so we do
-    # the find-then-click pattern explicitly here.
+    # Up to F5 the pack screen has a Normal/Hard switch: it is put where
+    # the run's difficulty for this floor wants it.
     if state.LVL <= 5:
-        if state.HARD:
-            # Need Hard ON: if the marker isn't visible, click to turn it on.
-            if not ops.find("hardDifficulty"):
-                ops.click_at((1349, 64))
-        else:
-            # Need Hard OFF: if the marker IS visible, click to turn it off.
-            if ops.find("hardDifficulty"):
-                ops.click_at((1349, 64))
+        _set_difficulty(bool(state.HARD))
 
     # Per-run tally for the dungeon_end recap. Bumped once per
     # pack-choice screen, not per detection, so a re-probe on the same
@@ -850,6 +951,14 @@ def pack() -> bool:
     # the refresh hunt, but the search window opens only when the user
     # configured this floor.
     _cands = _configured_search_candidates(state.LVL)
+    if stuck["fails"]:
+        # The last pick on this floor did not take: no second round of
+        # refreshes and searching, only the pick.
+        logging.warning("Pack: the floor screen stayed up after the last "
+                        "pick (%d in a row); picking again as it is.",
+                        stuck["fails"])
+        _cands = []
+        refresh_budget = 0
     custom_search = bool(_cands)
     strict = custom_search
     # The configured pack itself: while hunting it (refreshes + the search
@@ -907,7 +1016,14 @@ def pack() -> bool:
         ops.move_to((x, y))
         ops.drag_to((x, y + 300), duration=0.31)
 
-    wait_while_condition(lambda: ops.find("PackChoice"), interval=0.1)
+    if wait_while_condition(lambda: ops.find("PackChoice"), interval=0.1):
+        stuck.update(level=None, fails=0)
+    else:
+        stuck["fails"] += 1
+        logging.warning("Pack: the floor screen is still up after the pick "
+                        "(%d in a row).", stuck["fails"])
+        if stuck["fails"] == 2:
+            dump_template_diag("pack_pick_stuck", "PackChoice")
     if state.LVL != 1:
         state.MOVE_ANIMATION = True
     else:
