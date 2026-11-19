@@ -2050,6 +2050,10 @@ _PACK_LABELS = {
     "BearersofWeight": "Bearers of Weight",
     "PilgrimageofCompassion": "Pilgrimage of Compassion",
     "MidspringDream2": "Midspring Dream 2",
+    "AnAnarchyofColors": "An Anarchy of Colors",
+    "CreedofPreservation": "Creed of Preservation",
+    "ReadventofGluttony": "Readvent of Gluttony",
+    "TheWedgeDawnbreak": "The Wedge in the Wake of Dawnbreak",
 }
 
 

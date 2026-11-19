@@ -72,7 +72,7 @@ else:
 REG = {
     # Bot.py
     "Drive"          : (1413,  909,  116,   94),
-    "MD"             : ( 528,  354,  279,  196),
+    "MD"             : ( 539,  266,  247,  126),
     "Start"          : (1473,  657,  315,  161),
     "resume"         : ( 794,  567,  336,   63),
     "enterInvert"    : ( 943,  669,  382,  106),
@@ -119,7 +119,7 @@ REG = {
     # event.py
     "textEGO"        : (1031,  254,  713,  516),
     "event"          : ( 444,   30,  158,  140),
-    "check"          : (1265,  434,  430,   87),
+    "check"          : (1220,  400,  580,  140),
     "choices"        : (1036,  152,  199,   77),
     "skip"           : (1539,  906,  316,  126),
     "Proceed"        : (1539,  906,  316,  126),
@@ -141,7 +141,7 @@ REG = {
     "trials"         : (   0,  615, 1920,   55),
     "buffs"          : (   0,  664, 1920,   52),
     "adversity"      : (  50,   58,  320,   70),
-    "projection"     : (   0,  713, 1920,  100),
+    "projection"     : (   0,  700, 1920,  100),
     "selectCount"    : (1790,  843,   30,   45),
     # regions not binded to an image
     "rewardCount!"   : (1494,  181,   23,   42),
@@ -204,7 +204,7 @@ REG = {
     "loading"        : (1577,  408,  302,   91),
 
     # lux.py
-    "Lux"            : ( 523,  145,  301,  212),
+    "Lux"            : ( 543,  123,  240,  124),
     "Exp"            : (  68,  319,  289,  135),
     "Window"         : (1160,  900,  148,  127),
     "Settings"       : (1726,  116,  150,  150),
@@ -288,6 +288,10 @@ PACKS = {
     'Textbook'                    : ((), (5,)),
     'BladeandArtwork'             : ((), (5,)),
     'TheUnsevering'               : ((), (5,)),
+    'StorefrontCampout'           : ((3, 4), (3, 4)),
+    'AnAnarchyofColors'           : ((), (4, 5)),
+    'CreedofPreservation'         : ((), (4, 5)),
+    'ReadventofGluttony'          : ((), (4, 5)),
     'HellsChicken'                : ((2,), (2,)),
     'SEA'                         : ((2,), (2, 3)),
     'MiracleinDistrict20'         : ((4,), (3, 4)),
@@ -317,6 +321,7 @@ PACKS = {
     'LCBRegularCheckupBokGak'     : ((), (4, 5)),
     'TwiningThreads'              : ((5,), (5,)),
     'NocturnalSweepingBokGak'     : ((), (4, 5)),
+    'TheWedgeDawnbreak'           : ((5,), (5,)),
     'SlicersDicers'               : ((5,), (4,)),
     'TobeCleaved'                 : ((2, 3), (1, 2)),
     'PiercersPenetrators'         : ((5,), (4,)),

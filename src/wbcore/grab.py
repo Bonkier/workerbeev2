@@ -338,8 +338,7 @@ def confirm():
     if not now.button("Confirm"): return False
     gui.press("space")
     time.sleep(0.3)
-    if now.button("Confirm"):
-        gui.press("space")
+    now_click.button("Confirm")
     return True
 
 
