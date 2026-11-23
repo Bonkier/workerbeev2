@@ -516,6 +516,10 @@ _CARD_BAND = (161, 630, 1632, 140)       # the SIFT band across the five cards
 _SEARCH_TAB = (1100, 150, 360, 95)       # the window's NORMAL or HARD tab
 _SEARCH_OPEN_WAIT = 3.0
 _SEARCH_TAB_WAIT = 1.5
+# Pack Search only arms the search: the red refresh logo it puts above the
+# packs is what opens the window.
+_SEARCH_ARM_SETTLE = 0.8
+_SEARCH_LOGO_WAIT = 3.0
 _DIFF = {True: "HARD", False: "NORMAL"}
 # The floor screen's Normal/Hard switch, top right: its label reads on the
 # left for NORMAL and on the right for HARD.
@@ -597,27 +601,54 @@ def _search_window_open(timeout: float = 0.0) -> bool:
         time.sleep(0.2)
 
 
+def _refresh_logo(wait: float = 0.0) -> bool:
+    """Click the red refresh logo above the packs; False when none shows."""
+    return tap_center("packrefresh", tsize=(24, 24), wait=wait)
+
+
 def _open_search_window(tag) -> bool:
-    """Click Pack Search and see its window open. A click that did not
-    land, or one the game took twice, leaves the floor screen up: one more
-    click then. A screen that is neither is not clicked on."""
+    """Open the Pack Search window and see it open: the Pack Search
+    button, then the refresh logo that click puts above the packs. The
+    button alone opens nothing.
+
+    The button is a switch, so a logo already showing is clicked without
+    it. A try that leaves the floor screen up is made once more. A screen
+    that is neither the floor nor a window the bot knows is searched as it
+    is."""
     for attempt in (1, 2):
-        # tap_center uses a tight jitter so the click can't slide off a
-        # small button onto the surrounding chrome.
-        if not tap_center("packsearch", tsize=(60, 24),
-                          wait=5 if attempt == 1 else 2):
-            logging.error("%s: Pack Search button not located on screen.", tag)
-            dump_template_diag("packsearch", "packsearch")
-            return False
-        if _search_window_open(_SEARCH_OPEN_WAIT):
+        logo = _refresh_logo()
+        if not logo:
+            # tap_center uses a tight jitter so the click can't slide off a
+            # small button onto the surrounding chrome.
+            if not tap_center("packsearch", tsize=(60, 24),
+                              wait=5 if attempt == 1 else 2):
+                logging.error("%s: Pack Search button not located on screen.", tag)
+                dump_template_diag("packsearch", "packsearch")
+                return False
+            time.sleep(_SEARCH_ARM_SETTLE)
+            deadline = time.time() + _SEARCH_LOGO_WAIT
+            while True:
+                logo = _refresh_logo()
+                if logo or _search_window_open() or time.time() >= deadline:
+                    break
+                time.sleep(0.2)
+        if _search_window_open(_SEARCH_OPEN_WAIT if logo else 0.0):
             return True
-        if attempt == 2 or not _floor_screen_back(0.0):
-            break
-        logging.info("%s: the Pack Search window did not open; clicking "
-                     "once more.", tag)
+        if not _floor_screen_back(0.0):
+            logging.warning("%s: after Pack Search neither its window nor the "
+                            "floor screen is recognised; searching the screen "
+                            "as it is.", tag)
+            dump_template_diag("packsearch_unknown", "packconfirm", "PackChoice")
+            return True
+        if attempt == 1:
+            logging.info("%s: the Pack Search window did not open (%s); "
+                         "trying once more.", tag,
+                         "its refresh logo was clicked" if logo
+                         else "no refresh logo showed")
     logging.warning("%s: the Pack Search window did not open; nothing is "
                     "searched.", tag)
-    dump_template_diag("packsearch_closed", "packsearch", "packconfirm")
+    dump_template_diag("packsearch_closed", "packsearch", "packrefresh",
+                       "packconfirm")
     return False
 
 
@@ -732,7 +763,7 @@ def _pack_search_window(level, candidates, tag):
         tag, level, [key for _stem, key in candidates],
     )
 
-    # 1. Open Pack Search, and see it open.
+    # 1. Open Pack Search (its button, then its refresh logo) and see it open.
     if not _open_search_window(tag):
         return None
 

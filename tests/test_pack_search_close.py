@@ -299,41 +299,43 @@ def test_the_card_band_is_waited_on_until_it_stops_moving(monkeypatch):
     assert pack._wait_cards_still(timeout=1.0) is False
 
 
-def test_the_window_is_searched_without_hunting_a_refresh_logo(env, monkeypatch):
-    # The window lost its refresh logo; three seconds went on waiting for it.
-    env(_Screen(closes_on=1))
-    taps = []
-    monkeypatch.setattr(pack, "tap_center",
-                        lambda name, *a, **k: taps.append(name) or True)
-    monkeypatch.setattr(pack, "PTH", {"packsearch": "x", "packconfirm": "x",
-                                      "packrefresh": "x"})
-    monkeypatch.setattr(p, "HARD", False, raising=False)
-    assert pack._pack_search_window(1, [(STEM, KEY)], "PackSearch") == KEY
-    assert taps == ["packsearch", "packconfirm"]
-    assert pack.time.now < 6.0
-
-
-# --- the window that is not there ------------------------------------------
-# One report: the bot hovering over a pack, then clicking a gift under
-# another pack, in a loop. The search window had not opened and the hunt
-# went on over the floor screen.
+# --- opening the window ------------------------------------------------------
+# Two reports. On v2.6.0: the bot hovering over a pack, then clicking a gift
+# under another pack, in a loop. On v2.6.2: "_open_search_window only clicks
+# packsearch then check for a packconfirm. But since packrefresh wasn't
+# clicked the search UI never appeared." Both are one thing: the Pack Search
+# button only arms the search and puts a red refresh logo above the packs,
+# and the click on that logo opens the window. v2.6.0 had dropped it.
 
 class _Floor:
-    """The floor screen and a Pack Search button. `opens_on` is the click
-    on it that opens the window, or None if none does."""
+    """The floor screen. Pack Search is a switch: it arms the search and
+    shows the refresh logo. `opens_on` is the logo click that opens the
+    window, or None if none does; `logo` off is a floor that never shows
+    one; `direct` is a Pack Search button that opens the window itself."""
 
-    def __init__(self, opens_on=None):
+    def __init__(self, opens_on=1, logo=True, direct=False, armed=False):
         self.opens_on = opens_on
+        self.logo = logo
+        self.direct = direct
+        self.armed = armed
         self.open = False
-        self.taps = 0
+        self.taps = []
         self.cancel_clicks = 0
         self.scrolls = 0
         self.keys = []
 
     def tap(self, name, *a, **k):
+        if name == "packrefresh":
+            if not (self.logo and self.armed and not self.open):
+                return False
+            self.taps.append(name)
+            if self.opens_on is not None and self.taps.count(name) >= self.opens_on:
+                self.open = True
+            return True
+        self.taps.append(name)
         if name == "packsearch":
-            self.taps += 1
-            if self.opens_on is not None and self.taps >= self.opens_on:
+            self.armed = not self.armed
+            if self.direct:
                 self.open = True
         return True
 
@@ -358,21 +360,77 @@ class _Floor:
             self.open = False
 
 
-def test_a_window_that_did_not_open_is_not_hunted_in(env, monkeypatch):
-    floor = env(_Floor())
+def _floor(env, monkeypatch, **kw):
+    floor = env(_Floor(**kw))
     monkeypatch.setattr(pack, "tap_center", floor.tap)
+    monkeypatch.setattr(p, "HARD", False, raising=False)
+    return floor
+
+
+def test_the_refresh_logo_is_what_opens_the_window(env, monkeypatch):
+    floor = _floor(env, monkeypatch)
+    assert pack._pack_search_window(1, [(STEM, KEY)], "PackSearch") == KEY
+    assert floor.taps[:2] == ["packsearch", "packrefresh"]
+    assert env.dumps == []
+
+
+def test_pack_search_alone_opens_nothing_and_nothing_is_hunted(env, monkeypatch):
+    # What v2.6.0 to v2.6.2 did on every search: the button and no logo.
+    floor = _floor(env, monkeypatch, logo=False)
     assert pack._pack_search_window(4, [(STEM, KEY)], "PackSearch") is None
-    assert floor.taps == 2                       # clicked once more, then left
+    assert floor.taps == ["packsearch", "packsearch"]      # once more, then left
+    assert not floor.armed                                  # the switch is back off
     assert floor.scrolls == 0 and floor.cancel_clicks == 0
     assert env.dumps == ["packsearch_closed"]
 
 
-def test_a_second_click_opens_the_window(env, monkeypatch):
-    floor = env(_Floor(opens_on=2))
-    monkeypatch.setattr(pack, "tap_center", floor.tap)
+def test_a_logo_click_that_did_not_land_is_made_again_without_the_button(env, monkeypatch):
+    floor = _floor(env, monkeypatch, opens_on=2)
+    assert pack._pack_search_window(1, [(STEM, KEY)], "PackSearch") == KEY
+    # A second Pack Search click would have switched the search off.
+    assert floor.taps[:3] == ["packsearch", "packrefresh", "packrefresh"]
+    assert env.dumps == []
+
+
+def test_a_logo_already_showing_is_clicked_without_the_button(env, monkeypatch):
+    floor = _floor(env, monkeypatch, armed=True)
+    assert pack._open_search_window("PackSearch") is True
+    assert floor.taps == ["packrefresh"]
+
+
+def test_a_button_that_opens_the_window_itself_is_not_kept_waiting(env, monkeypatch):
+    floor = _floor(env, monkeypatch, direct=True, logo=False)
+    assert pack._open_search_window("PackSearch") is True
+    assert floor.taps == ["packsearch"]
+    assert pack.time.now <= pack._SEARCH_ARM_SETTLE + 0.5
+
+
+def test_the_logo_gets_time_to_show(env, monkeypatch):
+    floor = _floor(env, monkeypatch)
+    shown_at = pack._SEARCH_ARM_SETTLE + 2.0
+    real_tap = floor.tap
+    monkeypatch.setattr(pack, "tap_center", lambda name, *a, **k: (
+        False if name == "packrefresh" and pack.time.now < shown_at else real_tap(name, *a, **k)))
+    assert pack._open_search_window("PackSearch") is True
+    assert floor.taps == ["packsearch", "packrefresh"]
+
+
+class _Unreadable(_Screen):
+    """An open search window whose Confirm button and tab the bot's
+    templates do not match; its cards are found."""
+
+    def find(self, name, region=None, **kw):
+        if name in ("packconfirm", "normalpackUI", "hardpackUI"):
+            return None
+        return super().find(name, region, **kw)
+
+
+def test_a_screen_that_is_neither_is_searched_as_it_is(env, monkeypatch):
+    screen = env(_Unreadable(closes_on=1))
     monkeypatch.setattr(p, "HARD", False, raising=False)
     assert pack._pack_search_window(1, [(STEM, KEY)], "PackSearch") == KEY
-    assert floor.taps == 2 and env.dumps == []
+    assert screen.card_clicks == 1
+    assert env.dumps == ["packsearch_unknown"]
 
 
 def test_cancelling_from_the_floor_screen_clicks_nothing(env):
@@ -397,9 +455,17 @@ class _Tabbed(_Screen):
 
 
 def _reopening(screen, monkeypatch):
+    """Pack Search, then its refresh logo, bring a closed window back."""
+    armed = {"on": False}
+
     def tap(name, *a, **k):
         if name == "packsearch":
+            armed["on"] = not armed["on"]
+        elif name == "packrefresh":
+            if screen.open or not armed["on"]:
+                return False
             screen.open = True
+            armed["on"] = False
         return True
     monkeypatch.setattr(pack, "tap_center", tap)
 
