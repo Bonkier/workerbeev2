@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Dashboard: the landing page after the splash. Your record as a hero
-line and headline tiles, and the newest runs in full."""
+"""Dashboard: the landing page after the splash. The start button, your
+record in one line, and the newest runs."""
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
@@ -11,11 +11,10 @@ from .stats_page import _HistoryRow
 from .copy import DASHBOARD_ACTIVITY_EMPTY
 from .theme import Sizing
 from .widgets import (
-    Card, GhostButton, LinkButton, PageHeader, PrimaryButton, StatTiles,
-    _title_label,
+    Card, GhostButton, LinkButton, PageHeader, PrimaryButton, _title_label,
 )
 
-_MAX_ACTIVITY_ROWS = 5
+_MAX_ACTIVITY_ROWS = 10
 _KEY_DEFAULTS = {"pause": "F9", "stop": "F2"}
 
 
@@ -53,7 +52,6 @@ class DashboardPage(QWidget):
         outer.addWidget(header)
 
         outer.addWidget(self._build_hero())
-        outer.addWidget(self._build_stats_section())
         # Panels keep their natural height and the leftover goes to a trailing
         # spacer; the page backdrop's grid makes the empty area read as
         # intentional where a stretched panel looked broken.
@@ -106,19 +104,6 @@ class DashboardPage(QWidget):
         for key, cap in self._key_caps.items():
             cap.setText(str(saved.get(key) or _KEY_DEFAULTS[key]))
 
-    # --- Stats: the headline tiles ----------------------------------
-    def _build_stats_section(self) -> QWidget:
-        card = Card("STATISTICS", self)
-        self._tiles = StatTiles([
-            ("Total runs", "0"),
-            ("Dungeons cleared", "0"),
-            ("Success rate", "0%"),
-            ("Average run", "0s"),
-            ("Total run time", "0h 0m", True),
-        ], parent=card)
-        card.body.addWidget(self._tiles)
-        return card
-
     # --- Recent activity feed --------------------------------------
     def _build_activity_section(self) -> QWidget:
         view_all = LinkButton("View all", self)
@@ -139,15 +124,11 @@ class DashboardPage(QWidget):
     def refresh_stats(self):
         agg = stats.aggregate()
         runs = stats.load_runs()
-        self._tiles.set_value("Total runs", str(agg["total"]))
-        self._tiles.set_value("Dungeons cleared", str(agg["mirrors_cleared"]))
-        self._tiles.set_value("Success rate", "%.0f%%" % agg["success_rate"])
-        self._tiles.set_value("Average run", stats.fmt_duration(agg["avg_duration"]))
-        self._tiles.set_value("Total run time", stats.fmt_total(agg["total_time"]))
 
         if runs:
             parts = ["%d completed" % agg["completed"],
                      "%.0f%% success" % agg["success_rate"],
+                     "%s a run" % stats.fmt_duration(agg["avg_duration"]),
                      "%s grinding" % stats.fmt_total(agg["total_time"])]
             last = float(runs[-1].get("ts", 0) or 0)
             if last:

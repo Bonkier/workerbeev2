@@ -16,10 +16,11 @@ visible on the monitor you picked.
   you want in your own words and the matching setting lights up.
 
 Dashboard:
-The landing page. The hero line sums up your record. The tiles count total
-runs, dungeons cleared, success rate, average run and total run time. Recent
-activity lists the newest runs and View all opens Statistics. The page
-refreshes itself after every run; Refresh rereads the record by hand.
+The landing page. The line under the title sums up your record: runs
+completed, success rate, the average run, the time spent and when the last
+run ended. Recent activity lists the newest runs, each with its details, and
+View all opens Statistics, where the full figures are. The page refreshes
+itself after every run; Refresh rereads the record by hand.
 
 Mirror Dungeon:
 Two views, switched at the top of the page.

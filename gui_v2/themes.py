@@ -89,11 +89,40 @@ def _restore_default_text():
         setattr(Colors, k, v)
 
 
+def _luminance(hex_color: str) -> float:
+    def channel(v):
+        v /= 255.0
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = _to_rgb(hex_color)
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+
+def contrast(a: str, b: str) -> float:
+    """Contrast ratio of two colours, 1 to 21."""
+    hi, lo = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+# Captions, units and timestamps are still text to be read.
+CAPTION_CONTRAST = 4.5
+
+
+def _caption(text: str, bg: str, toward: float) -> str:
+    """`text` dimmed toward `bg`, but no further than still reads on the
+    lightest surface a caption sits on."""
+    while toward > 0:
+        tone = _mix(text, bg, toward)
+        if contrast(tone, Colors.BG_OVERLAY) >= CAPTION_CONTRAST:
+            return tone
+        toward -= 0.03
+    return text
+
+
 def _apply_text(text: str):
     """Derive the text palette; dim tiers mix toward the background."""
     Colors.TEXT_PRIMARY = text
     Colors.TEXT_SECONDARY = _mix(text, Colors.BG_BASE, 0.38)
-    Colors.TEXT_TERTIARY = _mix(text, Colors.BG_BASE, 0.58)
+    Colors.TEXT_TERTIARY = _caption(text, Colors.BG_BASE, 0.58)
     Colors.TEXT_DISABLED = _mix(text, Colors.BG_BASE, 0.74)
 
 

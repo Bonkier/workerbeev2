@@ -20,7 +20,7 @@ class Colors:
 
     TEXT_PRIMARY   = "#f5f5f6"
     TEXT_SECONDARY = "#a0a0a8"
-    TEXT_TERTIARY  = "#6c6c74"
+    TEXT_TERTIARY  = "#8b8b94"
     TEXT_DISABLED  = "#48484f"
 
     # Brand accent. Primary button, focus rings, progress.

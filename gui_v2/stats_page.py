@@ -10,14 +10,14 @@ to show the packs chosen and each floor's clear time) and "Overall stats"
 import csv
 import datetime as _dt
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QLabel, QMessageBox, QScrollArea, QSizePolicy,
     QToolButton, QVBoxLayout, QWidget,
 )
 
 
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 
 from . import stats
 
@@ -418,9 +418,33 @@ class _GiftStrip(QWidget):
         p.end()
 
 
+class _Lamp(QWidget):
+    """A run's result as a small lit mark: green for a run that cleared,
+    red for one that did not."""
+
+    _SIDE = 7
+
+    def __init__(self, ok: bool, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.ok = bool(ok)
+        self.setFixedSize(self._SIDE, self._SIDE)
+
+    def paintEvent(self, _event):
+        from .skins import is_voxel
+        p = QPainter(self)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(Colors.SUCCESS if self.ok else Colors.ERROR))
+        if is_voxel():
+            p.drawRect(self.rect())
+        else:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.drawEllipse(self.rect())
+        p.end()
+
+
 class _HistoryRow(QWidget):
-    """One run in the history list: result dot, team, duration, age, plus a
-    'more details' expander showing the packs chosen and each floor's time."""
+    """One run in the history list: result lamp, team, duration, age, plus a
+    'details' expander showing the packs chosen and each floor's time."""
 
     def __init__(self, run: dict, parent: QWidget | None = None):
         super().__init__(parent)
@@ -434,10 +458,8 @@ class _HistoryRow(QWidget):
         row.setSpacing(Sizing.SPACE_SM)
 
         completed = bool(run.get("completed"))
-        dot = QLabel("●", top)  # filled circle
-        dot.setStyleSheet(
-            f"color: {Colors.SUCCESS if completed else Colors.ERROR};")
-        row.addWidget(dot)
+        self.lamp = _Lamp(completed, top)
+        row.addWidget(self.lamp, 0, Qt.AlignmentFlag.AlignVCenter)
 
         team = (run.get("team") or "").strip().title()
         script = (run.get("run") or "").strip()
@@ -472,7 +494,11 @@ class _HistoryRow(QWidget):
             self._toggle = QToolButton(top)
             self._toggle.setObjectName("expander")
             self._toggle.setCheckable(True)
-            self._toggle.setText("▸ details")
+            self._toggle.setText("details")
+            self._toggle.setToolButtonStyle(
+                Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            self._toggle.setIconSize(QSize(9, 9))
+            self._set_caret(False)
             self._toggle.setCursor(Qt.CursorShape.PointingHandCursor)
             self._toggle.setStyleSheet("QToolButton { border: none; }")
             self._toggle.toggled.connect(self._on_toggle)
@@ -531,8 +557,14 @@ class _HistoryRow(QWidget):
             self._details.setVisible(False)
             col.addWidget(self._details)
 
+    def _set_caret(self, opened: bool):
+        from .pixel_icons import pixel_icon
+        self._toggle.setIcon(QIcon(pixel_icon(
+            "caret_down" if opened else "caret_right",
+            Colors.TEXT_SECONDARY, 1)))
+
     def _on_toggle(self, on: bool):
-        self._toggle.setText("▾ details" if on else "▸ details")
+        self._set_caret(on)
         if self._details is not None:
             self._details.setVisible(on)
 

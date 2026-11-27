@@ -17,9 +17,6 @@ ALIASES = {
         "play now", "quick launch", "one click run", "quick md",
         "one click md", "run md", "begin run", "quick run", "launch bot",
     ),
-    "dashboard:statistics": (
-        "summary numbers", "at a glance", "quick totals", "run totals",
-    ),
     "dashboard:recent activity": (
         "last runs", "latest runs", "what happened", "recently done",
         "recent mds", "run feed",
@@ -383,7 +380,8 @@ ALIASES = {
     "stats:overview": (
         "success rate", "totals", "grind time", "time spent", "failed runs",
         "runs completed", "average duration", "average time",
-        "wins and losses", "summary", "at a glance",
+        "wins and losses", "summary", "at a glance", "summary numbers",
+        "quick totals", "run totals",
     ),
     "stats:history": (
         "past runs", "previous runs", "old runs", "run timeline", "run log",
@@ -742,7 +740,7 @@ ALIASES = {
         "what does each setting do",
     ),
     "help:dashboard": (
-        "dashboard guide", "home screen help", "what the tiles mean",
+        "dashboard guide", "home screen help", "what the record line means",
     ),
     "help:custom runs": (
         "saikai guide", "hollow guide", "custom run help",
